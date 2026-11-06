@@ -16,7 +16,7 @@ This is the live source of truth for *what is actually true*. Update it at the e
 | Codebase origin | copy of `doctor-prescription-app` |
 | Git initialized | yes (`97a4af0`) |
 | Tests passing | 0 (no test suite yet) |
-| Build status | typecheck passes; full build not yet run under strict config |
+| Build status | legacy static `npm run build` passes; strict dual-build not implemented |
 | Paying clinics | 0 |
 | Design partners | 0 |
 | MRR | ₹0 |
@@ -240,7 +240,7 @@ Append to §11 at the end of each working session:
 
 ### 2026-11-06 — Foundation and planning
 - Did: explored the original app, researched the market, copied the source, wrote product/architecture/data/roadmap/GTM/decision/setup docs, created the formal platform spec and Phase 0 plan, added Superpowers verification, rebranded package metadata, removed `test.txt`, and initialized git.
-- Evidence: `docs/*`, `AGENTS.md`, `scripts/check-superpowers.ps1` (10/10 pass), `npm run typecheck` exit 0, commit `97a4af0`.
+- Evidence: `docs/*`, `AGENTS.md`, `scripts/check-superpowers.ps1` (10/10 pass), `npm run typecheck` exit 0, `npm run build` exit 0 (legacy static export), commit `97a4af0`.
 - Blocked by: nothing.
 - Next: execute Phase 0 plan (`docs/superpowers/plans/2026-11-06-phase-0-foundation.md`), starting with Task 1 verification and Task 2 dual build.
 
