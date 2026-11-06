@@ -1899,7 +1899,7 @@ export type OnboardingInput = z.infer<typeof onboardingSchema>;
 ```ts
 import { eq, or } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
-import { branches, clinics, doctors, memberships, tenants, users } from "@/server/db/schema";
+import { branches, clinics, doctors, memberships, tenants, users, auditEvents } from "@/server/db/schema";
 import { hashPassword } from "@/server/auth/password";
 import { newId } from "@/lib/domain/ids";
 import { onboardingSchema, type OnboardingInput } from "@/server/validation/onboarding";
@@ -2000,6 +2000,15 @@ export async function createClinicAccount(raw: OnboardingInput): Promise<CreateC
         qualifications: "",
         specialties: [],
         consultationFeePaise: 0,
+      });
+
+      await tx.insert(auditEvents).values({
+        tenantId,
+        actorUserId: userId,
+        action: "tenant.created",
+        entityType: "tenant",
+        entityId: tenantId,
+        after: { name: input.clinicName, plan: "free" },
       });
 
       return { tenantId, userId };
@@ -2850,8 +2859,12 @@ Expected: all pass; Playwright reports 2 passing tests; gate printed `PASSED`.
 - [ ] Open `/settings` as owner; confirm timezone/currency.
 - [ ] Create a reception user manually in the DB and confirm `/settings` redirects for that role.
 - [ ] Confirm `GET /api/health` returns `{ "status": "ok" }`.
+- [ ] Confirm the sign-up wrote one `tenant.created` row in `audit_events`.
 - [ ] Confirm `git status` has no secrets or build artefacts.
 - [ ] Run `scripts/check-superpowers.ps1`; confirm 10/10.
+- [ ] Backup/restore drill: `pg_dump` staging (or local) into a scratch database, run a patient count, and record the result.
+- [ ] Migration rollback: on a scratch database, apply migrations, drop the newest schema, re-apply, and confirm it succeeds.
+- [ ] Deploy the web build to staging (Vercel + Supabase Mumbai or equivalent) and repeat sign-up + health checks there. Record the URL in `PROGRESS.md`.
 
 - [ ] **Step 8: Update `docs/PROGRESS.md`**
 

@@ -42,6 +42,8 @@ The repo is a copy of the original `doctor-prescription-app`:
 
 **Nothing here is production-safe for patient data yet.** Treat all existing data as demo data.
 
+**Repository state (2026-11-06):** git initialized with the foundation docs and source copy. `npm run typecheck` passes after installing `@radix-ui/react-tabs`. No test suite, server code, database, or auth exists yet. The Phase 0 implementation plan is `docs/superpowers/plans/2026-11-06-phase-0-foundation.md`.
+
 ### What is reusable
 
 | Area | Reuse |

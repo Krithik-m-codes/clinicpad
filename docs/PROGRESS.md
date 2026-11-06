@@ -83,7 +83,8 @@ This is the live source of truth for *what is actually true*. Update it at the e
 - [ ] Desktop build uses a separate config/env flag (e.g. `NEXT_BUILD_TARGET=desktop`)
 - [ ] `ignoreBuildErrors` and `ignoreDuringBuilds` removed
 - [ ] `npm run build` passes with zero type/lint errors
-- [ ] `npm run tauri:build` still produces a runnable binary (or is explicitly parked with a note)
+- [ ] `npm run build:desktop` produces a static export in `src/.dist`
+- [ ] Tauri installer smoke test deferred until the desktop shell is next touched (Phase 1/4)
 
 ### 4.3 Tooling
 
@@ -96,43 +97,44 @@ This is the live source of truth for *what is actually true*. Update it at the e
 ### 4.4 Database and tenancy
 
 - [ ] Local Postgres via Docker Compose (or documented alternative)
-- [ ] Drizzle config points to `DATABASE_URL`
+- [ ] Drizzle config points to `DIRECT_URL` for migrations
 - [ ] Core tables migrated: tenants, clinics, branches, users, memberships, doctors, patients, visits, prescriptions, prescription_items, templates, template_versions, audit_events
 - [ ] Every business table has `tenant_id NOT NULL`
-- [ ] RLS enabled on all tenant tables
-- [ ] RLS policy uses `auth.uid()` / session setting, never client-supplied tenant
-- [ ] Tenant-scoped repository/client is the only DB path used by app code
-- [ ] Automated RLS test: Tenant A cannot select/insert/update/delete Tenant B rows
-- [ ] Migration rollback tested
+- [ ] RLS enabled and forced on all tenant tables
+- [ ] RLS policy uses `app.tenant_id` session setting, never client-supplied tenant
+- [ ] Tenant-scoped `withTenant()` is the only DB path used by feature code
+- [ ] Automated RLS test: Tenant A cannot select/insert Tenant B rows, and no tenant context returns zero rows
+- [ ] Migration rollback tested on a scratch database
 
 ### 4.5 Auth and onboarding
 
-- [ ] Sign-up and sign-in (provider per ADR-0008)
-- [ ] Phone OTP or email verification works end-to-end
-- [ ] Session persistence, sign-out, session revocation
+- [ ] Sign-up and sign-in with email/password (ADR-0008)
+- [ ] Phone OTP scheduled for Phase 1; email verification deferred
+- [ ] Session persistence and sign-out
+- [ ] Session re-reads membership so role changes take effect
 - [ ] MFA design documented; TOTP enforcement scheduled for Phase 1
-- [ ] Create clinic wizard (name, type, address, timezone, currency, logo)
-- [ ] Doctor profile (name, qualifications, registration no., signature, stamp, fee)
-- [ ] Branch creation and switcher
-- [ ] Invite staff (Owner, Doctor, Reception, Nurse, Accountant)
-- [ ] Role-aware route guards enforced server-side
-- [ ] Trial state and read-only expiry shell
+- [ ] Sign-up creates tenant, clinic, Main Branch, owner membership, and doctor atomically
+- [ ] Clinic fields: name, city, timezone, currency (address/logo in Phase 1)
+- [ ] Doctor profile row created; editing/signature/stamp in Phase 1
+- [ ] Role-aware route guard (Settings owner-only)
+- [ ] Trial state and read-only expiry shell deferred to Phase 3 (billing)
 
 ### 4.6 App shell
 
-- [ ] Authenticated layout with sidebar/topbar and clinic switcher
-- [ ] Role-aware navigation (no dead links for Reception/Nurse)
-- [ ] Loading, empty, error, and offline states
-- [ ] Toast system replaces `alert()`
-- [ ] Error boundary + Sentry (or equivalent) wired
-- [ ] Mobile-responsive at 360 px width
-- [ ] Keyboard navigation for the prescription form shell
+- [ ] Authenticated layout with sidebar and clinic name
+- [ ] Role-aware navigation (Settings hidden from non-owners)
+- [ ] Root route redirects to dashboard/login
+- [ ] Basic loading and error states
+- [ ] Mobile sanity check at 360 px width
+- [ ] Toast system and global error boundary deferred to Phase 1
+- [ ] Keyboard navigation for the prescription form shell deferred to Phase 1
 
 ### 4.7 Seed, ops, and docs
 
-- [ ] Seed script: 1 demo clinic, 3 doctors, 5 staff, 50 patients, 20 prescriptions
+- [ ] Seed script: 1 demo clinic, 3 staff users, 50 patients, 20 prescriptions
+- [ ] Seed is idempotent (re-run replaces, never duplicates)
 - [ ] Health check endpoint
-- [ ] Structured logs with request IDs
+- [ ] Structured logs with request IDs deferred to Phase 1
 - [ ] Staging deploy documented and working
 - [ ] Backup + restore drill completed on staging
 - [ ] `docs/SETUP.md` verified on a clean machine (or fresh clone)
