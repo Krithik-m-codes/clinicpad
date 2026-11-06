@@ -1,17 +1,17 @@
 {
-  "productName": "Doctor Prescription App",
+  "productName": "ClinicPad",
   "version": "1.0.1",
-  "identifier": "com.shubpy.doctor-prescription-app",
+  "identifier": "app.clinicpad.desktop",
   "build": {
     "frontendDist": "../src/.dist",
     "devUrl": "http://localhost:3000",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build:desktop"
   },
   "app": {
     "windows": [
       {
-        "title": "Doctor Prescription App",
+        "title": "ClinicPad",
         "width": 1366,
         "height": 768,
         "resizable": true,
