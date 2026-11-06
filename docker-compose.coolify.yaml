@@ -1,0 +1,21 @@
+services:
+  doctor-prescription-app:
+    container_name: doctor-prescription-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3005:3000"
+    labels:
+      - "coolify.managed=true"
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    volumes:
+      - ./:/app

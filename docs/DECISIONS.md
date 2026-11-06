@@ -1,0 +1,313 @@
+# ClinicPad — Architecture Decision Records
+
+**Last updated:** 2026-11-06
+**Format:** lightweight ADR (context → decision → consequences → revisit trigger)
+**Rule:** if a decision is hard to reverse or affects tenant safety, patient data, or money, it goes here before implementation.
+
+Status values: `proposed` · `accepted` · `superseded` · `rejected`
+
+---
+
+## ADR-0001 — Product name: ClinicPad
+
+- **Status:** accepted (working name)
+- **Date:** 2026-11-06
+
+**Context:** We need a name that works for a prescription-first clinic OS in India and abroad, is easy to say on a WhatsApp call, and does not box us into "prescription software" forever.
+
+**Decision:** Use **ClinicPad** as the working product name, with "Your pad. Digitised." as the tagline.
+
+**Consequences:** Short, memorable, and ties directly to the BYOP wedge. "Pad" is understood in India and internationally. Must run a trademark and domain check before spending on branding.
+
+**Revisit trigger:** trademark conflict, domain unavailable at reasonable cost, or a name test that shows confusion with existing clinic products.
+
+---
+
+## ADR-0002 — Market sequencing: India first, international after Phase 5
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** International practice management is a different product: HIPAA/GDPR, local payments, local tax, different clinical workflows, higher support expectations. Spreading thin early would slow the wedge.
+
+**Decision:** Build and sell in India through Phase 4. Add international data region, Stripe, localization, and compliance in Phase 5.
+
+**Consequences:** Faster learning and lower compliance cost early. Leaves international inbound on the table for 6–9 months. Architecture must keep tenant region as a first-class field from day one so the later split is not a rewrite.
+
+**Revisit trigger:** significant inbound from a single international market, or India growth stalls below Gate B.
+
+---
+
+## ADR-0003 — Application stack: Next.js App Router + TypeScript + Tailwind + shadcn/ui
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** The prototype already uses this stack. The team knows it. It supports server rendering, server actions, API routes, and a static export for Tauri.
+
+**Decision:** Keep Next.js 15 (App Router), React 19, TypeScript (strict), Tailwind v4, and the existing shadcn/ui primitives. Do not introduce a second UI kit.
+
+**Consequences:** Reuse of existing components and skills. Static export must be split from the web build (ADR-0012). Server components require disciplined boundary design.
+
+**Revisit trigger:** Tauri/static build becomes unmaintainable, or performance targets cannot be met.
+
+---
+
+## ADR-0004 — Multi-tenancy: shared Postgres with row-level security
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** Clinic data is sensitive. We need isolation without operating one database per clinic.
+
+**Decision:** Single Postgres database, `tenant_id` on every business table, RLS enforced at the database. The app uses a tenant-scoped client; tenant identity comes from the authenticated session, never from request input.
+
+**Consequences:** Strong isolation with manageable operations. Every query and migration must respect RLS. Cross-tenant admin tasks require a separate, audited role. Tests must prove isolation, not assume it.
+
+**Revisit trigger:** a tenant requires dedicated infrastructure (enterprise/chain), or RLS performance degrades at scale.
+
+---
+
+## ADR-0005 — Database hosting: Supabase Mumbai for the MVP
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** We need managed Postgres, storage, auth options, and India residency without hiring an SRE.
+
+**Decision:** Use Supabase in `ap-south-1` (Mumbai) for MVP Postgres, storage, and possibly auth. Keep a self-host path via Docker for clinics that require it later.
+
+**Consequences:** Fast start and India residency. Vendor coupling in auth/storage; keep DB access through Drizzle and storage behind an interface. Pricing must be monitored as document storage grows.
+
+**Revisit trigger:** Supabase pricing exceeds self-host cost, residency requirements expand, or auth limitations block required flows.
+
+---
+
+## ADR-0006 — ORM: Drizzle
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** We need typed SQL, migrations, and RLS-friendly queries. Prisma's engine and migration model add weight; raw SQL loses type safety.
+
+**Decision:** Use Drizzle ORM with `drizzle-kit` for migrations.
+
+**Consequences:** SQL-like control and good TypeScript inference. Smaller ecosystem than Prisma; some patterns must be written manually. RLS policies live in SQL migrations, not in the ORM schema.
+
+**Revisit trigger:** Drizzle blocks a critical feature (e.g. complex migrations, views) or team velocity drops.
+
+---
+
+## ADR-0007 — Document pipeline: Gotenberg + LibreOffice + pdf2docx + OCR
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** The wedge requires high-fidelity DOCX→PDF, PDF→DOCX, and OCR for scanned pads.
+
+**Decision:**
+- DOCX/HTML → PDF: **Gotenberg** (LibreOffice for DOCX, Chromium for HTML).
+- DOCX templating: **docxtemplater**.
+- PDF → DOCX: **pdf2docx** for text PDFs.
+- Scanned PDFs: **OCRmyPDF + Tesseract** (English + Hindi + regional packs), then pdf2docx.
+- Merge/split/compress: Gotenberg / qpdf / pdfcpu.
+
+**Consequences:** Good fidelity without building a renderer. Conversion must run in a sandbox with no network, file-size/time limits, virus scanning, and pinned LibreOffice/font versions. Fidelity is not perfect; overlay mode is the fallback.
+
+**Revisit trigger:** fidelity complaints exceed 5% of templates, or a commercial engine (e.g. Aspose) becomes cheaper than support cost.
+
+---
+
+## ADR-0008 — Authentication: Auth.js v5 with credentials, phone OTP in Phase 1
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** Indian clinics expect phone OTP; international users expect email/Google. We need MFA for owners, server-enforced sessions, and a provider that works with our own Postgres without coupling RLS to a vendor's JWT.
+
+**Options considered:**
+1. Supabase Auth — fastest, phone OTP support, RLS integration, but vendor coupling and India SMS costs.
+2. Auth.js (NextAuth) + custom SMS — flexible, portable, more code.
+3. Clerk — excellent DX, higher cost at scale, data residency questions.
+4. WorkOS — enterprise SSO later, overkill now.
+
+**Decision:** Use **Auth.js v5** with a Credentials provider (email + password, bcrypt) and JWT sessions. Store our own `users` table. Session tokens carry `userId`, `tenantId`, and `role`; the server re-validates membership on sensitive mutations. Phone OTP and Google are added in Phase 1 through additional providers; MFA for owners follows the same session model.
+
+**Why not Supabase Auth:** our RLS design uses `app.tenant_id` set by the server, not `auth.uid()`. Auth.js keeps auth portable across Supabase, self-hosted Postgres, and desktop.
+
+**Consequences:** We own password hashing, rate limiting, reset flows, and session revocation. Those are well-understood but must be tested. Phone OTP is not available on day one; email/password is the Phase 0 path.
+
+**Revisit trigger:** OTP deliverability becomes a conversion blocker, or enterprise SSO requirements exceed Auth.js capabilities.
+
+---
+
+## ADR-0009 — Payments: Razorpay (India) + Stripe (international)
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** Indian clinics pay via UPI/cards/netbanking and need GST invoices. International customers expect cards and local tax handling.
+
+**Decision:** Razorpay subscriptions for India; Stripe for international from Phase 5. All payment state is reconciled by webhook into our own `subscriptions`/`invoices` tables; never trust the client.
+
+**Consequences:** Two integrations, but correct rails. Webhook idempotency and dunning are mandatory. GST invoicing is our responsibility, not the gateway's.
+
+**Revisit trigger:** Razorpay subscription limitations, or a partner requires marketplace payouts.
+
+---
+
+## ADR-0010 — WhatsApp: Cloud API behind a provider abstraction
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** WhatsApp is the distribution channel for prescriptions and reminders in India. Direct Meta integration is cheapest at scale but has onboarding friction. BSPs speed onboarding but add markup and lock-in.
+
+**Decision:** Define `MessagingProvider` with `sendTemplate`, `sendDocument`, `status`, and `optOut`. Implement Meta Cloud API first; allow a BSP adapter if onboarding blocks early customers.
+
+**Consequences:** No per-message markup to customers. Template approval and business verification take time; start early. Delivery status and opt-out must be stored.
+
+**Revisit trigger:** Meta policy changes, BSP economics improve, or deliverability issues appear.
+
+---
+
+## ADR-0011 — Free tier: capped at 100 prescriptions/month
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** A free tier drives adoption in a trust-poor market, but unlimited free usage destroys the business and support capacity.
+
+**Decision:** Free plan: 1 doctor, 1 branch, 100 Rx/month, 1 built-in template, footer branding, 5 document conversions, 30-day audit. No own-pad printing; show a locked preview instead.
+
+**Consequences:** Doctors can form a habit without paying. The cap is high enough for a light practice and low enough to trigger upgrade. Support must handle "why can't I print my pad" gracefully.
+
+**Revisit trigger:** free-to-paid conversion < 3% after 200 free clinics, or support cost per free clinic exceeds ₹50/month.
+
+---
+
+## ADR-0012 — Build targets: split web (server) and desktop (static)
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** `next.config.ts` currently forces `output: "export"` and ignores build errors. Auth callbacks and API routes cannot work in static export.
+
+**Decision:** Two explicit build modes:
+- **Web:** normal Next.js server build, strict TS/ESLint, deployed to Vercel/Fly.
+- **Desktop:** static export consumed by Tauri, built via a separate config/flag.
+
+Shared code must not assume `window` or Node-only APIs without a boundary.
+
+**Consequences:** Both targets stay viable. CI must build both (or desktop nightly) to catch drift. Some Next.js features are unavailable in desktop mode; the offline layer abstracts them.
+
+**Revisit trigger:** desktop is dropped, or a single build can serve both without compromise.
+
+---
+
+## ADR-0013 — Offline strategy: local-first outbox, server as source of truth
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** Tier 2/3 clinics lose internet and power. Losing a prescription is unacceptable.
+
+**Decision:** Writes go to a durable local store (IndexedDB on web, SQLite on desktop) and an outbox before the UI confirms success. Sync uses idempotency keys and cursor-based deltas. Conflict policy: clinical records are append-only/versioned; demographic edits use last-writer-wins with a visible conflict; money uses server reconciliation.
+
+**Consequences:** Complex sync code and testing. Every mutation needs an idempotency key and a stable client ID. Offline scope is limited to patients, prescriptions, and payments at first.
+
+**Revisit trigger:** sync bugs cause data loss, or a simpler managed sync (e.g. ElectricSQL) matures.
+
+---
+
+## ADR-0014 — Template syntax: docxtemplater-compatible placeholders
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** Doctors' Word files need a simple, documented way to bind data without learning a templating language.
+
+**Decision:** Use `{{field}}` syntax with dot paths, `{{#loop}}...{{/loop}}`, and `{{#if}}...{{/if}}`, compatible with docxtemplater. Unknown fields block publishing. Missing optional values render blank.
+
+**Consequences:** Doctors can edit templates in Word. We must validate and version templates. HTML templates use the same field names for consistency.
+
+**Revisit trigger:** docs templating needs exceed docxtemplater (e.g. complex conditionals), or a WYSIWYG editor replaces Word uploads.
+
+---
+
+## ADR-0015 — Money, time, and identifiers
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** Clinics operate across time zones and currencies; floating-point money causes reconciliation bugs.
+
+**Decision:**
+- Money stored as integer **paise/cents** plus ISO currency code.
+- Timestamps stored as UTC ISO strings; rendered in clinic timezone (`Asia/Kolkata` default).
+- New IDs are **UUIDv7**; human-facing numbers (Rx, invoice) are per-tenant sequences.
+- Dates that are clinically meaningful (DOB, follow-up) are stored as dates, not timestamps.
+
+**Consequences:** Conversion helpers at boundaries. Sequence generation must be transactional to avoid gaps/duplicates.
+
+**Revisit trigger:** multi-currency invoices per tenant, or offline sequence conflicts.
+
+---
+
+## ADR-0016 — Data residency and retention
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** DPDP (India) and GDPR (EU) require lawful processing, purpose limitation, and deletion. Medical records also have retention obligations.
+
+**Decision:** India tenant data stays in `ap-south-1`. Add a `region` field to tenants from day one. Retention defaults: clinical records 7 years (or local statutory minimum), audit 7 years, documents per tenant policy, marketing consent revocable. Deletion is soft-delete + scheduled hard-delete with legal-hold override.
+
+**Consequences:** Region-aware routing and storage buckets. Deletion jobs must be tested. Do not claim compliance certifications before they are held.
+
+**Revisit trigger:** new market entry, or a regulator clarifies retention periods.
+
+---
+
+## ADR-0017 — AI guardrails: documentation assist only
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** AI can save documentation time but creates clinical and regulatory risk.
+
+**Decision:** AI may transcribe, structure, summarize, OCR, and suggest template mappings. It may **not** diagnose, prescribe, or recommend treatment. Every AI output is labelled "draft", requires clinician review, and is logged. Drug interaction checks use a licensed dataset, not generative output.
+
+**Consequences:** Slower AI feature development; stronger trust. Prompt and model versions must be recorded for audit.
+
+**Revisit trigger:** regulation explicitly permits clinical decision support with certified models.
+
+---
+
+## ADR-0018 — No generic EMR drift
+
+- **Status:** accepted
+- **Date:** 2026-11-06
+
+**Context:** Clinic software tends to expand into everything and lose its wedge.
+
+**Decision:** Every roadmap item must strengthen at least one of: BYOP fidelity, offline reliability, WhatsApp distribution, owner visibility, or reseller leverage. Features that only match competitors go to the bottom of the list.
+
+**Consequences:** We will say no to many requests. Sales must be trained to explain the focus. Revisit only after Gate C.
+
+**Revisit trigger:** churn interviews show a missing table-stakes feature is the reason for leaving.
+
+---
+
+## 19. Open decisions
+
+| # | Question | Options | Owner | Needed by |
+|---|---|---|---|---|
+| 1 | Auth provider | Supabase Auth / Auth.js / Clerk | founder | Phase 0 week 1 |
+| 2 | WhatsApp: direct vs BSP | Meta Cloud API / BSP | founder | Phase 1 |
+| 3 | First two specialty template packs | General + Paeds / Derma / Ortho | product | Phase 1 |
+| 4 | Desktop packaging | Tauri v2 / Electron | founder | Phase 4 |
+| 5 | Billing build vs partner | Build / partner with billing tool | founder | Phase 3 |
+| 6 | International region | EU (Frankfurt) / US (Virginia) first | founder | Phase 5 |
+| 7 | Free tier DOCX | Locked preview / watermarked print | product | Gate A |
+| 8 | Reseller margin | 20% / 35% | founder | Phase 5 |

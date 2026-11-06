@@ -1,0 +1,317 @@
+# ClinicPad — Setup Guide
+
+**Last updated:** 2026-11-06
+**Applies to:** Windows 10/11 (PowerShell), macOS, Linux
+**Goal:** a new developer can clone, install, run, and verify ClinicPad in under 30 minutes.
+
+---
+
+## 1. Prerequisites
+
+| Tool | Version | Why | Check |
+|---|---|---|---|
+| Node.js | 22 LTS or newer | Next.js 15 / React 19 | `node -v` |
+| npm | 11+ | Package manager | `npm -v` |
+| Git | 2.40+ | Version control | `git --version` |
+| Docker Desktop | current | Postgres, Gotenberg, ClamAV | `docker --version` |
+| Rust + Cargo | stable | Tauri desktop only | `rustc --version` |
+| PowerShell | 7+ (Windows) | Setup scripts | `$PSVersionTable.PSVersion` |
+
+Optional: `pnpm` is **not** used — stay on npm to match `package-lock.json`. VS Code with ESLint, Tailwind CSS IntelliSense, and rust-analyzer is recommended.
+
+> **Windows note:** enable long paths if `tauri build` fails with path-length errors:
+> `git config --system core.longpaths true` (admin PowerShell), then reboot.
+
+---
+
+## 2. Clone and install
+
+```powershell
+cd E:\Shubpy\projects
+git clone <repo-url> clinicpad
+cd clinicpad
+npm install
+```
+
+For the existing local copy (no remote yet):
+
+```powershell
+cd E:\Shubpy\projects\clinicpad
+npm install
+```
+
+Expected: install completes without `ERESOLVE`. If peer-dependency conflicts appear, do **not** use `--force`; fix the version instead.
+
+---
+
+## 3. Environment variables
+
+Copy the template and fill in local values:
+
+```powershell
+Copy-Item .env.example .env.local
+```
+
+`.env.local` is git-ignored. Never commit real secrets.
+
+### 3.1 Variables that exist today
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `NEXT_PUBLIC_APP_URL` | yes | Canonical URL, used in links and auth callbacks |
+| `NODE_ENV` | auto | `development` / `production` |
+
+### 3.2 Variables added in Phase 0
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `DATABASE_URL` | yes | Pooled Postgres connection (Supabase port 6543) |
+| `DIRECT_URL` | yes | Direct connection for migrations (port 5432) |
+| `NEXT_PUBLIC_SUPABASE_URL` | yes | Supabase project URL (if Supabase Auth) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | yes | Public anon key (RLS-protected) |
+| `SUPABASE_SERVICE_ROLE_KEY` | server only | Admin tasks; never expose to the client |
+| `AUTH_SECRET` | yes | Session signing (32+ random bytes) |
+| `ENCRYPTION_KEY` | yes | Field-level encryption for sensitive data |
+
+Generate secrets:
+
+```powershell
+# 32-byte base64 secret
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+```
+
+### 3.3 Variables added in later phases
+
+| Variable | Phase | Purpose |
+|---|---|---|
+| `GOTENBERG_URL` | 2 | Document conversion service |
+| `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | 2 | Template and PDF storage |
+| `CLAMAV_HOST`, `CLAMAV_PORT` | 2 | Upload scanning |
+| `RESEND_API_KEY`, `EMAIL_FROM` | 2 | Transactional email |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | 3 | India payments |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | 5 | International payments |
+| `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_ID`, `WHATSAPP_VERIFY_TOKEN` | 3 | Meta Cloud API |
+| `SMS_PROVIDER_KEY` | 0/3 | OTP fallback |
+| `SENTRY_DSN` | 0 | Error tracking |
+| `CRON_SECRET` | 3 | Protect scheduled jobs |
+
+---
+
+## 4. Local services
+
+Phase 0 introduces a `docker-compose.yml` for local dependencies. Until then, only the Next.js dev server is required.
+
+Target compose stack:
+
+```yaml
+services:
+  postgres:   # port 5432, db clinicpad, user clinicpad
+  gotenberg:  # port 3001, document conversion
+  clamav:     # port 3310, upload scanning (optional locally)
+  redis:      # port 6379, queues (Phase 3+)
+```
+
+Start:
+
+```powershell
+docker compose up -d
+docker compose ps
+```
+
+Stop:
+
+```powershell
+docker compose down
+```
+
+Reset local data (destructive):
+
+```powershell
+docker compose down -v
+```
+
+### 4.1 Database
+
+```powershell
+npm run db:generate   # generate migration from schema
+npm run db:migrate    # apply migrations
+npm run db:seed       # demo clinic + patients + prescriptions
+npm run db:studio     # inspect data
+```
+
+Connection string for local Postgres:
+
+```
+postgresql://clinicpad:clinicpad@localhost:5432/clinicpad
+```
+
+For Supabase staging, use the pooled URL in `DATABASE_URL` and the direct URL in `DIRECT_URL`. Migrations always use `DIRECT_URL`.
+
+---
+
+## 5. Run the app
+
+```powershell
+npm run dev
+```
+
+Open http://localhost:3000.
+
+Other commands:
+
+```powershell
+npm run build          # web build (server mode after Phase 0)
+npm run start          # run the production build
+npm run lint           # ESLint
+npm run typecheck      # tsc --noEmit (added in Phase 0)
+npm run test           # Vitest (added in Phase 0)
+npm run test:e2e       # Playwright (added in Phase 0)
+```
+
+Desktop:
+
+```powershell
+npm run tauri:dev      # dev with hot reload
+npm run tauri:build    # installer in src-tauri/target/release/bundle
+```
+
+Desktop builds use the static export path (ADR-0012). Do not run `tauri:build` against a server-mode build.
+
+---
+
+## 6. Superpowers verification
+
+ClinicPad uses the Superpowers skills for design, planning, TDD, debugging, and verification. They are installed globally; the repo only verifies them.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\check-superpowers.ps1
+```
+
+Expected output: each required skill found under at least one of:
+
+- `C:\Users\<you>\.agents\skills` (OpenCode)
+- `C:\Users\<you>\.claude\skills` (Claude Code)
+
+Required skills: `brainstorming`, `writing-plans`, `executing-plans`, `test-driven-development`, `systematic-debugging`, `verification-before-completion`, `requesting-code-review`, `receiving-code-review`, `using-git-worktrees`, `finishing-a-development-branch`.
+
+If a skill is missing, install Superpowers per its upstream instructions, then re-run the script. Do not copy skills into this repo.
+
+---
+
+## 7. Project structure (target)
+
+```
+clinicpad/
+├── AGENTS.md                  # agent memory (read first)
+├── CLAUDE.md                  # Claude entry point
+├── docs/
+│   ├── PRODUCT_SPEC.md
+│   ├── MARKET_RESEARCH.md
+│   ├── ARCHITECTURE.md
+│   ├── DATA_MODEL.md
+│   ├── ROADMAP.md
+│   ├── GTM_PRICING.md
+│   ├── PROGRESS.md
+│   ├── DECISIONS.md
+│   ├── SETUP.md
+│   └── superpowers/
+│       ├── specs/
+│       └── plans/
+├── scripts/
+│   └── check-superpowers.ps1
+├── src/
+│   ├── app/                   # routes
+│   ├── components/            # UI + domain components
+│   ├── contexts/              # client state (legacy, shrinking)
+│   ├── lib/
+│   │   ├── db/                # IndexedDB (legacy) + Drizzle
+│   │   ├── domain/            # pure domain logic
+│   │   └── ...
+│   ├── server/                # server-only: auth, actions, services
+│   └── types/
+├── src-tauri/                 # desktop shell
+├── drizzle/                   # SQL migrations (Phase 0)
+├── public/
+└── sample_data/
+```
+
+Rules:
+
+- `src/server/**` is server-only. Never import it from a client component.
+- Domain logic goes in `src/lib/domain/**` and is unit-tested.
+- Route files stay thin: parse input, authorize, call a service, render.
+
+---
+
+## 8. Clean-clone verification
+
+Run this before declaring setup "done" or merging a setup change:
+
+```powershell
+git clone <repo-url> clinicpad-verify
+cd clinicpad-verify
+Copy-Item .env.example .env.local   # fill values
+npm ci
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+```
+
+All commands must exit `0`. Then start the app and check:
+
+- [ ] Sign-up page loads
+- [ ] A clinic can be created
+- [ ] Demo seed data appears
+- [ ] `GET /api/health` returns `{ "status": "ok" }`
+
+---
+
+## 9. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `next: command not found` | Dependencies not installed | `npm install` |
+| Port 3000 in use | Another dev server | `npm run dev -- -p 3001` |
+| `output: export` error mentioning dynamic routes | Server feature used in desktop build | Use web build, or move the route behind a client boundary |
+| Type errors suddenly visible | `ignoreBuildErrors` removed in Phase 0 | Fix them; do not re-enable the flag |
+| Tauri build fails: `cargo not found` | Rust not installed | Install via rustup, restart terminal |
+| Tauri build fails: path too long (Windows) | Long-path limit | Enable `core.longpaths`, reboot |
+| Postgres auth error | Wrong URL / pooler vs direct | Check `DATABASE_URL` vs `DIRECT_URL` |
+| RLS returns zero rows | Session tenant not set | Verify `app.tenant_id` is set in the transaction |
+| Migration hangs | Locked table / wrong DB | Check `pg_stat_activity`; use direct connection |
+| PDF conversion timeout | Gotenberg down or file too large | `docker compose ps`; check 25 MB limit |
+| WhatsApp template rejected | Missing approval / wrong category | Check Meta Business Manager; use an approved template |
+| `npm ci` fails after lockfile change | Lockfile out of sync | Run `npm install`, commit `package-lock.json` |
+
+### Logs
+
+```powershell
+docker compose logs -f postgres
+docker compose logs -f gotenberg
+```
+
+Application errors: browser console + server terminal + Sentry (once configured).
+
+---
+
+## 10. Security hygiene for developers
+
+- Use a password manager; never paste secrets into chat or tickets.
+- `.env*` is git-ignored — verify with `git status` before committing.
+- Use demo data only. Never copy a real patient's records into a dev database.
+- Run `npm audit` before releases; do not ignore high/critical findings.
+- Do not disable RLS "temporarily". If a query needs cross-tenant access, write an audited admin path.
+- Do not commit generated PDFs or uploaded templates containing patient data.
+
+---
+
+## 11. Definition of a working environment
+
+- [ ] `npm run dev` serves the app
+- [ ] `npm run lint`, `npm run typecheck`, `npm run test`, `npm run build` all pass
+- [ ] Local Postgres is up and migrations applied
+- [ ] Seed data loads
+- [ ] Superpowers check passes
+- [ ] You can sign in, create a clinic, and see the dashboard
+- [ ] No secrets in `git status`
