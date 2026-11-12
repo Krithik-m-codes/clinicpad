@@ -10,6 +10,7 @@ import {
   patients,
   prescriptionItems,
   prescriptions,
+  tenantCounters,
   tenants,
   users,
   visits,
@@ -105,6 +106,7 @@ export async function seedDemo(): Promise<void> {
           const phone = `90000000${String(i).padStart(2, "0")}`;
           return {
             tenantId,
+            patientNo: i + 1,
             name: `${firstNames[i % firstNames.length]} ${lastNames[Math.floor(i / 5) % lastNames.length]}`,
             phone,
             phoneNormalized: phone,
@@ -115,6 +117,11 @@ export async function seedDemo(): Promise<void> {
         }),
       )
       .returning();
+
+    await tx.insert(tenantCounters).values([
+      { tenantId, name: "patient", lastNo: PATIENT_COUNT },
+      { tenantId, name: "rx", lastNo: PRESCRIPTION_COUNT },
+    ]);
 
     const now = new Date();
     const visitRows = await tx
@@ -143,8 +150,7 @@ export async function seedDemo(): Promise<void> {
           visitId: visit.id,
           rxNo: i + 1,
           version: 1,
-          status: "finalized",
-          finalizedAt: now,
+          status: "draft",
         })),
       )
       .returning();
@@ -175,6 +181,12 @@ export async function seedDemo(): Promise<void> {
         },
       ]),
     );
+
+    // Items go in while draft; the immutability trigger forbids adding them afterwards.
+    await tx
+      .update(prescriptions)
+      .set({ status: "finalized", finalizedAt: now, finalizedBy: ownerId })
+      .where(eq(prescriptions.tenantId, tenantId));
 
     // Invariant 2: clinical records carry audit events, demo data included.
     await tx.insert(auditEvents).values([

@@ -22,6 +22,20 @@
       "when": 1793952286199,
       "tag": "0002_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794478642639,
+      "tag": "0003_phase1_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794478657459,
+      "tag": "0004_phase1_integrity",
+      "breakpoints": true
     }
   ]
 }

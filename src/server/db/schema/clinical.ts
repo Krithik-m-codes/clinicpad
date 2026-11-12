@@ -1,14 +1,18 @@
 import {
+  type AnyPgColumn,
   date,
   index,
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
 import { tenants } from "./tenancy";
 
@@ -28,6 +32,7 @@ export const patients = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
+    patientNo: integer("patient_no"),
     name: text("name").notNull(),
     phone: text("phone"),
     phoneNormalized: text("phone_normalized"),
@@ -46,6 +51,7 @@ export const patients = pgTable(
   (t) => [
     index("patients_tenant_name_idx").on(t.tenantId, t.name),
     index("patients_tenant_phone_idx").on(t.tenantId, t.phoneNormalized),
+    unique("patients_tenant_no_unique").on(t.tenantId, t.patientNo),
   ],
 );
 
@@ -85,17 +91,26 @@ export const prescriptions = pgTable(
     visitId: uuid("visit_id")
       .notNull()
       .references(() => visits.id, { onDelete: "cascade" }),
-    rxNo: integer("rx_no").notNull(),
+    rxNo: integer("rx_no"),
     version: integer("version").notNull().default(1),
     status: text("status").notNull().default("draft"),
     templateVersionId: uuid("template_version_id"),
     pdfUrl: text("pdf_url"),
+    parentPrescriptionId: uuid("parent_prescription_id").references(
+      (): AnyPgColumn => prescriptions.id,
+    ),
+    amendmentReason: text("amendment_reason"),
+    finalizedBy: uuid("finalized_by"),
+    updatedAt: updatedAt(),
     finalizedAt: timestamp("finalized_at", { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => [
     unique("prescriptions_tenant_rx_version_unique").on(t.tenantId, t.rxNo, t.version),
     index("prescriptions_visit_idx").on(t.visitId),
+    uniqueIndex("prescriptions_one_open_amendment")
+      .on(t.parentPrescriptionId)
+      .where(sql`${t.status} = 'draft' and ${t.parentPrescriptionId} is not null`),
   ],
 );
 
@@ -176,4 +191,17 @@ export const auditEvents = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index("audit_tenant_created_idx").on(t.tenantId, t.createdAt)],
+);
+
+/** Per-tenant gap-free-on-commit sequences: name is "patient" or "rx". */
+export const tenantCounters = pgTable(
+  "tenant_counters",
+  {
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    lastNo: integer("last_no").notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.tenantId, t.name] })],
 );
