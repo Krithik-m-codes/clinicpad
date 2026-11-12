@@ -36,6 +36,13 @@
       "when": 1794478657459,
       "tag": "0004_phase1_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794479829553,
+      "tag": "0005_immutability_hardening",
+      "breakpoints": true
     }
   ]
 }
