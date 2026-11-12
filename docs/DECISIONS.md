@@ -299,11 +299,52 @@ Shared code must not assume `window` or Node-only APIs without a boundary.
 
 ---
 
+## ADR-0019 — Auth lookups use the admin connection; middleware uses an edge-safe config
+
+- **Status:** accepted
+- **Date:** 2026-11-12
+
+**Context:** `users` is revoked from the RLS-bound app role and a membership lookup happens before any tenant is known, so login cannot use `db`. Next.js middleware runs on the edge runtime, which cannot load `postgres` or `bcryptjs`.
+
+**Decision:** `src/server/auth/credentials.ts` performs login and membership lookups through `adminDb`. `src/auth.config.ts` is edge-safe (no DB, no bcrypt) and is the only config middleware imports; `src/auth.ts` adds the credentials provider and DB-backed callbacks. The JWT callback re-reads the active membership on every token use, so role changes and deactivation apply immediately. Middleware only checks that a session exists; role checks happen in server components via `requireSession()`.
+
+**Consequences:** One extra indexed query per authenticated request. Role enforcement must never rely on middleware or on hiding navigation.
+
+**Revisit trigger:** request latency from the membership lookup, or a move to Supabase Auth.
+
+---
+
+## ADR-0020 — Legacy prescription generator isolated in a `(legacy)` route group
+
+- **Status:** accepted (interim, until Phase 1)
+- **Date:** 2026-11-12
+
+**Context:** The legacy single-doctor app wrapped every route in `PrescriptionProvider` and its own header, and owned `/`.
+
+**Decision:** Legacy routes live under `src/app/(legacy)/` with their own layout. URLs `/preview`, `/manage`, `/patient-infos` are unchanged; the prescription form moved from `/` to `/prescribe`. `/` redirects to `/dashboard`. The root layout is minimal.
+
+**Consequences:** Legacy data is IndexedDB demo data only and is not tenant-aware. Remove the group when Phase 1 replaces it.
+
+---
+
+## ADR-0021 — Desktop build exports the legacy shell only (interim)
+
+- **Status:** accepted (interim, until Phase 4)
+- **Date:** 2026-11-12
+
+**Context:** `output: "export"` cannot include auth, server components behind login, Postgres-backed API routes, or middleware.
+
+**Decision:** `npm run build:desktop` runs `scripts/build-desktop.mjs`, which moves server-only routes to `.desktop-stash/`, swaps in a client redirect to `/prescribe`, runs the static export, and always restores the originals (also after an interrupted run). The Tauri desktop app is therefore the offline legacy generator until Phase 4 delivers local SQLite + sync.
+
+**Consequences:** The list of server-only paths in the script must be updated when new server routes are added to the web app. The Tauri installer has not been smoke-tested since the split.
+
+---
+
 ## 19. Open decisions
 
 | # | Question | Options | Owner | Needed by |
 |---|---|---|---|---|
-| 1 | Auth provider | Supabase Auth / Auth.js / Clerk | founder | Phase 0 week 1 |
+| 1 | ~~Auth provider~~ | Decided: Auth.js v5 credentials (ADR-0008, ADR-0019) | founder | done |
 | 2 | WhatsApp: direct vs BSP | Meta Cloud API / BSP | founder | Phase 1 |
 | 3 | First two specialty template packs | General + Paeds / Derma / Ortho | product | Phase 1 |
 | 4 | Desktop packaging | Tauri v2 / Electron | founder | Phase 4 |

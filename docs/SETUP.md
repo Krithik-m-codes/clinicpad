@@ -1,6 +1,6 @@
 # ClinicPad — Setup Guide
 
-**Last updated:** 2026-11-06
+**Last updated:** 2026-11-12
 **Applies to:** Windows 10/11 (PowerShell), macOS, Linux
 **Goal:** a new developer can clone, install, run, and verify ClinicPad in under 30 minutes.
 
@@ -27,7 +27,7 @@ Optional: `pnpm` is **not** used — stay on npm to match `package-lock.json`. V
 ## 2. Clone and install
 
 ```powershell
-cd E:\Shubpy\projects
+cd E:\projects
 git clone <repo-url> clinicpad
 cd clinicpad
 npm install
@@ -36,7 +36,7 @@ npm install
 For the existing local copy (no remote yet):
 
 ```powershell
-cd E:\Shubpy\projects\clinicpad
+cd E:\projects\clinicpad
 npm install
 ```
 
@@ -132,12 +132,24 @@ docker compose down -v
 
 ### 4.1 Database
 
+First-time local setup (needs `.env.local`, see section 3):
+
 ```powershell
-npm run db:generate   # generate migration from schema
-npm run db:migrate    # apply migrations
-npm run db:seed       # demo clinic + patients + prescriptions
+docker compose up -d postgres
+npm run db:migrate    # apply migrations (creates the clinicpad_app role and RLS)
+npm run db:seed       # demo clinic: 3 staff, 50 patients, 20 prescriptions
+```
+
+Demo login after seeding: `owner@demo.clinicpad.app` / `ClinicPad!2026` (also `doctor@...` and `reception@...`). The seed is idempotent and refuses to run when `NODE_ENV=production`.
+
+Other commands:
+
+```powershell
+npm run db:generate   # generate a migration from schema changes
 npm run db:studio     # inspect data
 ```
+
+Three connection strings are used on purpose: `DATABASE_URL` (RLS-bound `clinicpad_app` role, used by feature code via `withTenant()`), `DIRECT_URL` (migrations), and `ADMIN_DATABASE_URL` (sign-up, seed, and auth lookups only).
 
 Connection string for local Postgres:
 
@@ -160,13 +172,17 @@ Open http://localhost:3000.
 Other commands:
 
 ```powershell
-npm run build          # web build (server mode after Phase 0)
-npm run start          # run the production build
+npm run build:web      # server build (this is what staging/production run)
+npm run build:desktop  # static export for Tauri (legacy offline shell only, ADR-0021)
+npm run start          # run the production web build
 npm run lint           # ESLint
-npm run typecheck      # tsc --noEmit (added in Phase 0)
-npm run test           # Vitest (added in Phase 0)
-npm run test:e2e       # Playwright (added in Phase 0)
+npm run typecheck      # tsc --noEmit
+npm run test           # Vitest (unit + integration; integration needs Postgres running)
+npm run test:e2e       # Playwright (starts the dev server; needs Postgres and one-time `npx playwright install chromium`)
+node scripts/verify-gate-0.mjs   # everything above, in order
 ```
+
+> **Windows gotcha:** run the tests from a path with an uppercase drive letter (`E:\projects\clinicpad`). If your terminal opens in `e:\...`, vitest loads two module instances and every test fails with `Cannot read properties of undefined (reading 'config')`.
 
 Desktop:
 
