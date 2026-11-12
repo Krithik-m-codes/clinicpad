@@ -21,11 +21,11 @@ describe("nameKey", () => {
   });
 
   it("does not split a word on a zero-width non-joiner", () => {
-    expect(nameKey("क्‌ष")).toBe(nameKey("क्ष"));
+    expect(nameKey("क्\u200cष")).toBe(nameKey("क्ष"));
   });
 
   it("does not split a word on a soft hyphen", () => {
-    expect(nameKey("Ra­vi")).toBe("ravi");
+    expect(nameKey("Ra\u00advi")).toBe("ravi");
   });
 });
 
@@ -37,7 +37,7 @@ describe("sameName", () => {
     expect(sameName("Ravi Sharma", "Ravi Sharma Jr")).toBe(false);
   });
   it("matches Devanagari names that differ only by a zero-width non-joiner", () => {
-    expect(sameName("क्‌षमा", "क्षमा")).toBe(true);
+    expect(sameName("क्\u200cषमा", "क्षमा")).toBe(true);
   });
   it("never matches two names whose keys are empty", () => {
     expect(sameName("--", "..")).toBe(false);
