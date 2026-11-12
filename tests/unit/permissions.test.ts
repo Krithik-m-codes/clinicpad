@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { can } from "@/lib/domain/permissions";
+import { type Action, can } from "@/lib/domain/permissions";
 
 describe("can", () => {
   it("lets reception register patients but not write prescriptions", () => {
@@ -16,9 +16,16 @@ describe("can", () => {
     }
   });
 
-  it("keeps nurses read-only on prescriptions", () => {
+  it("keeps nurses read-only on patients and prescriptions", () => {
     expect(can("nurse", "rx.read")).toBe(true);
+    expect(can("nurse", "patient.read")).toBe(true);
+    expect(can("nurse", "patient.write")).toBe(false);
     expect(can("nurse", "rx.draft")).toBe(false);
+  });
+
+  it("lets reception and nurses view prescriptions", () => {
+    expect(can("reception", "rx.read")).toBe(true);
+    expect(can("nurse", "rx.read")).toBe(true);
   });
 
   it("denies accountants all clinical access", () => {
@@ -36,5 +43,34 @@ describe("can", () => {
     expect(can("", "patient.read")).toBe(false);
     expect(can(null, "patient.read")).toBe(false);
     expect(can(undefined, "patient.read")).toBe(false);
+  });
+
+  it("denies unknown and prototype-chain action keys without throwing", () => {
+    for (const action of ["constructor", "__proto__", "hasOwnProperty", "nope"]) {
+      expect(() => can("owner", action as Action)).not.toThrow();
+      expect(can("owner", action as Action)).toBe(false);
+    }
+  });
+});
+
+describe("role x action matrix", () => {
+  const roles = ["owner", "doctor", "reception", "nurse", "accountant", "pharmacist"] as const;
+  const granted: Record<Action, readonly string[]> = {
+    "patient.read": ["owner", "doctor", "reception", "nurse"],
+    "patient.write": ["owner", "doctor", "reception"],
+    "patient.archive": ["owner"],
+    "rx.read": ["owner", "doctor", "reception", "nurse", "pharmacist"],
+    "rx.draft": ["owner", "doctor"],
+    "rx.finalize": ["owner", "doctor"],
+    "rx.amend": ["owner", "doctor"],
+  };
+  const actions = Object.keys(granted) as Action[];
+
+  const cells = actions.flatMap((action) =>
+    roles.map((role) => [role, action, granted[action].includes(role)] as const),
+  );
+
+  it.each(cells)("%s on %s is %s", (role, action, expected) => {
+    expect(can(role, action)).toBe(expected);
   });
 });

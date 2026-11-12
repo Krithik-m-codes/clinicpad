@@ -1,14 +1,28 @@
 /**
  * Normalizes a phone number for matching. Indian numbers (default) become 10 digits:
- * "+91 98765 43210", "919876543210" and "09876543210" all map to "9876543210".
- * Other "+" country codes keep their full digits. Returns null when it is not plausible.
+ * "+91 98765 43210", "919876543210", "09876543210" and "0091 98765 43210" all map to
+ * "9876543210". A "+" or "00" dialling prefix marks an international number; other
+ * country codes keep their full digits. Returns null when it is not plausible.
  */
 export function normalizePhone(raw: string): string | null {
   const trimmed = raw.trim();
-  const digits = trimmed.replace(/\D/g, "");
+  let digits = trimmed.replace(/\D/g, "");
   if (digits.length === 0) return null;
 
-  if (trimmed.startsWith("+") && !digits.startsWith("91")) {
+  // "+" or the "00" dialling prefix marks an international number.
+  let international = trimmed.startsWith("+");
+  if (!international && digits.startsWith("00")) {
+    international = true;
+    digits = digits.slice(2);
+  }
+
+  if (international) {
+    if (digits.startsWith("91")) {
+      // Indian number: country code, an optional trunk "0", then exactly 10 digits.
+      const rest = digits.slice(2);
+      const national = rest.length === 11 && rest.startsWith("0") ? rest.slice(1) : rest;
+      return national.length === 10 ? national : null;
+    }
     return digits.length >= 8 && digits.length <= 15 ? digits : null;
   }
 

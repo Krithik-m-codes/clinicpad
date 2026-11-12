@@ -19,6 +19,14 @@ describe("nameKey", () => {
   it("does not turn a name that is only an honorific into an empty key", () => {
     expect(nameKey("Baby")).toBe("baby");
   });
+
+  it("does not split a word on a zero-width non-joiner", () => {
+    expect(nameKey("क्‌ष")).toBe(nameKey("क्ष"));
+  });
+
+  it("does not split a word on a soft hyphen", () => {
+    expect(nameKey("Ra­vi")).toBe("ravi");
+  });
 });
 
 describe("sameName", () => {
@@ -27,5 +35,12 @@ describe("sameName", () => {
   });
   it("does not match different people", () => {
     expect(sameName("Ravi Sharma", "Ravi Sharma Jr")).toBe(false);
+  });
+  it("matches Devanagari names that differ only by a zero-width non-joiner", () => {
+    expect(sameName("क्‌षमा", "क्षमा")).toBe(true);
+  });
+  it("never matches two names whose keys are empty", () => {
+    expect(sameName("--", "..")).toBe(false);
+    expect(sameName("", "")).toBe(false);
   });
 });
