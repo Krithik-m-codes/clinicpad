@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Poppins } from "next/font/google";
 import "./globals.css";
-import { PrescriptionProvider } from "@/contexts/PrescriptionContext";
-import Header from "@/components/layout/Header";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -37,10 +35,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${poppins.variable} antialiased font-poppins`}
       >
-        <PrescriptionProvider>
-          <Header />
-          <main className="pt-10 md:pt-14 lg:pt-18 bg-[var(--secondary-color)] ">{children}</main>
-        </PrescriptionProvider>
+        {children}
       </body>
     </html>
   );

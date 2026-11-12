@@ -19,7 +19,7 @@ export default function Header() {
     }, []);
 
     const navItems = [
-        { name: 'New Prescription', href: '/?status=reset' },
+        { name: 'New Prescription', href: '/prescribe?status=reset' },
         { name: 'Patient Info', href: "/patient-infos" },
         { name: 'Manage Data', href: "/manage" },
     ];
@@ -45,7 +45,7 @@ export default function Header() {
                         whileHover={{ scale: 1.02 }}
                         transition={{ type: 'spring', stiffness: 400, damping: 25 }}
                     >
-                        <Link prefetch={false} href="/" className="flex items-center space-x-3">
+                        <Link prefetch={false} href="/prescribe" className="flex items-center space-x-3">
                             <Image
                                 src="/icon.png"
                                 alt="Logo"

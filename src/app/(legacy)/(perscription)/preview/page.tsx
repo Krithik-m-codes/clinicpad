@@ -334,7 +334,7 @@ const PreviewPage = () => {
                         // Immediate redirect and reload after Tauri print (since it returns when done)
                         resetForm();
                         setIsGeneratingPDF(false);
-                        window.location.href = '/';
+                        window.location.href = '/prescribe';
 
                     } catch (tauriError) {
                         console.warn('Tauri print failed, falling back to browser print:', tauriError);
@@ -624,7 +624,7 @@ const PreviewPage = () => {
             }
 
             // Navigate to home and reload
-            window.location.href = '/';
+            window.location.href = '/prescribe';
         };
 
         // Method 1: Listen for afterprint event (most reliable)
@@ -680,7 +680,7 @@ const PreviewPage = () => {
     };
 
     const handleBack = () => {
-        router.push('/');
+        router.push('/prescribe');
     };
 
     // Enhanced pagination logic to handle content overflow
