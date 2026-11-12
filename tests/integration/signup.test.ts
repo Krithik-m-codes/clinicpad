@@ -111,6 +111,25 @@ describe("createClinicAccount", () => {
     expect(user.email).toBe(data.email.toLowerCase());
   });
 
+  it("handles two concurrent sign-ups for the same email without throwing", async () => {
+    const data = input("race");
+    const [first, second] = await Promise.all([
+      createClinicAccount(data),
+      createClinicAccount({ ...input("race2"), email: data.email }),
+    ]);
+    for (const r of [first, second]) {
+      if (r.ok) {
+        createdTenants.push(r.tenantId);
+        createdUsers.push(r.userId);
+      }
+    }
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
+    const loser = first.ok ? second : first;
+    expect(loser).toEqual({ ok: false, field: "email", error: expect.any(String) });
+    const rows = await adminDb.select().from(users).where(eq(users.email, data.email));
+    expect(rows).toHaveLength(1);
+  });
+
   it("rejects a short password before touching the database", async () => {
     const data = { ...input("e"), password: "short" };
     const result = await createClinicAccount(data);

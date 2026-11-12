@@ -11,6 +11,7 @@ import {
 } from "@/server/db/schema";
 import { hashPassword } from "@/server/auth/password";
 import { newId } from "@/lib/domain/ids";
+import { pgErrorInfo } from "@/server/db/errors";
 import { onboardingSchema, type OnboardingInput } from "@/server/validation/onboarding";
 
 export type CreateClinicResult =
@@ -23,12 +24,6 @@ function slugify(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "")
     .slice(0, 40);
-}
-
-function uniqueViolation(error: unknown): { constraint_name?: string; constraint?: string } | null {
-  if (typeof error !== "object" || error === null) return null;
-  const candidate = error as { code?: string; constraint_name?: string; constraint?: string };
-  return candidate.code === "23505" ? candidate : null;
 }
 
 /**
@@ -119,10 +114,9 @@ export async function createClinicAccount(raw: OnboardingInput): Promise<CreateC
     return { ok: true, ...result };
   } catch (error) {
     // Lost a race with a concurrent sign-up for the same email/phone.
-    const violation = uniqueViolation(error);
-    if (violation) {
-      const name = violation.constraint_name ?? violation.constraint ?? "";
-      const field = name.includes("phone") ? "phone" : "email";
+    const { code, constraint } = pgErrorInfo(error);
+    if (code === "23505") {
+      const field = constraint?.includes("phone") ? "phone" : "email";
       return { ok: false, field, error: `This ${field} is already registered. Try signing in.` };
     }
     throw error;
