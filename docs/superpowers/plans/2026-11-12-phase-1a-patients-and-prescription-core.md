@@ -1655,7 +1655,7 @@ git commit -m "feat: add patient service with search, duplicate warning, and aud
 
 **Interfaces:**
 - Consumes: Task 4 services, `requireSession()`, `can`, `ageLabel`.
-- Produces: routes `/patients`, `/patients/new`, `/patients/[id]`; `type PatientFormState`, `createPatientAction`, `updatePatientAction(id, prev, formData)`; e2e helpers `registerClinic(page)` and `cleanupClinic(email)`.
+- Produces: routes `/patients`, `/patients/new`, `/patients/[id]`; `type PatientFormState`, `createPatientAction`, `updatePatientAction(id, prev, formData)`; e2e helpers `registerClinic(page, label): Promise<Clinic>` (where `Clinic = { email; password; clinicName }`) and `cleanupClinic(email)`.
 
 - [ ] **Step 1: Write the failing e2e helper and spec**
 
