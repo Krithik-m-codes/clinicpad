@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
+import { db } from "@/server/db/client";
 import { withTenant } from "@/server/db/tenant";
 import { pgErrorInfo } from "@/server/db/errors";
+import { newId } from "@/lib/domain/ids";
 import {
   patients,
   prescriptionItems,
@@ -24,20 +26,20 @@ async function expectCode(promise: Promise<unknown>, code: string) {
   expect(pgErrorInfo(error).code).toBe(code);
 }
 
-/** A visit + draft prescription with one item. */
-async function draftRx(rxNo: number | null = 1) {
-  const [patient] = await adminDb.insert(patients).values({ tenantId, name: "Immutable P" }).returning();
+/** A visit + draft prescription with one item, in the main test tenant unless another one is given. */
+async function draftRx(rxNo: number | null = 1, inTenant: string = tenantId) {
+  const [patient] = await adminDb.insert(patients).values({ tenantId: inTenant, name: "Immutable P" }).returning();
   const [visit] = await adminDb
     .insert(visits)
-    .values({ tenantId, patientId: patient.id, status: "draft" })
+    .values({ tenantId: inTenant, patientId: patient.id, status: "draft" })
     .returning();
   const [rx] = await adminDb
     .insert(prescriptions)
-    .values({ tenantId, visitId: visit.id, rxNo, status: "draft" })
+    .values({ tenantId: inTenant, visitId: visit.id, rxNo, status: "draft" })
     .returning();
   const [item] = await adminDb
     .insert(prescriptionItems)
-    .values({ tenantId, prescriptionId: rx.id, drugName: "Paracetamol" })
+    .values({ tenantId: inTenant, prescriptionId: rx.id, drugName: "Paracetamol" })
     .returning();
   return { patient, visit, rx, item };
 }
@@ -280,5 +282,113 @@ describe("tenant offboarding", () => {
       // Keep the original failure visible if the delete above was what failed.
       await adminDb.delete(tenants).where(eq(tenants.id, off.id)).catch(() => undefined);
     }
+  });
+});
+
+describe("items fail closed on an invisible or foreign parent", () => {
+  /** Tenant B's prescription with one item (finalized or not), and tenant A's draft prescription with one item. */
+  async function crossTenantFixture(foreignFinalized: boolean) {
+    const foreign = await draftRx(null, otherTenantId);
+    if (foreignFinalized) await finalize(foreign.rx.id, foreign.visit.id);
+    const own = await draftRx(null);
+    return { foreign, own };
+  }
+  type CrossTenantFixture = Awaited<ReturnType<typeof crossTenantFixture>>;
+
+  async function expectUntouched({ foreign, own }: CrossTenantFixture) {
+    const foreignItems = await adminDb
+      .select()
+      .from(prescriptionItems)
+      .where(eq(prescriptionItems.prescriptionId, foreign.rx.id));
+    expect(foreignItems.map((i) => i.id)).toEqual([foreign.item.id]);
+    const [ownItem] = await adminDb.select().from(prescriptionItems).where(eq(prescriptionItems.id, own.item.id));
+    expect(ownItem.prescriptionId).toBe(own.rx.id);
+  }
+
+  for (const foreignFinalized of [true, false]) {
+    const kind = foreignFinalized ? "finalized" : "draft";
+
+    it(`the app role cannot attach an item to another tenant's ${kind} prescription (23503)`, async () => {
+      const fx = await crossTenantFixture(foreignFinalized);
+      // The foreign prescription is invisible under RLS: that must read as "not found", never as "fine".
+      await expectCode(
+        withTenant(tenantId, (tx) =>
+          tx.insert(prescriptionItems).values({ tenantId, prescriptionId: fx.foreign.rx.id, drugName: "Intruder" }),
+        ),
+        "23503",
+      );
+      await expectCode(
+        withTenant(tenantId, (tx) =>
+          tx.update(prescriptionItems).set({ prescriptionId: fx.foreign.rx.id }).where(eq(prescriptionItems.id, fx.own.item.id)),
+        ),
+        "23503",
+      );
+      await expectUntouched(fx);
+    });
+
+    it(`the admin connection cannot attach an item to another tenant's ${kind} prescription (23503)`, async () => {
+      const fx = await crossTenantFixture(foreignFinalized);
+      // Visible here, but its tenant_id differs from the item's.
+      await expectCode(
+        adminDb.insert(prescriptionItems).values({ tenantId, prescriptionId: fx.foreign.rx.id, drugName: "Intruder" }),
+        "23503",
+      );
+      await expectCode(
+        adminDb.update(prescriptionItems).set({ prescriptionId: fx.foreign.rx.id }).where(eq(prescriptionItems.id, fx.own.item.id)),
+        "23503",
+      );
+      await expectUntouched(fx);
+    });
+  }
+
+  it("still lets the app role add and move items among its own tenant's draft prescriptions", async () => {
+    const from = await draftRx(null);
+    const to = await draftRx(null);
+    await withTenant(tenantId, (tx) =>
+      tx.insert(prescriptionItems).values({ tenantId, prescriptionId: from.rx.id, drugName: "Added by the app" }),
+    );
+    await withTenant(tenantId, (tx) =>
+      tx.update(prescriptionItems).set({ prescriptionId: to.rx.id }).where(eq(prescriptionItems.id, from.item.id)),
+    );
+    expect(await adminDb.select().from(prescriptionItems).where(eq(prescriptionItems.prescriptionId, from.rx.id))).toHaveLength(1);
+    expect(await adminDb.select().from(prescriptionItems).where(eq(prescriptionItems.prescriptionId, to.rx.id))).toHaveLength(2);
+  });
+});
+
+describe("the app role cannot delete tenants", () => {
+  it("fails with 42501 and leaves the tenant's finalized records alone", async () => {
+    const [own] = await adminDb
+      .insert(tenants)
+      .values({ name: "No delete", slug: `nodelete-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` })
+      .returning();
+    try {
+      const { rx, visit } = await draftRx(1, own.id);
+      await finalize(rx.id, visit.id);
+
+      await expectCode(withTenant(own.id, (tx) => tx.delete(tenants).where(eq(tenants.id, own.id))), "42501");
+
+      expect(await adminDb.select().from(tenants).where(eq(tenants.id, own.id))).toHaveLength(1);
+      const [kept] = await adminDb.select().from(prescriptions).where(eq(prescriptions.id, rx.id));
+      expect(kept.status).toBe("finalized");
+    } finally {
+      await adminDb.delete(tenants).where(eq(tenants.id, own.id)).catch(() => undefined);
+    }
+  });
+
+  it("still lets the app role update its own tenant row", async () => {
+    await withTenant(tenantId, (tx) => tx.update(tenants).set({ name: "Immut renamed" }).where(eq(tenants.id, tenantId)));
+    const [row] = await adminDb.select().from(tenants).where(eq(tenants.id, tenantId));
+    expect(row.name).toBe("Immut renamed");
+  });
+});
+
+describe("tenant_is_erased as the app role", () => {
+  // The helper reads tenants as its owner. If that owner were subject to RLS it would see no rows, so with no
+  // tenant context it would call every tenant erased (or raise): this canary then fails loudly.
+  it("is false for an existing tenant and true for an unknown one, with no tenant context set", async () => {
+    const [existing] = await db.execute<{ erased: boolean }>(sql`select public.tenant_is_erased(${tenantId}::uuid) as erased`);
+    expect(existing.erased).toBe(false);
+    const [unknown] = await db.execute<{ erased: boolean }>(sql`select public.tenant_is_erased(${newId()}::uuid) as erased`);
+    expect(unknown.erased).toBe(true);
   });
 });

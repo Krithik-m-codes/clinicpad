@@ -43,6 +43,13 @@
       "when": 1794479829553,
       "tag": "0005_immutability_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794480802505,
+      "tag": "0006_tenant_boundary_hardening",
+      "breakpoints": true
     }
   ]
 }
