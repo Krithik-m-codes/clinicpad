@@ -79,6 +79,21 @@ test.describe("clinic sign-up flow", () => {
     await page.getByRole("button", { name: /^sign in$/i }).click();
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 30_000 });
     await expect(page.getByRole("heading", { name: clinicName })).toBeVisible();
+
+    // Role changes apply to the live session: demote to reception in the database.
+    expect(adminUrl).toBeTruthy();
+    const sql = postgres(adminUrl!, { max: 1 });
+    try {
+      await sql`update memberships set role = 'reception'
+        where user_id = (select id from users where email = ${email})`;
+    } finally {
+      await sql.end();
+    }
+
+    await page.goto("/settings");
+    await expect(page).toHaveURL(/\/dashboard/);
+    await expect(page.getByRole("link", { name: "Settings" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Patients" })).toBeVisible();
   });
 
   test("wrong password shows an error", async ({ page }) => {

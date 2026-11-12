@@ -63,33 +63,36 @@ describe("clinical schema", () => {
       .values({ name: "Rx Unique", slug: `rx-${suffix}` })
       .returning();
 
-    const [patient] = await adminDb
-      .insert(patients)
-      .values({ tenantId: tenant.id, name: "Test Patient" })
-      .returning();
-    const [visit] = await adminDb
-      .insert(visits)
-      .values({ tenantId: tenant.id, patientId: patient.id, status: "draft" })
-      .returning();
+    try {
+      const [patient] = await adminDb
+        .insert(patients)
+        .values({ tenantId: tenant.id, name: "Test Patient" })
+        .returning();
+      const [visit] = await adminDb
+        .insert(visits)
+        .values({ tenantId: tenant.id, patientId: patient.id, status: "draft" })
+        .returning();
 
-    await adminDb.insert(prescriptions).values({
-      tenantId: tenant.id,
-      visitId: visit.id,
-      rxNo: 41,
-      version: 1,
-      status: "draft",
-    });
-
-    await expect(
-      adminDb.insert(prescriptions).values({
+      await adminDb.insert(prescriptions).values({
         tenantId: tenant.id,
         visitId: visit.id,
         rxNo: 41,
         version: 1,
         status: "draft",
-      }),
-    ).rejects.toThrow();
+      });
 
-    await adminDb.delete(tenants).where(eq(tenants.id, tenant.id));
+      await expect(
+        adminDb.insert(prescriptions).values({
+          tenantId: tenant.id,
+          visitId: visit.id,
+          rxNo: 41,
+          version: 1,
+          status: "draft",
+        }),
+      ).rejects.toThrow();
+
+    } finally {
+      await adminDb.delete(tenants).where(eq(tenants.id, tenant.id));
+    }
   });
 });
