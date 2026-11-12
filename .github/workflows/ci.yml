@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: clinicpad
+          POSTGRES_PASSWORD: clinicpad
+          POSTGRES_DB: clinicpad
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clinicpad -d clinicpad"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://clinicpad_app:clinicpad_app@localhost:5432/clinicpad
+      DIRECT_URL: postgresql://clinicpad:clinicpad@localhost:5432/clinicpad
+      ADMIN_DATABASE_URL: postgresql://clinicpad:clinicpad@localhost:5432/clinicpad
+      AUTH_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/verify-build-config.mjs
+      - run: npm run db:migrate
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build:web
+      - run: npm run build:desktop
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
