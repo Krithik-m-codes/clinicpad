@@ -168,7 +168,7 @@ export default function PatientInfosPage() {
         setLoadedTemplateId(template.id);
 
         // Navigate to main page
-        router.push('/');
+        router.push('/prescribe');
     };
 
     // const clearFilters = () => {

@@ -1,0 +1,179 @@
+import {
+  date,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  unique,
+  uuid,
+} from "drizzle-orm/pg-core";
+import { uuidv7 } from "uuidv7";
+import { tenants } from "./tenancy";
+
+const pk = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
+const createdAt = () =>
+  timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
+const updatedAt = () =>
+  timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date());
+
+export const patients = pgTable(
+  "patients",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    phone: text("phone"),
+    phoneNormalized: text("phone_normalized"),
+    dob: date("dob"),
+    gender: text("gender"),
+    address: text("address"),
+    abha: text("abha"),
+    allergies: text("allergies").array(),
+    conditions: text("conditions").array(),
+    notes: text("notes"),
+    createdBy: uuid("created_by"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("patients_tenant_name_idx").on(t.tenantId, t.name),
+    index("patients_tenant_phone_idx").on(t.tenantId, t.phoneNormalized),
+  ],
+);
+
+export const visits = pgTable(
+  "visits",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    patientId: uuid("patient_id")
+      .notNull()
+      .references(() => patients.id, { onDelete: "restrict" }),
+    doctorId: uuid("doctor_id"),
+    branchId: uuid("branch_id"),
+    status: text("status").notNull().default("draft"),
+    visitType: text("visit_type").notNull().default("new"),
+    chiefComplaint: text("chief_complaint"),
+    vitals: jsonb("vitals").$type<Record<string, string | number>>(),
+    diagnosis: text("diagnosis").array(),
+    advice: text("advice"),
+    followUpDate: date("follow_up_date"),
+    finalizedAt: timestamp("finalized_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index("visits_tenant_patient_idx").on(t.tenantId, t.patientId)],
+);
+
+export const prescriptions = pgTable(
+  "prescriptions",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    visitId: uuid("visit_id")
+      .notNull()
+      .references(() => visits.id, { onDelete: "cascade" }),
+    rxNo: integer("rx_no").notNull(),
+    version: integer("version").notNull().default(1),
+    status: text("status").notNull().default("draft"),
+    templateVersionId: uuid("template_version_id"),
+    pdfUrl: text("pdf_url"),
+    finalizedAt: timestamp("finalized_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("prescriptions_tenant_rx_version_unique").on(t.tenantId, t.rxNo, t.version),
+    index("prescriptions_visit_idx").on(t.visitId),
+  ],
+);
+
+export const prescriptionItems = pgTable(
+  "prescription_items",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    prescriptionId: uuid("prescription_id")
+      .notNull()
+      .references(() => prescriptions.id, { onDelete: "cascade" }),
+    sortOrder: integer("sort_order").notNull().default(0),
+    drugName: text("drug_name").notNull(),
+    strength: text("strength"),
+    form: text("form"),
+    route: text("route"),
+    dose: text("dose"),
+    timing: text("timing"),
+    foodRelation: text("food_relation"),
+    durationDays: integer("duration_days"),
+    remarks: text("remarks"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("rx_items_prescription_idx").on(t.prescriptionId)],
+);
+
+export const templates = pgTable(
+  "templates",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    kind: text("kind").notNull().default("html"),
+    status: text("status").notNull().default("draft"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("templates_tenant_idx").on(t.tenantId)],
+);
+
+export const templateVersions = pgTable(
+  "template_versions",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    templateId: uuid("template_id")
+      .notNull()
+      .references(() => templates.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    fileKey: text("file_key"),
+    mapping: jsonb("mapping").$type<Record<string, string>>(),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [unique("template_versions_template_version_unique").on(t.templateId, t.version)],
+);
+
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    actorUserId: uuid("actor_user_id"),
+    action: text("action").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: uuid("entity_id"),
+    before: jsonb("before"),
+    after: jsonb("after"),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("audit_tenant_created_idx").on(t.tenantId, t.createdAt)],
+);

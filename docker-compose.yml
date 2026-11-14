@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: clinicpad-postgres
+    environment:
+      POSTGRES_USER: clinicpad
+      POSTGRES_PASSWORD: clinicpad
+      POSTGRES_DB: clinicpad
+    ports:
+      - "5432:5432"
+    volumes:
+      - clinicpad_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clinicpad -d clinicpad"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  clinicpad_pg:

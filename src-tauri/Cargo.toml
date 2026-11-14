@@ -2,7 +2,7 @@
 name = "doctor-prescription-app"
 version = "0.1.0"
 description = "A desktop application for managing doctor prescriptions."
-authors = ["Krithik M <krithik.m@shubpy.com>"]
+authors = ["Krithik M <krithikm923@gmail.com>"]
 license = ""
 repository = ""
 edition = "2021"

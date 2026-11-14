@@ -87,7 +87,8 @@ Prerequisites: Node.js 22+, npm 11+, Git. Rust + Tauri prerequisites only for th
 ```bash
 npm install
 npm run dev          # http://localhost:3000
-npm run build        # static export (Tauri-compatible)
+npm run build:web    # server build
+npm run build:desktop # static export for the Tauri shell (legacy offline app)
 npm run tauri:dev    # desktop development
 npm run tauri:build  # desktop installer
 ```
