@@ -30,6 +30,7 @@ export function MedicineCombobox({ value, onTextChange, onPick, onAddToClinic }:
     ...medicines.map((hit) => ({ kind: "hit" as const, hit })),
     ...(onAddToClinic && typed.length >= 2 && !exact && !loading ? [{ kind: "add" as const, name: typed }] : []),
   ];
+  const activeIndex = active < options.length ? active : -1;
 
   function choose(option: Option) {
     setOpen(false);
@@ -39,33 +40,38 @@ export function MedicineCombobox({ value, onTextChange, onPick, onAddToClinic }:
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    // Enter/arrows during IME composition belong to the IME. 229 is what Safari and older browsers report.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setOpen(true);
-      setActive((i) => Math.min(i + 1, options.length - 1));
+      setActive(Math.min(activeIndex + 1, options.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setActive((i) => Math.max(i - 1, -1));
-    } else if (e.key === "Enter" && open && active >= 0 && options[active]) {
+      setActive(Math.max(activeIndex - 1, -1));
+    } else if (e.key === "Enter") {
+      // Never submit the surrounding form from here; free text stays exactly as typed.
       e.preventDefault();
-      choose(options[active]);
+      if (open && activeIndex >= 0 && options[activeIndex]) choose(options[activeIndex]);
     } else if (e.key === "Escape") {
       setOpen(false);
       setActive(-1);
     }
   }
 
-  const showList = open && (options.length > 0 || loading || failed);
+  const showPopup = open && (options.length > 0 || loading || failed);
+  // The listbox exists only while it has options, so the references below never dangle.
+  const showList = open && options.length > 0;
 
   return (
     <div className="relative">
       <Input
         role="combobox"
         aria-label="Medicine name"
-        aria-expanded={showList}
-        aria-controls={listId}
+        aria-expanded={showPopup}
+        aria-controls={showList ? listId : undefined}
         aria-autocomplete="list"
-        aria-activedescendant={active >= 0 ? `${listId}-${active}` : undefined}
+        aria-activedescendant={showList && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined}
         autoComplete="off"
         placeholder="Type a medicine name"
         maxLength={200}
@@ -79,37 +85,47 @@ export function MedicineCombobox({ value, onTextChange, onPick, onAddToClinic }:
         onBlur={() => setOpen(false)}
         onKeyDown={onKeyDown}
       />
-      {showList ? (
-        <div className="absolute z-50 mt-1 w-full rounded-md border bg-white text-sm shadow-lg">
+      {showPopup ? (
+        // Pressing anything in the list (an option, the scrollbar) must not blur the input, or the list would
+        // close before the click lands.
+        <div
+          className="absolute z-50 mt-1 w-full min-w-0 rounded-md border bg-white text-sm shadow-lg"
+          onMouseDown={(e) => e.preventDefault()}
+        >
           {loading && options.length === 0 ? <p className="px-3 py-2 text-muted-foreground">Searching…</p> : null}
           {failed ? <p className="px-3 py-2 text-muted-foreground">Search is unavailable. Type the full name.</p> : null}
-          <ul id={listId} role="listbox" aria-label="Medicine suggestions" className="max-h-64 overflow-auto">
-            {options.map((option, index) => (
-              <li
-                key={option.kind === "hit" ? `${option.hit.source}-${option.hit.id}` : "add"}
-                id={`${listId}-${index}`}
-                role="option"
-                aria-selected={index === active}
-                className={`cursor-pointer px-3 py-2 ${index === active ? "bg-muted" : "hover:bg-muted"}`}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => choose(option)}
-              >
-                {option.kind === "hit" ? (
-                  <>
-                    <span className="font-medium">{option.hit.name}</span>
-                    {SOURCE_LABEL[option.hit.source] ? (
-                      <span className="ml-2 text-xs text-muted-foreground">{SOURCE_LABEL[option.hit.source]}</span>
-                    ) : null}
-                    {option.hit.genericName ? (
-                      <span className="block text-xs text-muted-foreground">{option.hit.genericName}</span>
-                    ) : null}
-                  </>
-                ) : (
-                  <span>Add “{option.name}” to the clinic list</span>
-                )}
-              </li>
-            ))}
-          </ul>
+          {showList ? (
+            <ul id={listId} role="listbox" aria-label="Medicine suggestions" className="max-h-64 overflow-auto">
+              {options.map((option, index) => (
+                <li
+                  key={option.kind === "hit" ? `${option.hit.source}-${option.hit.id}` : "add"}
+                  id={`${listId}-${index}`}
+                  role="option"
+                  aria-selected={index === activeIndex}
+                  className={`cursor-pointer break-words px-3 py-2 ${index === activeIndex ? "bg-muted" : "hover:bg-muted"}`}
+                  onClick={() => choose(option)}
+                >
+                  {option.kind === "hit" ? (
+                    <>
+                      <span dir="auto" className="break-words font-medium">
+                        {option.hit.name}
+                      </span>
+                      {SOURCE_LABEL[option.hit.source] ? (
+                        <span className="ml-2 text-xs text-muted-foreground">{SOURCE_LABEL[option.hit.source]}</span>
+                      ) : null}
+                      {option.hit.genericName ? (
+                        <span dir="auto" className="block break-words text-xs text-muted-foreground">
+                          {option.hit.genericName}
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span dir="auto">Add “{option.name}” to the clinic list</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
       ) : null}
     </div>

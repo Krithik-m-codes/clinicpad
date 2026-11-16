@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -32,9 +32,23 @@ type Props = {
 
 export function MedicineRow({ index, medicine, canAddToClinic, onPatch, onPick, onRemove, onSaveFavourite, onAddToClinic }: Props) {
   const [note, setNote] = useState("");
+  const [pending, setPending] = useState(false);
+  // The ref closes the gap before `pending` re-renders, so a fast double click cannot start two tasks.
+  const busy = useRef(false);
   const report = async (task: () => Promise<string>) => {
+    if (busy.current) return;
+    busy.current = true;
+    setPending(true);
     setNote("Working…");
-    setNote(await task());
+    try {
+      setNote(await task());
+    } catch {
+      // Never surface the underlying error text; it may carry server detail.
+      setNote("Could not save. Try again.");
+    } finally {
+      busy.current = false;
+      setPending(false);
+    }
   };
 
   return (
@@ -163,7 +177,7 @@ export function MedicineRow({ index, medicine, canAddToClinic, onPatch, onPick, 
           type="button"
           size="sm"
           variant="outline"
-          disabled={medicine.drugName.trim() === ""}
+          disabled={pending || medicine.drugName.trim() === ""}
           onClick={() => void report(onSaveFavourite)}
         >
           Save as favourite
@@ -171,11 +185,10 @@ export function MedicineRow({ index, medicine, canAddToClinic, onPatch, onPick, 
         <Button type="button" size="sm" variant="ghost" onClick={onRemove}>
           Remove
         </Button>
-        {note ? (
-          <span role="status" className="text-xs text-muted-foreground">
-            {note}
-          </span>
-        ) : null}
+        {/* Always mounted so screen readers announce the text when it changes. */}
+        <span role="status" className="text-xs text-muted-foreground">
+          {note}
+        </span>
       </div>
     </div>
   );
