@@ -48,6 +48,17 @@ const LIST_COLUMNS = {
 
 const notFound = () => fail("not_found", "Patient not found.");
 
+const MAX_QUERY_LENGTH = 100;
+const MAX_LIMIT = 100;
+const DEFAULT_LIMIT = 25;
+const MAX_OFFSET = 10_000;
+
+/** Whole number clamped into [min, max]; NaN falls back to `fallback`; +/-Infinity clamp to the bounds. */
+function clampInt(value: number | undefined, min: number, max: number, fallback: number): number {
+  if (value === undefined || Number.isNaN(value)) return fallback;
+  return Math.min(Math.max(Math.trunc(value), min), max);
+}
+
 function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
@@ -82,6 +93,9 @@ export async function createPatient(
         .select({ id: patients.id, patientNo: patients.patientNo, name: patients.name, phone: patients.phone })
         .from(patients)
         .where(and(eq(patients.phoneNormalized, columns.phoneNormalized), isNull(patients.deletedAt)))
+        // Every match shares the exact normalized phone; newest first, id as the tiebreaker, so the
+        // five shown are always the same five.
+        .orderBy(desc(patients.createdAt), desc(patients.id))
         .limit(5);
       if (matches.length > 0) {
         return {
@@ -108,16 +122,25 @@ export async function createPatient(
   });
 }
 
+/**
+ * Search active patients in the caller's clinic by name, phone digits or patient number.
+ *
+ * - `q` is trimmed and truncated to 100 characters. A `q` containing a NUL byte matches nothing
+ *   (empty list), because Postgres cannot compare against it.
+ * - `limit` is clamped to 1..100 (default 25); `offset` to 0..10000. Non-finite values never throw.
+ * - Ordering is total, so offset pages never skip or repeat rows: a query sorts by name then id;
+ *   an empty query lists newest first (created_at desc, id desc).
+ */
 export async function searchPatients(
   ctx: ServiceContext,
   opts: { q?: string; limit?: number; offset?: number } = {},
 ): Promise<Result<PatientListItem[]>> {
   if (!can(ctx.role, "patient.read")) return fail("forbidden", "You cannot view patients.");
 
-  const term = (opts.q ?? "").trim();
-  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 25) || 25, 1), 100);
-  const offset = Math.max(Math.trunc(opts.offset ?? 0) || 0, 0);
-
+  const term = (opts.q ?? "").trim().slice(0, MAX_QUERY_LENGTH);
+  if (term.includes("\u0000")) return ok([]);
+  const limit = clampInt(opts.limit, 1, MAX_LIMIT, DEFAULT_LIMIT);
+  const offset = clampInt(opts.offset, 0, MAX_OFFSET, 0);
   const conditions = [isNull(patients.deletedAt)];
   if (term) {
     const matchers = [ilike(patients.name, `%${escapeLike(term)}%`)];
@@ -138,7 +161,7 @@ export async function searchPatients(
       .select(LIST_COLUMNS)
       .from(patients)
       .where(and(...conditions))
-      .orderBy(term ? asc(patients.name) : desc(patients.createdAt))
+      .orderBy(...(term ? [asc(patients.name), asc(patients.id)] : [desc(patients.createdAt), desc(patients.id)]))
       .limit(limit)
       .offset(offset),
   );
@@ -158,6 +181,13 @@ export async function getPatient(ctx: ServiceContext, id: string): Promise<Resul
   return row ? ok(row) : notFound();
 }
 
+/**
+ * FULL REPLACE. `raw` is the whole patient form, not a patch: any optional field that is omitted
+ * or blank is cleared (phone, dob, address, notes become null; allergies becomes []; gender
+ * resets to "unknown"). Callers must submit the complete record, or they will erase data such as
+ * allergies. The audit event records field names only, so cleared values are not recoverable
+ * from it. Returns the names of the fields whose stored value actually changed.
+ */
 export async function updatePatient(
   ctx: ServiceContext,
   id: string,

@@ -4,8 +4,12 @@ import { normalizePhone } from "@/lib/domain/phone";
 const blankToUndefined = (value: unknown) =>
   typeof value === "string" && value.trim() === "" ? undefined : value;
 
+/** Postgres text cannot hold a NUL byte (it raises an encoding error), so refuse it at the boundary. */
+const hasNoNul = (value: string) => !value.includes("\u0000");
+const NUL_MESSAGE = "Text contains an invalid character";
+
 const optionalText = (max: number) =>
-  z.preprocess(blankToUndefined, z.string().trim().max(max).optional());
+  z.preprocess(blankToUndefined, z.string().trim().max(max).refine(hasNoNul, NUL_MESSAGE).optional());
 
 const EARLIEST_DOB = "1900-01-01";
 
@@ -27,17 +31,18 @@ const list = z.preprocess(
     if (typeof value === "string") return value.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
     return value;
   },
-  z.array(z.string().trim().min(1).max(80)).max(20),
+  z.array(z.string().trim().min(1).max(80).refine(hasNoNul, NUL_MESSAGE)).max(20),
 );
 
 export const patientInputSchema = z.object({
-  name: z.string().trim().min(2, "Enter the patient's name").max(120),
+  name: z.string().trim().min(2, "Enter the patient's name").max(120).refine(hasNoNul, NUL_MESSAGE),
   phone: z.preprocess(
     blankToUndefined,
     z
       .string()
       .trim()
       .max(32)
+      .refine(hasNoNul, NUL_MESSAGE)
       .refine((v) => normalizePhone(v) !== null, "Enter a valid phone number")
       .optional(),
   ),

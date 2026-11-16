@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { withTenant } from "@/server/db/tenant";
-import { auditEvents } from "@/server/db/schema";
+import { auditEvents, patients } from "@/server/db/schema";
 import {
   archivePatient,
   createPatient,
@@ -292,5 +292,261 @@ describe("getPatient / updatePatient / archivePatient", () => {
 
     const after = await getPatient(A.as("owner"), p.id);
     expect(after.ok && after.value.name).toBe("Nurse Visible");
+  });
+});
+
+describe("duplicate warnings", () => {
+  it("lists the five newest matches, deterministically", async () => {
+    const tenant = await createTestTenant("dupord");
+    try {
+      const made: string[] = [];
+      for (let i = 0; i < 7; i++) {
+        made.push((await create(tenant, `Shared Phone ${i}`, "9888811111")).id);
+      }
+      const warned = await createPatient(tenant.as("reception"), { name: "Latecomer", phone: "9888811111" });
+      if (warned.ok || warned.code !== "duplicate_candidates") throw new Error("expected candidates");
+      expect(warned.candidates.map((c) => c.id)).toEqual(made.slice(2).reverse());
+    } finally {
+      await tenant.cleanup();
+    }
+  });
+
+  it("does not consume a patient number when it only warns", async () => {
+    const tenant = await createTestTenant("dupseq");
+    try {
+      const first = await create(tenant, "Seq One", "9888822222");
+      const warned = await createPatient(tenant.as("reception"), { name: "Seq Two", phone: "9888822222" });
+      expect(warned).toMatchObject({ ok: false, code: "duplicate_candidates" });
+      const second = await create(tenant, "Seq Two", "9888822222");
+      expect(second.patientNo).toBe(first.patientNo + 1);
+    } finally {
+      await tenant.cleanup();
+    }
+  });
+});
+
+describe("input limits and hostile text", () => {
+  it.each([
+    ["name", { name: "n".repeat(121) }],
+    ["phone", { name: "Valid Name", phone: "9".repeat(33) }],
+    ["address", { name: "Valid Name", address: "a".repeat(301) }],
+    ["notes", { name: "Valid Name", notes: "n".repeat(2001) }],
+    ["allergies", { name: "Valid Name", allergies: Array.from({ length: 21 }, (_, i) => `Allergen ${i}`) }],
+    ["allergies", { name: "Valid Name", allergies: ["x".repeat(81)] }],
+  ])("rejects an over-long %s", async (field, input) => {
+    expect(await createPatient(A.as("owner"), input)).toMatchObject({ ok: false, code: "invalid", field });
+  });
+
+  it("accepts values exactly at the limits", async () => {
+    const result = await createPatient(A.as("owner"), {
+      name: "n".repeat(120),
+      address: "a".repeat(300),
+      notes: "n".repeat(2000),
+      allergies: Array.from({ length: 20 }, (_, i) => `Allergen ${i}`),
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("the NUL escape used below really is one NUL character", () => {
+    expect("a\u0000b".length).toBe(3);
+    expect("a\u0000b".codePointAt(1)).toBe(0);
+  });
+
+  it.each([
+    ["name", { name: "Bad\u0000Name" }],
+    ["address", { name: "Valid Name", address: "x\u0000y" }],
+    ["notes", { name: "Valid Name", notes: "x\u0000y" }],
+    ["allergies", { name: "Valid Name", allergies: ["Pen\u0000icillin"] }],
+    ["allergies", { name: "Valid Name", allergies: "Pen\u0000icillin, Sulfa" }],
+  ])("returns invalid, not an error, for a NUL byte in %s", async (field, input) => {
+    expect(await createPatient(A.as("owner"), input)).toMatchObject({ ok: false, code: "invalid", field });
+  });
+
+  it("returns invalid for a NUL byte on update too", async () => {
+    const p = await create(A, "Nul Update Subject");
+    expect(await updatePatient(A.as("owner"), p.id, { name: "Bad\u0000Name" })).toMatchObject({
+      ok: false,
+      code: "invalid",
+      field: "name",
+    });
+  });
+});
+
+describe("updatePatient is a full replace", () => {
+  const full = {
+    name: "Full Record",
+    phone: "9333344444",
+    gender: "female",
+    dob: "1990-05-17",
+    address: "12 Test Road",
+    allergies: ["Penicillin", "Sulfa"],
+    notes: "Prefers mornings",
+  };
+
+  it("clears every optional field that the input omits", async () => {
+    const p = await create(A, full.name, full.phone, {
+      gender: full.gender,
+      dob: full.dob,
+      address: full.address,
+      allergies: full.allergies,
+      notes: full.notes,
+    });
+    const result = await updatePatient(A.as("owner"), p.id, { name: full.name });
+    expect(result).toMatchObject({
+      ok: true,
+      value: { changedFields: ["phone", "gender", "dob", "address", "allergies", "notes"] },
+    });
+    const got = await getPatient(A.as("owner"), p.id);
+    if (!got.ok) throw new Error(got.message);
+    expect(got.value).toMatchObject({
+      name: full.name,
+      phone: null,
+      phoneNormalized: null,
+      gender: "unknown",
+      dob: null,
+      address: null,
+      allergies: [],
+      notes: null,
+    });
+  });
+
+  it("reports dob and allergies changes, and ignores an unchanged allergy list", async () => {
+    const p = await create(A, full.name, full.phone, { dob: full.dob, allergies: full.allergies });
+    const same = await updatePatient(A.as("owner"), p.id, {
+      name: full.name,
+      phone: full.phone,
+      dob: full.dob,
+      allergies: "Penicillin, Sulfa",
+    });
+    expect(same).toMatchObject({ ok: true, value: { changedFields: [] } });
+
+    const changed = await updatePatient(A.as("owner"), p.id, {
+      name: full.name,
+      phone: full.phone,
+      dob: "1991-06-18",
+      allergies: ["Penicillin"],
+    });
+    expect(changed).toMatchObject({ ok: true, value: { changedFields: ["dob", "allergies"] } });
+  });
+
+  it("returns not_found for an archived patient and invalid for bad input", async () => {
+    const p = await create(A, "Soon Archived");
+    expect(await updatePatient(A.as("owner"), p.id, { name: "A" })).toMatchObject({
+      ok: false,
+      code: "invalid",
+      field: "name",
+    });
+    expect((await archivePatient(A.as("owner"), p.id)).ok).toBe(true);
+    expect(await updatePatient(A.as("owner"), p.id, { name: "Revived Name" })).toMatchObject({
+      ok: false,
+      code: "not_found",
+    });
+  });
+
+  it("audits archiving with the patient id and no personal data", async () => {
+    const p = await create(A, "Audited Archive Person", "9444455555");
+    expect((await archivePatient(A.as("owner"), p.id)).ok).toBe(true);
+    const rows = await withTenant(A.tenantId, (tx) =>
+      tx.select().from(auditEvents).where(eq(auditEvents.entityId, p.id)),
+    );
+    const archived = rows.filter((e) => e.action === "patient.archived");
+    expect(archived).toHaveLength(1);
+    expect(archived[0].entityType).toBe("patient");
+    expect(JSON.stringify(archived[0])).not.toContain("Audited Archive Person");
+    expect(JSON.stringify(archived[0])).not.toContain("9444455555");
+  });
+});
+
+describe("search ordering, paging and hostile queries", () => {
+  const BULK = 105;
+  let tenant: TestTenant;
+  let bulkIds: string[];
+
+  beforeAll(async () => {
+    tenant = await createTestTenant("bulk");
+    // Identical names and identical created_at: only the id tiebreaker can order these. Inserted
+    // in descending id order so physical order cannot accidentally match the expected order.
+    bulkIds = Array.from({ length: BULK }, () => newId()).sort();
+    const sameInstant = new Date("2026-01-01T00:00:00Z");
+    await withTenant(tenant.tenantId, (tx) =>
+      tx.insert(patients).values(
+        [...bulkIds].reverse().map((id) => ({
+          id,
+          tenantId: tenant.tenantId,
+          name: "Bulk Person",
+          createdAt: sameInstant,
+        })),
+      ),
+    );
+  });
+  afterAll(async () => tenant.cleanup());
+
+  const page = async (opts: { q?: string; limit?: number; offset?: number }) => {
+    const result = await searchPatients(tenant.as("reception"), opts);
+    if (!result.ok) throw new Error(result.message);
+    return result.value.map((p) => p.id);
+  };
+
+  const walk = async (q: string, size: number) => {
+    const seen: string[] = [];
+    for (let offset = 0; offset < BULK + size; offset += size) {
+      seen.push(...(await page({ q, limit: size, offset })));
+    }
+    return seen;
+  };
+
+  it("pages a name search without gaps or repeats (name asc, id asc)", async () => {
+    expect(await walk("Bulk", 7)).toEqual(bulkIds);
+    expect(await walk("Bulk", 25)).toEqual(bulkIds);
+  });
+
+  it("pages an empty query without gaps or repeats (newest first, id desc)", async () => {
+    const expected = [...bulkIds].reverse();
+    expect(await walk("", 7)).toEqual(expected);
+    expect(await walk("", 25)).toEqual(expected);
+  });
+
+  it("clamps limit to 100 rows", async () => {
+    expect(await page({ q: "", limit: 100000 })).toHaveLength(100);
+    expect(await page({ q: "", limit: Infinity })).toHaveLength(100);
+    expect(await page({ q: "", limit: 100 })).toHaveLength(100);
+    expect(await page({ q: "", limit: -5 })).toHaveLength(1);
+  });
+
+  it("clamps offset into a safe range instead of failing", async () => {
+    const first = await page({ q: "", limit: 3 });
+    expect(await page({ q: "", limit: 3, offset: -10 })).toEqual(first);
+    expect(await page({ q: "", limit: 3, offset: Number.NaN })).toEqual(first);
+    expect(await page({ q: "", limit: 3, offset: -Infinity })).toEqual(first);
+    expect(await page({ q: "", limit: 3, offset: Infinity })).toEqual([]);
+    expect(await page({ q: "", limit: 3, offset: 1e21 })).toEqual([]);
+    expect(await page({ q: "", limit: 3, offset: 2.9 })).toEqual(await page({ q: "", limit: 3, offset: 2 }));
+  });
+
+  it("returns newest first for an empty query", async () => {
+    const ordered = await createTestTenant("newest");
+    try {
+      await create(ordered, "First Made");
+      await create(ordered, "Second Made");
+      await create(ordered, "Third Made");
+      const result = await searchPatients(ordered.as("reception"), { q: "" });
+      expect(result.ok && result.value.map((p) => p.name)).toEqual(["Third Made", "Second Made", "First Made"]);
+    } finally {
+      await ordered.cleanup();
+    }
+  });
+
+  it("returns an empty list, not an error, for a query containing a NUL byte", async () => {
+    expect(await searchPatients(tenant.as("reception"), { q: "Bulk\u0000" })).toEqual({ ok: true, value: [] });
+    expect(await searchPatients(tenant.as("reception"), { q: "\u0000" })).toEqual({ ok: true, value: [] });
+  });
+
+  it("truncates a query to 100 characters instead of failing", async () => {
+    const needle = "z".repeat(110);
+    await create(A, needle);
+    const huge = await searchPatients(A.as("reception"), { q: "x".repeat(10_000) });
+    expect(huge).toEqual({ ok: true, value: [] });
+    const truncated = await searchPatients(A.as("reception"), { q: `${"z".repeat(100)}QQQ` });
+    expect(truncated.ok && truncated.value.map((p) => p.name)).toEqual([needle]);
   });
 });
