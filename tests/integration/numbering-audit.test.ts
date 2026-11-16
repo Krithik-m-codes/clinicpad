@@ -30,12 +30,28 @@ describe("allocateNumber", () => {
   });
 
   it("hands out unique consecutive numbers under concurrency", async () => {
+    // Relative to the current counter, so the test does not depend on earlier tests' state.
+    const base = await withTenant(A.tenantId, (tx) => allocateNumber(tx, A.tenantId, "rx"));
     const results = await Promise.all(
       Array.from({ length: 10 }, () => withTenant(A.tenantId, (tx) => allocateNumber(tx, A.tenantId, "rx"))),
     );
     const sorted = [...results].sort((x, y) => x - y);
-    // "rx" was already at 1 from the previous test.
-    expect(sorted).toEqual(Array.from({ length: 10 }, (_, i) => i + 2));
+    expect(sorted).toEqual(Array.from({ length: 10 }, (_, i) => base + i + 1));
+  });
+
+  it("survives the insert-versus-insert race on a counter row that does not exist yet", async () => {
+    const fresh = await createTestTenant("numrace");
+    try {
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () =>
+          withTenant(fresh.tenantId, (tx) => allocateNumber(tx, fresh.tenantId, "rx")),
+        ),
+      );
+      const sorted = [...results].sort((x, y) => x - y);
+      expect(sorted).toEqual(Array.from({ length: 10 }, (_, i) => i + 1));
+    } finally {
+      await fresh.cleanup();
+    }
   });
 
   it("does not burn a number when the transaction rolls back", async () => {

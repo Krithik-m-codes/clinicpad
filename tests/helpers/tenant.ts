@@ -17,22 +17,37 @@ export async function createTestTenant(label: string): Promise<TestTenant> {
     .insert(tenants)
     .values({ name: `Test ${label}`, slug: `t-${label}-${stamp}` })
     .returning();
-  const [user] = await adminDb
-    .insert(users)
-    .values({ email: `${label}-${stamp}@example.com`, name: "Dr Test", passwordHash: "not-a-real-hash" })
-    .returning();
-  await adminDb.insert(doctors).values({ tenantId: tenant.id, userId: user.id });
+
+  let userId: string | null = null;
+  try {
+    const [user] = await adminDb
+      .insert(users)
+      .values({ email: `${label}-${stamp}@example.com`, name: "Dr Test", passwordHash: "not-a-real-hash" })
+      .returning();
+    userId = user.id;
+    await adminDb.insert(doctors).values({ tenantId: tenant.id, userId: user.id });
+  } catch (error) {
+    // Do not leak a half-built tenant: remove what was created, then report the original failure.
+    await adminDb.delete(tenants).where(eq(tenants.id, tenant.id)).catch(() => undefined);
+    if (userId) await adminDb.delete(users).where(eq(users.id, userId)).catch(() => undefined);
+    throw error;
+  }
+  const doctorUserId = userId;
 
   return {
     tenantId: tenant.id,
     as: (role) => ({
       tenantId: tenant.id,
-      userId: role === "owner" || role === "doctor" ? user.id : newId(),
+      userId: role === "owner" || role === "doctor" ? doctorUserId : newId(),
       role,
     }),
     cleanup: async () => {
-      await adminDb.delete(tenants).where(eq(tenants.id, tenant.id));
-      await adminDb.delete(users).where(eq(users.id, user.id));
+      // Independent steps: a failed tenant delete must not leave the user behind.
+      try {
+        await adminDb.delete(tenants).where(eq(tenants.id, tenant.id));
+      } finally {
+        await adminDb.delete(users).where(eq(users.id, doctorUserId));
+      }
     },
   };
 }
