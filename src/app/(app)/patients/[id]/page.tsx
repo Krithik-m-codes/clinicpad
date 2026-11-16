@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { requireSession } from "@/server/auth/session";
 import { can } from "@/lib/domain/permissions";
@@ -5,22 +6,35 @@ import { ageLabel } from "@/lib/domain/age";
 import { getPatient } from "@/server/services/patients";
 import { updatePatientAction } from "@/server/actions/patients";
 import { PatientForm } from "@/components/patients/patient-form";
+import { listPrescriptionsForPatient } from "@/server/services/prescriptions";
+import { startPrescriptionAction } from "@/server/actions/prescriptions";
+import { RedirectError } from "@/components/rx/redirect-error";
+import { SubmitButton } from "@/components/rx/submit-button";
 
 export const dynamic = "force-dynamic";
 
-export default async function PatientPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function PatientPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ error?: string }>;
+}) {
   const session = await requireSession();
   if (!can(session.role, "patient.read")) redirect("/dashboard");
 
   const { id } = await params;
+  const { error } = await searchParams;
   const result = await getPatient(session, id);
   if (!result.ok) notFound();
   const p = result.value;
   const age = p.dob ? ageLabel(p.dob, new Date()) : "";
   const canWrite = can(session.role, "patient.write");
+  const history = can(session.role, "rx.read") ? await listPrescriptionsForPatient(session, p.id) : null;
 
   return (
     <div className="space-y-6">
+      <RedirectError code={error} />
       <header>
         <h1 className="text-2xl font-semibold">{p.name}</h1>
         <p className="text-sm text-muted-foreground">
@@ -32,6 +46,11 @@ export default async function PatientPage({ params }: { params: Promise<{ id: st
           <p className="mt-2 inline-block rounded bg-red-50 px-2 py-1 text-sm text-red-800">
             Allergies: {p.allergies.join(", ")}
           </p>
+        ) : null}
+        {can(session.role, "rx.draft") ? (
+          <form action={startPrescriptionAction.bind(null, p.id)} className="mt-3">
+            <SubmitButton>New prescription</SubmitButton>
+          </form>
         ) : null}
       </header>
 
@@ -65,6 +84,27 @@ export default async function PatientPage({ params }: { params: Promise<{ id: st
           </dl>
         </section>
       )}
+
+      {history?.ok ? (
+        <section className="space-y-2">
+          <h2 className="font-medium">Prescriptions</h2>
+          {history.value.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No prescriptions yet.</p>
+          ) : (
+            <ul className="divide-y rounded-lg border">
+              {history.value.map((r) => (
+                <li key={r.id} className="flex items-center justify-between gap-3 p-3 text-sm">
+                  <Link className="font-medium underline-offset-2 hover:underline" href={`/prescriptions/${r.id}`}>
+                    {r.rxNo ? `Rx #${r.rxNo} v${r.version}` : "Draft"}
+                  </Link>
+                  <span className="text-muted-foreground">{r.chiefComplaint ?? ""}</span>
+                  <span className="rounded bg-muted px-2 py-0.5 text-xs">{r.status}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
     </div>
   );
 }
