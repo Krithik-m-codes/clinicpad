@@ -290,6 +290,7 @@ export async function listPrescriptionsForPatient(
 
 const IMMUTABLE_MESSAGE = "This prescription is finalized and cannot be changed.";
 const AMENDMENT_IN_PROGRESS = "An amendment is already in progress.";
+const OPEN_AMENDMENT_INDEX = "prescriptions_one_open_amendment";
 const reasonSchema = z
   .string()
   .trim()
@@ -317,9 +318,18 @@ export async function finalizePrescription(
         .where(eq(prescriptionItems.prescriptionId, id));
       if (itemCount === 0) return fail("invalid", "Add at least one medicine before finalizing.", "items");
 
-      // Amendments keep their parent's number; first versions get the next one. Allocating only
-      // after every check passes, inside this transaction, means a failed finalize never burns a number.
-      const rxNo = rx.rxNo ?? (await allocateNumber(tx, ctx.tenantId, "rx"));
+      // First versions (no parent) get the next number; amendments must already carry their parent's.
+      // An amendment without a number means a corrupt chain: refuse rather than allocate a second number
+      // for the same prescription. Allocating only after every check passes, inside this transaction,
+      // means a failed finalize never burns a number.
+      let rxNo: number;
+      if (rx.parentPrescriptionId === null) {
+        rxNo = await allocateNumber(tx, ctx.tenantId, "rx");
+      } else if (rx.rxNo === null) {
+        return fail("conflict", "The original prescription has no Rx number, so this amendment cannot be finalized.");
+      } else {
+        rxNo = rx.rxNo;
+      }
       const now = new Date();
 
       await tx
@@ -339,7 +349,9 @@ export async function finalizePrescription(
         action: rx.parentPrescriptionId ? "prescription.amended" : "prescription.finalized",
         entityType: "prescription",
         entityId: id,
-        after: { rxNo, version: rx.version },
+        after: rx.parentPrescriptionId
+          ? { rxNo, version: rx.version, parentPrescriptionId: rx.parentPrescriptionId }
+          : { rxNo, version: rx.version },
       });
       return ok({ rxNo, version: rx.version });
     });
@@ -416,13 +428,17 @@ export async function amendPrescription(
         entityType: "prescription",
         entityId: rx.id,
         before: { version: source.version },
-        after: { version: rx.version, reasonLength: reason.data.length },
+        after: { version: rx.version, parentPrescriptionId: source.id, reasonLength: reason.data.length },
       });
       return ok({ prescriptionId: rx.id, version: rx.version });
     });
   } catch (error) {
-    // The partial unique index is the backstop for a race the row lock did not catch.
-    if (pgErrorInfo(error).code === "23505") return fail("conflict", AMENDMENT_IN_PROGRESS);
+    // The partial unique index is the backstop for a race the row lock did not catch. Any other
+    // unique violation is a different bug and must surface, not be reported as "in progress".
+    const info = pgErrorInfo(error);
+    if (info.code === "23505" && info.constraint === OPEN_AMENDMENT_INDEX) {
+      return fail("conflict", AMENDMENT_IN_PROGRESS);
+    }
     throw error;
   }
 }
@@ -438,6 +454,10 @@ export async function repeatPrescription(
     const [source] = await tx.select().from(prescriptions).where(eq(prescriptions.id, id)).limit(1);
     if (!source) return prescriptionNotFound();
     if (source.status === "draft") return fail("conflict", "Finalize this draft before repeating it.");
+    // A superseded version holds exactly the content an amendment corrected; never copy it forward.
+    if (source.status !== "finalized") {
+      return fail("conflict", "This prescription was superseded by a later version; repeat the latest version.");
+    }
 
     const [oldVisit] = await tx.select().from(visits).where(eq(visits.id, source.visitId)).limit(1);
     const [patient] = await tx

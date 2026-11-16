@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { withTenant } from "@/server/db/tenant";
 import { pgErrorInfo } from "@/server/db/errors";
-import { auditEvents } from "@/server/db/schema";
+import { adminDb } from "@/server/db/admin";
+import { auditEvents, tenantCounters } from "@/server/db/schema";
 import { allocateNumber } from "@/server/services/numbering";
 import { recordAudit } from "@/server/services/audit";
 import { isUuid, newId } from "@/lib/domain/ids";
@@ -42,6 +43,9 @@ describe("allocateNumber", () => {
   it("survives the insert-versus-insert race on a counter row that does not exist yet", async () => {
     const fresh = await createTestTenant("numrace");
     try {
+      // Precondition: there is no counter row yet, so every caller races to insert it.
+      const existing = await adminDb.select().from(tenantCounters).where(eq(tenantCounters.tenantId, fresh.tenantId));
+      expect(existing).toHaveLength(0);
       const results = await Promise.all(
         Array.from({ length: 10 }, () =>
           withTenant(fresh.tenantId, (tx) => allocateNumber(tx, fresh.tenantId, "rx")),
