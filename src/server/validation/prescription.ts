@@ -7,6 +7,7 @@ import {
   type Vitals,
 } from "@/lib/domain/rx-options";
 import { durationToDays } from "@/lib/domain/rx-format";
+import { catalogueKey } from "@/lib/domain/search";
 import { cleanText } from "@/lib/domain/text";
 import {
   blankToUndefined,
@@ -38,14 +39,32 @@ const dropBlankEntries = (value: unknown) => {
   return list.filter((entry) => !(typeof entry === "string" && hasNoNul(entry) && cleanText(entry).trim() === ""));
 };
 
-/** Short phrases (complaints, history...). Blanks and repeats (ignoring case) are dropped; order is kept. */
+/**
+ * Repeats are found the way the catalogue finds them: ignoring case, Unicode composition and runs of
+ * whitespace. The first spelling is kept and the order is unchanged.
+ */
+const uniqueBy = <T>(list: T[], text: (entry: T) => string): T[] => {
+  const seen = new Set<string>();
+  return list.filter((entry) => {
+    const key = catalogueKey(text(entry));
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+/** Entries read before repeats are dropped, so a flood of copies cannot be used to burn CPU. */
+const RAW_LIST_CAP = 200;
+
+/** Short phrases (complaints, history...). Blanks and repeats are dropped first, then the count limit applies. */
 const phraseList = (maxItems: number, label: string) =>
   z
     .preprocess(
       dropBlankEntries,
-      z.array(requiredText(200, `Remove the empty ${label} entry`)).max(maxItems, `At most ${maxItems} ${label}`),
+      z.array(requiredText(200, `Remove the empty ${label} entry`)).max(RAW_LIST_CAP, `At most ${maxItems} ${label}`),
     )
-    .transform((list) => list.filter((v, i) => list.findIndex((w) => w.toLowerCase() === v.toLowerCase()) === i));
+    .transform((list) => uniqueBy(list, (v) => v))
+    .refine((list) => list.length <= maxItems, `At most ${maxItems} ${label}`);
 
 // Follow-up dates are bounded so that year 0000 (valid in JavaScript, rejected by Postgres) and
 // absurd years never reach the database.
@@ -183,11 +202,10 @@ export const draftInputSchema = z.object({
   investigations: z
     .preprocess(
       missingToEmptyList,
-      z.array(investigationSchema).max(RX_LIMITS.investigations, `At most ${RX_LIMITS.investigations} tests`),
+      z.array(investigationSchema).max(RAW_LIST_CAP, `At most ${RX_LIMITS.investigations} tests`),
     )
-    .transform((list) =>
-      list.filter((t, i) => list.findIndex((u) => u.name.toLowerCase() === t.name.toLowerCase()) === i),
-    ),
+    .transform((list) => uniqueBy(list, (t) => t.name))
+    .refine((list) => list.length <= RX_LIMITS.investigations, `At most ${RX_LIMITS.investigations} tests`),
   advice: optionalText(2000),
   followUpDate: z.preprocess(blankToUndefined, followUpDate.optional()),
   followUpReason: optionalText(300),

@@ -75,6 +75,36 @@ describe("cleanText", () => {
     expect(cleanText(zwj)).not.toBe(cleanText(zwnj));
   });
 
+  it.each([
+    ["a lone high surrogate", "\ud800"],
+    ["a lone low surrogate", "\udc00"],
+  ])("removes %s, which Postgres jsonb cannot store", (_name, lone) => {
+    expect(lone).toHaveLength(1);
+    const input = `a${lone}b`;
+    expect(input).toHaveLength(3);
+    const result = cleanText(input);
+    expect(result).toBe("ab");
+    expect([...result]).toHaveLength(2);
+  });
+
+  it("removes a reversed surrogate pair (low then high) as two lone surrogates", () => {
+    const input = "a\udc00\ud800b";
+    expect(input).toHaveLength(4);
+    expect(cleanText(input)).toBe("ab");
+  });
+
+  it("keeps valid surrogate pairs (emoji and other astral characters) unchanged", () => {
+    const emoji = "😀";
+    expect(emoji).toHaveLength(2);
+    expect([...emoji]).toHaveLength(1);
+    const input = `a${emoji}b𝐀c`;
+    expect(cleanText(input)).toBe(input);
+    expect([...cleanText(input)]).toHaveLength(5);
+    // A lone surrogate next to a valid pair does not damage the pair.
+    expect(cleanText(`\ud800${emoji}`)).toBe(emoji);
+    expect(cleanText(`${emoji}\udc00`)).toBe(emoji);
+  });
+
   it("does not trim", () => {
     expect(cleanText("  padded  ")).toBe("  padded  ");
   });

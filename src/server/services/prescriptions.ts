@@ -63,12 +63,13 @@ const BAD_DATE_MESSAGE = "Enter a real follow-up date.";
 
 /**
  * Defence in depth behind the validation layer: Postgres refusing a value (SQLSTATE 22021 invalid byte
- * sequence, 22007/22008 bad or out-of-range date) is bad input, not a server fault. Returns null for
+ * sequence, 22P02/22P05 untranslatable jsonb text, 22007/22008 bad or out-of-range date) is bad input, not a server fault. Returns null for
  * any other error so the caller keeps its own handling.
  */
 function invalidFromDatabase(error: unknown, fields: { text?: string; date?: string }): ServiceError | null {
   const { code } = pgErrorInfo(error);
-  if (code === "22021") return fail("invalid", BAD_TEXT_MESSAGE, fields.text);
+  // 22021 invalid byte sequence (NUL); 22P02 / 22P05 jsonb text it cannot represent (a lone surrogate).
+  if (code === "22021" || code === "22P02" || code === "22P05") return fail("invalid", BAD_TEXT_MESSAGE, fields.text);
   if (code === "22007" || code === "22008") return fail("invalid", BAD_DATE_MESSAGE, fields.date);
   return null;
 }
@@ -148,38 +149,59 @@ export async function getPrescription(ctx: ServiceContext, id: string): Promise<
   if (!isUuid(id)) return prescriptionNotFound();
 
   return withTenant(ctx.tenantId, async (tx) => {
-    const [row] = await tx
-      .select({
-        rx: prescriptions,
-        visit: visits,
-        patient: { id: patients.id, name: patients.name, patientNo: patients.patientNo, allergies: patients.allergies },
-      })
-      .from(prescriptions)
-      .innerJoin(visits, eq(visits.id, prescriptions.visitId))
-      .innerJoin(patients, eq(patients.id, visits.patientId))
-      .where(eq(prescriptions.id, id))
-      .limit(1);
-    if (!row) return prescriptionNotFound();
+    // READ COMMITTED gives every statement its own snapshot, so a draft save that commits between
+    // the row read and the item read could leave a view with the new items under the old visit.
+    // Saves bump draft_revision in the same transaction, so a revision that is unchanged after the
+    // items were read proves both reads saw one state; otherwise read again.
+    for (let attempt = 0; attempt < SNAPSHOT_ATTEMPTS; attempt += 1) {
+      const view = await readSnapshot(tx, id);
+      if (view !== "changed") return view;
+    }
+    return fail("conflict", "This prescription is being saved. Try again in a moment.");
+  });
+}
 
-    const items = await tx
-      .select()
-      .from(prescriptionItems)
-      .where(eq(prescriptionItems.prescriptionId, id))
-      .orderBy(asc(prescriptionItems.sortOrder));
+const SNAPSHOT_ATTEMPTS = 3;
 
-    return ok<PrescriptionView>({
-      id: row.rx.id,
-      status: row.rx.status,
-      version: row.rx.version,
-      revision: row.rx.draftRevision,
-      rxNo: row.rx.rxNo,
-      amendmentReason: row.rx.amendmentReason,
-      parentPrescriptionId: row.rx.parentPrescriptionId,
-      finalizedAt: row.rx.finalizedAt,
-      patient: { ...row.patient, allergies: row.patient.allergies ?? [] },
-      visit: toVisitView(row.visit),
-      items: items.map(toItemView),
-    });
+/** One read of a prescription, or "changed" when a save committed while it was being read. */
+async function readSnapshot(tx: TenantTx, id: string): Promise<Result<PrescriptionView> | "changed"> {
+  const [row] = await tx
+    .select({
+      rx: prescriptions,
+      visit: visits,
+      patient: { id: patients.id, name: patients.name, patientNo: patients.patientNo, allergies: patients.allergies },
+    })
+    .from(prescriptions)
+    .innerJoin(visits, eq(visits.id, prescriptions.visitId))
+    .innerJoin(patients, eq(patients.id, visits.patientId))
+    .where(eq(prescriptions.id, id))
+    .limit(1);
+  if (!row) return prescriptionNotFound();
+
+  const items = await tx
+    .select()
+    .from(prescriptionItems)
+    .where(eq(prescriptionItems.prescriptionId, id))
+    .orderBy(asc(prescriptionItems.sortOrder));
+  const [after] = await tx
+    .select({ revision: prescriptions.draftRevision })
+    .from(prescriptions)
+    .where(eq(prescriptions.id, id))
+    .limit(1);
+  if (!after || after.revision !== row.rx.draftRevision) return "changed";
+
+  return ok<PrescriptionView>({
+    id: row.rx.id,
+    status: row.rx.status,
+    version: row.rx.version,
+    revision: row.rx.draftRevision,
+    rxNo: row.rx.rxNo,
+    amendmentReason: row.rx.amendmentReason,
+    parentPrescriptionId: row.rx.parentPrescriptionId,
+    finalizedAt: row.rx.finalizedAt,
+    patient: { ...row.patient, allergies: row.patient.allergies ?? [] },
+    visit: toVisitView(row.visit),
+    items: items.map(toItemView),
   });
 }
 

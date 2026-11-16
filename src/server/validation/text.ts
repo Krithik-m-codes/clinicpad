@@ -24,12 +24,12 @@ export const cleanInput = (value: unknown) =>
 export const cleanOptionalText = (max: number) =>
   z.preprocess(
     (value) => blankToUndefined(cleanInput(value)),
-    z.string().trim().max(max, `Keep this under ${max} characters`).refine(hasNoNul, NUL_MESSAGE).optional(),
+    z.string().trim().max(max, `Keep this to at most ${max} characters`).refine(hasNoNul, NUL_MESSAGE).optional(),
   );
 
 /** Cleaned, trimmed, length-limited, non-empty text without NUL. */
 export const cleanRequiredText = (max: number, message: string) =>
   z.preprocess(
     cleanInput,
-    z.string().trim().min(1, message).max(max, `Keep this under ${max} characters`).refine(hasNoNul, NUL_MESSAGE),
+    z.string().trim().min(1, message).max(max, `Keep this to at most ${max} characters`).refine(hasNoNul, NUL_MESSAGE),
   );

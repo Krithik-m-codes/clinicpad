@@ -208,6 +208,88 @@ describe("saveDraft with the clinical form", () => {
     });
   });
 
+  describe("a lone UTF-16 surrogate (for example an emoji sliced by code unit)", () => {
+    const LONE = "\ud800";
+    const EMOJI = "😀";
+
+    it("is a single code unit and the emoji is a single code point", () => {
+      expect(LONE).toHaveLength(1);
+      expect([...EMOJI]).toHaveLength(1);
+    });
+
+    it("is removed from jsonb text (vitals notes, test name, test instructions), not a server error", async () => {
+      const id = await start();
+      const saved = await saveDraft(doctor(), id, {
+        vitals: { pulse: 80, notes: `a${LONE}b` },
+        investigations: [{ name: `C${LONE}BC`, instructions: `fast${LONE}ing` }],
+      });
+      expect(saved.ok).toBe(true);
+      const rx = await read(id);
+      expect(rx.visit.vitals).toEqual({ pulse: 80, notes: "ab" });
+      expect(rx.visit.investigations).toEqual([{ name: "CBC", instructions: "fasting" }]);
+      const stored = JSON.stringify(rx.visit);
+      expect(stored).not.toContain("�");
+      expect(stored).not.toContain("\\ud800");
+    });
+
+    it("is removed from plain text columns instead of being stored as U+FFFD", async () => {
+      const id = await start();
+      expect((await saveDraft(doctor(), id, { advice: `x${LONE}y`, items: [{ drugName: `D${LONE}rug` }] })).ok).toBe(true);
+      const rx = await read(id);
+      expect(rx.visit.advice).toBe("xy");
+      expect(rx.items[0].drugName).toBe("Drug");
+    });
+
+    it("keeps a valid emoji in jsonb text", async () => {
+      const id = await start();
+      expect((await saveDraft(doctor(), id, { vitals: { notes: `ok ${EMOJI}` } })).ok).toBe(true);
+      expect((await read(id)).visit.vitals.notes).toBe(`ok ${EMOJI}`);
+    });
+  });
+
+  describe("repeated phrases and the count limit", () => {
+    it("treats case, extra spaces and Unicode composition as the same phrase", async () => {
+      const id = await start();
+      // "Viral  fever" has two spaces; the last entry is e + combining acute, the first is the precomposed form.
+      await saveDraft(doctor(), id, {
+        diagnosis: ["Viral fever", "viral  FEVER", " Viral\tfever ", "Café", "Café"],
+        investigations: [{ name: "Dengue NS1" }, { name: "dengue   ns1" }],
+      });
+      const rx = await read(id);
+      expect(rx.visit.diagnosis).toEqual(["Viral fever", "Café"]);
+      expect(rx.visit.investigations).toEqual([{ name: "Dengue NS1" }]);
+    });
+
+    it("counts only distinct phrases against the limit", async () => {
+      const id = await start();
+      const thirtyUnique = Array.from({ length: 30 }, (_, i) => `Complaint ${i}`);
+      expect((await saveDraft(doctor(), id, { complaints: [...thirtyUnique, "complaint 0"] })).ok).toBe(true);
+      expect((await read(id)).visit.complaints).toEqual(thirtyUnique);
+      expect(await saveDraft(doctor(), id, { complaints: [...thirtyUnique, "One more"] })).toMatchObject({
+        ok: false,
+        code: "invalid",
+        field: "complaints",
+      });
+
+      const thirtyTests = Array.from({ length: 30 }, (_, i) => ({ name: `Test ${i}` }));
+      expect((await saveDraft(doctor(), id, { investigations: [...thirtyTests, { name: "TEST 3" }] })).ok).toBe(true);
+      expect(await saveDraft(doctor(), id, { investigations: [...thirtyTests, { name: "Test 30" }] })).toMatchObject({
+        ok: false,
+        code: "invalid",
+        field: "investigations",
+      });
+    });
+  });
+
+  it("says 'at most N characters' because exactly N is allowed", async () => {
+    const id = await start();
+    expect((await saveDraft(doctor(), id, { advice: "x".repeat(2000) })).ok).toBe(true);
+    expect(await saveDraft(doctor(), id, { advice: "x".repeat(2001) })).toMatchObject({
+      ok: false,
+      message: "Keep this to at most 2000 characters",
+    });
+  });
+
   it("ignores unknown vitals keys and treats a blank vitals form as no vitals", async () => {
     const id = await start();
     await saveDraft(doctor(), id, { vitals: { pulse: 80, evil: "<b>x</b>" } });
@@ -252,9 +334,17 @@ describe("saveDraft with the clinical form", () => {
     expect((await read(id)).revision).toBe(0);
   });
 
-  it("does not reveal another clinic's draft", async () => {
+  it("does not reveal another clinic's draft, and leaves it unchanged", async () => {
     const id = await start();
-    expect(await saveDraft(B.as("doctor"), id, fullDraft())).toMatchObject({ ok: false, code: "not_found" });
+    expect((await saveDraft(doctor(), id, { advice: "Mine", items: [{ drugName: "Mine A" }] })).ok).toBe(true);
+    expect(await saveDraft(B.as("doctor"), id, fullDraft(), { baseRevision: 1 })).toMatchObject({
+      ok: false,
+      code: "not_found",
+    });
+    const rx = await read(id);
+    expect(rx.revision).toBe(1);
+    expect(rx.visit.advice).toBe("Mine");
+    expect(rx.items.map((i) => i.drugName)).toEqual(["Mine A"]);
   });
 });
 
@@ -270,11 +360,59 @@ describe("draft revisions", () => {
   it("rejects a stale base revision with the current revision and leaves the draft untouched", async () => {
     const id = await start();
     await saveDraft(doctor(), id, { advice: "Newer advice" }, { baseRevision: 0 });
-    const stale = await saveDraft(doctor(), id, { advice: "Older advice" }, { baseRevision: 0 });
+    const stale = await saveDraft(
+      doctor(),
+      id,
+      { advice: "Older advice", chiefComplaint: "Older complaint", items: [{ drugName: "Older drug" }] },
+      { baseRevision: 0 },
+    );
     expect(stale).toMatchObject({ ok: false, code: "conflict", currentRevision: 1 });
     const rx = await read(id);
     expect(rx.visit.advice).toBe("Newer advice");
+    expect(rx.visit.chiefComplaint).toBeNull();
+    expect(rx.items).toEqual([]);
     expect(rx.revision).toBe(1);
+  });
+
+  it("rejects a base revision newer than the stored one as a conflict", async () => {
+    const id = await start();
+    expect(await saveDraft(doctor(), id, { advice: "Future" }, { baseRevision: 5 })).toMatchObject({
+      ok: false,
+      code: "conflict",
+      currentRevision: 0,
+    });
+    const rx = await read(id);
+    expect(rx.visit.advice).toBeNull();
+    expect(rx.revision).toBe(0);
+  });
+
+  it("never returns a mixed snapshot while saves are happening", async () => {
+    const id = await start();
+    const SAVES = 20;
+    let done = false;
+    const mismatches: string[] = [];
+    const reader = (async () => {
+      while (!done) {
+        const rx = await read(id);
+        const n = rx.revision;
+        const advice = n === 0 ? null : `rev-${n}`;
+        const names = n === 0 ? [] : Array.from({ length: (n % 3) + 1 }, (_, k) => `rev-${n}-${k}`);
+        if (rx.visit.advice !== advice || rx.items.map((i) => i.drugName).join("|") !== names.join("|")) {
+          mismatches.push(`revision ${n}: advice ${String(rx.visit.advice)}, items ${rx.items.map((i) => i.drugName).join("|")}`);
+        }
+      }
+    })();
+    try {
+      for (let n = 1; n <= SAVES; n += 1) {
+        const items = Array.from({ length: (n % 3) + 1 }, (_, k) => ({ drugName: `rev-${n}-${k}` }));
+        const saved = await saveDraft(doctor(), id, { advice: `rev-${n}`, items }, { baseRevision: n - 1 });
+        expect(saved).toMatchObject({ ok: true, value: { revision: n } });
+      }
+    } finally {
+      done = true;
+      await reader;
+    }
+    expect(mismatches).toEqual([]);
   });
 
   it("lets exactly one of two simultaneous saves from the same revision win, with no mixed content", async () => {

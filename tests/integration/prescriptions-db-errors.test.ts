@@ -82,6 +82,22 @@ describe("saveDraft database input errors", () => {
     });
   });
 
+  it.each([
+    ["vitals notes", { vitals: { notes: "a\ud800b" } }],
+    ["a test name", { investigations: [{ name: "C\udc00BC" }] }],
+  ])("maps a lone surrogate Postgres jsonb rejects (%s) to invalid and keeps the previous draft", async (_name, extra) => {
+    expect("\ud800").toHaveLength(1);
+    const id = await startDraft();
+    expect((await saveDraft(doctor(), id, goodDraft)).ok).toBe(true);
+
+    expect(await saveDraft(doctor(), id, { ...goodDraft, advice: "Changed", ...extra })).toMatchObject({
+      ok: false,
+      code: "invalid",
+    });
+    const got = await getPrescription(doctor(), id);
+    expect(got.ok && got.value.visit.advice).toBe("Rest");
+  });
+
   it.each(["0000-01-01", "2026-02-30"])("maps a date Postgres rejects (%s) to invalid on followUpDate", async (date) => {
     const id = await startDraft();
     expect((await saveDraft(doctor(), id, goodDraft)).ok).toBe(true);

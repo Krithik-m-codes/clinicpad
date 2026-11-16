@@ -29,7 +29,7 @@ function isInvisible(code: number): boolean {
 /**
  * Normalizes user-entered text: Unicode NFC (so Devanagari typed on different keyboards
  * compares equal), NEL, line and paragraph separators, CR and CRLF to LF, control characters
- * and invisible format characters removed. It does not trim and does not touch HTML: text
+ * and invisible format characters and unpaired surrogates removed. It does not trim and does not touch HTML: text
  * is stored as plain text and escaped when rendered.
  *
  * It removes NUL too, which keeps search terms and catalogue keys safe. Stored clinical
@@ -39,6 +39,9 @@ function isInvisible(code: number): boolean {
  */
 export function cleanText(value: string): string {
   const normalized = value
+    // Unpaired UTF-16 surrogates cannot be stored (jsonb refuses them, text columns turn them into
+    // U+FFFD); with the `u` flag a valid pair is one astral character and is not matched.
+    .replace(/\p{Cs}/gu, "")
     .normalize("NFC")
     .replace(/[\u0085\u2028\u2029]/g, "\n")
     .replace(/\r\n?/g, "\n");
