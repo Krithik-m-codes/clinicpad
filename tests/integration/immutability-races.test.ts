@@ -169,6 +169,9 @@ describe.each(operations)("$name racing a finalize that has not committed yet", 
         tx`update prescriptions set status = 'finalized', finalized_at = now(), updated_at = now() where id = ${records.rx.id}`,
       );
       await hold.ready;
+      // Open the writer's connection first: the lazy handshake would otherwise count towards the 500 ms
+      // window below and could make a statement that is not blocked look "pending".
+      await writer`select 1`;
 
       const statement = operation.run(writer, records).then(
         () => null,

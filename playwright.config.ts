@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 import { config } from "dotenv";
 
 // Same env the app uses, so e2e cleanup can reach the database.
-config({ path: ".env.local" });
+config({ path: ".env.local", quiet: true });
 
 export default defineConfig({
   testDir: "./tests/e2e",
