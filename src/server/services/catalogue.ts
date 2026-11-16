@@ -85,16 +85,37 @@ async function favouritesOf(tx: TenantTx, doctorId: string | null): Promise<Favo
     .select()
     .from(medicineFavourites)
     .where(eq(medicineFavourites.doctorId, doctorId))
-    .orderBy(asc(medicineFavourites.drugName))
+    .orderBy(asc(medicineFavourites.drugName), asc(medicineFavourites.id))
     .limit(RX_LIMITS.favouritesPerDoctor);
   return rows.map(toFavouriteView);
 }
 
+/**
+ * Total order for search results: favourites, then prefix matches, then favourite/clinic/global,
+ * then name, then id, so two calls never disagree about the order of equal-looking rows.
+ */
+export function compareMedicineHits(a: MedicineHit, b: MedicineHit, lowerTerm: string): number {
+  const isPrefix = (hit: MedicineHit) => hit.name.toLowerCase().startsWith(lowerTerm);
+  return (
+    Number(b.favourite !== null) - Number(a.favourite !== null) ||
+    Number(isPrefix(b)) - Number(isPrefix(a)) ||
+    SOURCE_RANK[a.source] - SOURCE_RANK[b.source] ||
+    a.name.localeCompare(b.name) ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+/** Options arrive from the client untyped, so tolerate null, strings and other non-objects. */
+function optionsOf(opts: unknown): { q?: unknown; limit?: unknown; kind?: unknown } {
+  return typeof opts === "object" && opts !== null ? opts : {};
+}
+
 export async function searchMedicines(
   ctx: ServiceContext,
-  opts: { q?: unknown; limit?: unknown } = {},
+  rawOpts: { q?: unknown; limit?: unknown } = {},
 ): Promise<Result<MedicineHit[]>> {
   if (!can(ctx.role, "catalogue.read")) return fail("forbidden", "You cannot search the medicine list.");
+  const opts = optionsOf(rawOpts);
   const term = searchTerm(opts.q, RX_LIMITS.searchQuery);
   const limit = clampLimit(opts.limit, 20, 50);
   const lower = term.toLowerCase();
@@ -120,13 +141,13 @@ export async function searchMedicines(
       .select({ id: tenantMedicines.id, name: tenantMedicines.name, genericName: tenantMedicines.genericName })
       .from(tenantMedicines)
       .where(or(ilike(tenantMedicines.name, pattern), ilike(tenantMedicines.genericName, pattern)))
-      .orderBy(sql`case when ${tenantMedicines.name} ilike ${prefix} then 0 else 1 end`, asc(tenantMedicines.name))
+      .orderBy(sql`case when ${tenantMedicines.name} ilike ${prefix} then 0 else 1 end`, asc(tenantMedicines.name), asc(tenantMedicines.id))
       .limit(limit);
     const globalRows = await tx
       .select({ id: globalMedicines.id, name: globalMedicines.name, genericName: globalMedicines.genericName })
       .from(globalMedicines)
       .where(or(ilike(globalMedicines.name, pattern), ilike(globalMedicines.genericName, pattern)))
-      .orderBy(sql`case when ${globalMedicines.name} ilike ${prefix} then 0 else 1 end`, asc(globalMedicines.name))
+      .orderBy(sql`case when ${globalMedicines.name} ilike ${prefix} then 0 else 1 end`, asc(globalMedicines.name), asc(globalMedicines.id))
       .limit(limit);
 
     // First occurrence of a name wins: favourite, then clinic, then global.
@@ -142,14 +163,7 @@ export async function searchMedicines(
     clinicRows.forEach((r) => add({ source: "clinic", ...r, favourite: null }));
     globalRows.forEach((r) => add({ source: "global", ...r, favourite: null }));
 
-    const isPrefix = (hit: MedicineHit) => hit.name.toLowerCase().startsWith(lower);
-    hits.sort(
-      (a, b) =>
-        Number(b.favourite !== null) - Number(a.favourite !== null) ||
-        Number(isPrefix(b)) - Number(isPrefix(a)) ||
-        SOURCE_RANK[a.source] - SOURCE_RANK[b.source] ||
-        a.name.localeCompare(b.name),
-    );
+    hits.sort((a, b) => compareMedicineHits(a, b, lower));
     return ok(hits.slice(0, limit));
   });
 }
@@ -179,6 +193,8 @@ export async function addClinicMedicine(
       .from(tenantMedicines)
       .where(eq(tenantMedicines.nameKey, nameKey))
       .limit(1);
+    // Only reachable if the row was deleted between the insert and this read.
+    if (!existing) return fail("conflict", "Could not add the medicine. Please try again.");
     return ok({ id: existing.id, created: false });
   });
 }
@@ -219,6 +235,8 @@ export async function saveFavourite(ctx: ServiceContext, raw: unknown): Promise<
   return withTenant(ctx.tenantId, async (tx): Promise<Result<FavouriteView>> => {
     const doctorId = await callerDoctorId(tx, ctx.userId);
     if (doctorId === null) return fail("invalid", NO_DOCTOR_PROFILE, "favourites");
+    // Saves for one doctor take turns, so the count below cannot go stale between two concurrent saves.
+    await tx.select({ id: doctors.id }).from(doctors).where(eq(doctors.id, doctorId)).for("update");
     const [existing] = await tx
       .select({ id: medicineFavourites.id })
       .from(medicineFavourites)
@@ -265,9 +283,10 @@ export async function removeFavourite(ctx: ServiceContext, id: string): Promise<
 
 export async function suggestTerms(
   ctx: ServiceContext,
-  opts: { kind: unknown; q?: unknown; limit?: unknown },
+  rawOpts: { kind: unknown; q?: unknown; limit?: unknown },
 ): Promise<Result<string[]>> {
   if (!can(ctx.role, "catalogue.read")) return fail("forbidden", "You cannot search clinical lists.");
+  const opts = optionsOf(rawOpts);
   if (typeof opts.kind !== "string" || !(TERM_KINDS as readonly string[]).includes(opts.kind)) {
     return fail("invalid", "Unknown suggestion list.", "kind");
   }
@@ -283,7 +302,7 @@ export async function suggestTerms(
       .select({ name: globalClinicalTerms.name })
       .from(globalClinicalTerms)
       .where(and(eq(globalClinicalTerms.kind, kind), ilike(globalClinicalTerms.name, pattern)))
-      .orderBy(sql`case when ${globalClinicalTerms.name} ilike ${prefix} then 0 else 1 end`, asc(globalClinicalTerms.name))
+      .orderBy(sql`case when ${globalClinicalTerms.name} ilike ${prefix} then 0 else 1 end`, asc(globalClinicalTerms.name), asc(globalClinicalTerms.id))
       .limit(limit),
   );
   return ok(rows.map((r) => r.name));

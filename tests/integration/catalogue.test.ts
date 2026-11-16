@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, inArray, like } from "drizzle-orm";
+import { eq, inArray, like, or, sql } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
 import { withTenant } from "@/server/db/tenant";
 import { auditEvents, doctors, globalClinicalTerms, globalMedicines, medicineFavourites, users } from "@/server/db/schema";
 import {
   addClinicMedicine,
+  compareMedicineHits,
   listFavourites,
   removeFavourite,
   saveFavourite,
@@ -18,6 +19,7 @@ import { createTestTenant, type TestTenant } from "../helpers/tenant";
 const stamp = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
 const P = `ZQ${stamp}`;
 const key = P.toLowerCase();
+const prefixKey = `paramol ${stamp.toLowerCase()}`;
 
 let A: TestTenant;
 let B: TestTenant;
@@ -40,11 +42,12 @@ beforeAll(async () => {
   B = await createTestTenant("catb");
   secondDoctor = (await extraDoctor(A.tenantId, "cat-second")).ctx;
   await adminDb.insert(globalMedicines).values([
-    { name: `${P} PARAMOL 500 TAB`, genericName: "Paracetamol 500mg", nameKey: `${key} paramol 500 tab` },
+    { name: `${P} PARAMOL 500 TAB`, genericName: `${P} Paracetamol 500mg`, nameKey: `${key} paramol 500 tab` },
     { name: `${P} 100% PURE SYRUP`, genericName: null, nameKey: `${key} 100% pure syrup` },
     { name: `${P} 1000 MG TAB`, genericName: null, nameKey: `${key} 1000 mg tab` },
     { name: `${P} AB_C TAB`, genericName: null, nameKey: `${key} ab_c tab` },
     { name: `${P} ABXC TAB`, genericName: null, nameKey: `${key} abxc tab` },
+    { name: `PARAMOL ${stamp} GLOBAL SYRUP`, genericName: null, nameKey: `${prefixKey} global syrup` },
   ]);
   await adminDb.insert(globalClinicalTerms).values([
     { kind: "complaint", name: `${P} FEVER WITH CHILLS`, nameKey: `${key} fever with chills` },
@@ -53,11 +56,18 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Independent steps: a failure in one must never skip the others.
   try {
-    await adminDb.delete(globalMedicines).where(like(globalMedicines.nameKey, `${key}%`));
-    await adminDb.delete(globalClinicalTerms).where(like(globalClinicalTerms.nameKey, `${key}%`));
-    await A.cleanup();
-    await B.cleanup();
+    try {
+      await adminDb.delete(globalMedicines).where(or(like(globalMedicines.nameKey, `${key}%`), like(globalMedicines.nameKey, `${prefixKey}%`)));
+      await adminDb.delete(globalClinicalTerms).where(like(globalClinicalTerms.nameKey, `${key}%`));
+    } finally {
+      try {
+        await A.cleanup();
+      } finally {
+        await B.cleanup();
+      }
+    }
   } finally {
     if (extraUsers.length > 0) await adminDb.delete(users).where(inArray(users.id, extraUsers));
   }
@@ -73,7 +83,7 @@ async function names(ctx: ServiceContext, q: unknown): Promise<string[]> {
 describe("searchMedicines", () => {
   it("finds global medicines by name and by generic name", async () => {
     expect(await names(A.as("doctor"), `${P} PARA`)).toEqual([`${P} PARAMOL 500 TAB`]);
-    expect(await names(A.as("doctor"), "paracetamol 500MG")).toContain(`${P} PARAMOL 500 TAB`);
+    expect(await names(A.as("doctor"), `${P} paracetamol 500MG`)).toEqual([`${P} PARAMOL 500 TAB`]);
   });
 
   it("treats % and _ literally", async () => {
@@ -81,12 +91,29 @@ describe("searchMedicines", () => {
     expect(await names(A.as("doctor"), `${P} AB_C`)).toEqual([`${P} AB_C TAB`]);
   });
 
-  it("ranks prefix matches before substring matches", async () => {
-    const added = await addClinicMedicine(A.as("doctor"), { name: `PARAMOL ${stamp} DROPS` });
+  it("ranks prefix matches before substring matches, whatever their source", async () => {
+    // The substring match is a clinic medicine and the prefix match a global one, so source order alone would get this wrong.
+    const added = await addClinicMedicine(A.as("doctor"), { name: `${P} PARAMOL ${stamp} DROPS` });
     expect(added.ok).toBe(true);
-    const found = await names(A.as("doctor"), "PARAMOL");
-    expect(found.indexOf(`PARAMOL ${stamp} DROPS`)).toBeLessThan(found.indexOf(`${P} PARAMOL 500 TAB`));
-    expect(found.indexOf(`PARAMOL ${stamp} DROPS`)).toBeGreaterThanOrEqual(0);
+    const found = await names(A.as("doctor"), `PARAMOL ${stamp}`);
+    expect(found).toEqual([`PARAMOL ${stamp} GLOBAL SYRUP`, `${P} PARAMOL ${stamp} DROPS`]);
+  });
+
+  it("orders hits totally: favourite, prefix, source, name, then id", () => {
+    const hit = (source: "favourite" | "clinic" | "global", name: string, id: string) => ({
+      source,
+      id,
+      name,
+      genericName: null,
+      favourite: null,
+    });
+    const tied = [hit("global", "Same", "b"), hit("global", "Same", "c"), hit("global", "Same", "a")];
+    expect([...tied].sort((x, y) => compareMedicineHits(x, y, "sa")).map((h) => h.id)).toEqual(["a", "b", "c"]);
+    expect([...tied].reverse().sort((x, y) => compareMedicineHits(x, y, "sa")).map((h) => h.id)).toEqual(["a", "b", "c"]);
+    expect(compareMedicineHits(tied[0], tied[0], "sa")).toBe(0);
+    // Earlier keys still win over the id.
+    expect(compareMedicineHits(hit("clinic", "Same", "z"), hit("global", "Same", "a"), "sa")).toBeLessThan(0);
+    expect(compareMedicineHits(hit("global", "Same", "z"), hit("global", "Sameb", "a"), "sa")).toBeLessThan(0);
   });
 
   it("keeps clinic medicines inside their clinic and audits ids only", async () => {
@@ -97,8 +124,8 @@ describe("searchMedicines", () => {
     expect(first.value.created).toBe(true);
     expect(again.value).toEqual({ id: first.value.id, created: false });
 
-    expect(await names(A.as("doctor"), "CLINIC ONLY")).toEqual([name]);
-    expect(await names(B.as("doctor"), "CLINIC ONLY")).toEqual([]);
+    expect(await names(A.as("doctor"), `${P} CLINIC ONLY`)).toEqual([name]);
+    expect(await names(B.as("doctor"), `${P} CLINIC ONLY`)).toEqual([]);
 
     const audit = await withTenant(A.tenantId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.entityId, first.value.id)),
@@ -109,7 +136,7 @@ describe("searchMedicines", () => {
 
   it("finds Devanagari clinic medicines", async () => {
     await addClinicMedicine(A.as("doctor"), { name: `क्रोसिन ${stamp}` });
-    expect(await names(A.as("doctor"), "क्रोसिन")).toEqual([`क्रोसिन ${stamp}`]);
+    expect(await names(A.as("doctor"), `क्रोसिन ${stamp}`)).toEqual([`क्रोसिन ${stamp}`]);
   });
 
   it("survives hostile search input without errors", async () => {
@@ -126,8 +153,18 @@ describe("searchMedicines", () => {
     expect(await searchMedicines(A.as("accountant"), { q: "x" })).toMatchObject({ ok: false, code: "forbidden" });
     expect((await searchMedicines(A.as("nurse"), { q: "x" })).ok).toBe(true);
     expect((await searchMedicines(A.as("pharmacist"), { q: "x" })).ok).toBe(true);
-    expect(await addClinicMedicine(A.as("nurse"), { name: "Nurse Med" })).toMatchObject({ ok: false, code: "forbidden" });
-    expect(await addClinicMedicine(A.as("reception"), { name: "Desk Med" })).toMatchObject({ ok: false, code: "forbidden" });
+    for (const role of ["nurse", "pharmacist", "accountant", "reception"]) {
+      expect(await addClinicMedicine(A.as(role), { name: `Role ${role} Med` })).toMatchObject({ ok: false, code: "forbidden" });
+    }
+    expect((await addClinicMedicine(A.as("owner"), { name: `${P} OWNER MED` })).ok).toBe(true);
+  });
+
+  it("never throws on missing or hostile options", async () => {
+    // Deliberately outside the declared types: server actions pass whatever the client sent.
+    const search = searchMedicines as (ctx: ServiceContext, opts?: unknown) => ReturnType<typeof searchMedicines>;
+    for (const opts of [null, undefined, "x", 5, []]) {
+      expect((await search(A.as("doctor"), opts)).ok).toBe(true);
+    }
   });
 
   it("validates clinic medicine names, refusing a NUL rather than stripping it", async () => {
@@ -143,6 +180,11 @@ describe("searchMedicines", () => {
       ok: false,
       code: "invalid",
       field: "name",
+    });
+    expect(await addClinicMedicine(A.as("doctor"), { name: "Good Syrup", genericName: `Bad${NUL}Generic` })).toMatchObject({
+      ok: false,
+      code: "invalid",
+      field: "genericName",
     });
   });
 });
@@ -234,8 +276,53 @@ describe("favourites", () => {
   });
 
   it("is limited to prescribers", async () => {
-    expect(await saveFavourite(A.as("nurse"), line)).toMatchObject({ ok: false, code: "forbidden" });
-    expect(await listFavourites(A.as("reception"))).toMatchObject({ ok: false, code: "forbidden" });
+    const saved = await saveFavourite(A.as("doctor"), { drugName: `${P} ROLE CHECK` });
+    if (!saved.ok) throw new Error(saved.message);
+    for (const role of ["nurse", "pharmacist", "accountant", "reception"]) {
+      expect(await saveFavourite(A.as(role), line)).toMatchObject({ ok: false, code: "forbidden" });
+      expect(await listFavourites(A.as(role))).toMatchObject({ ok: false, code: "forbidden" });
+      expect(await removeFavourite(A.as(role), saved.value.id)).toMatchObject({ ok: false, code: "forbidden" });
+    }
+    // The forbidden attempts removed nothing.
+    const list = await listFavourites(A.as("doctor"));
+    expect(list.ok && list.value.some((f) => f.id === saved.value.id)).toBe(true);
+  });
+
+  it("refuses a NUL in a favourite rather than stripping it", async () => {
+    const NUL = "\u0000";
+    expect([...NUL]).toHaveLength(1);
+    expect(await saveFavourite(A.as("doctor"), { drugName: `Bad${NUL}Tab` })).toMatchObject({
+      ok: false,
+      code: "invalid",
+      field: "drugName",
+    });
+    expect(await saveFavourite(A.as("doctor"), { drugName: "Good Tab", remarks: `Bad${NUL}note` })).toMatchObject({
+      ok: false,
+      code: "invalid",
+      field: "remarks",
+    });
+  });
+
+  it("holds the cap under concurrent saves", async () => {
+    const { ctx: fourth, doctorId } = await extraDoctor(A.tenantId, "cat-fourth");
+    await adminDb.insert(medicineFavourites).values(
+      Array.from({ length: 199 }, (_, i) => ({
+        tenantId: A.tenantId,
+        doctorId,
+        nameKey: `race ${i}`,
+        drugName: `Race ${i}`,
+      })),
+    );
+    const results = await Promise.all(
+      Array.from({ length: 12 }, (_, i) => saveFavourite(fourth, { drugName: `Race New ${i}` })),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    for (const r of results.filter((x) => !x.ok)) expect(r).toMatchObject({ ok: false, code: "invalid", field: "favourites" });
+    const [{ n }] = await adminDb
+      .select({ n: sql<number>`count(*)::int` })
+      .from(medicineFavourites)
+      .where(eq(medicineFavourites.doctorId, doctorId));
+    expect(n).toBe(200);
   });
 });
 
@@ -253,5 +340,21 @@ describe("suggestTerms", () => {
     expect(await suggestTerms(A.as("doctor"), { kind: "spell", q: "x" })).toMatchObject({ ok: false, code: "invalid", field: "kind" });
     expect(await suggestTerms(A.as("doctor"), { kind: "test", q: "   " })).toEqual({ ok: true, value: [] });
     expect(await suggestTerms(A.as("reception"), { kind: "test", q: "cbc" })).toMatchObject({ ok: false, code: "forbidden" });
+  });
+
+  it("allows nurses and pharmacists and refuses accountants and reception", async () => {
+    for (const role of ["nurse", "pharmacist"]) {
+      expect(await suggestTerms(A.as(role), { kind: "test", q: `${P} CB` })).toEqual({ ok: true, value: [`${P} CBC`] });
+    }
+    for (const role of ["accountant", "reception"]) {
+      expect(await suggestTerms(A.as(role), { kind: "test", q: `${P} CB` })).toMatchObject({ ok: false, code: "forbidden" });
+    }
+  });
+
+  it("never throws on missing or hostile options", async () => {
+    const suggest = suggestTerms as (ctx: ServiceContext, opts?: unknown) => ReturnType<typeof suggestTerms>;
+    for (const opts of [null, undefined, "test", 5, {}, { kind: null }, { kind: ["test"] }]) {
+      expect(await suggest(A.as("doctor"), opts)).toMatchObject({ ok: false, code: "invalid", field: "kind" });
+    }
   });
 });
