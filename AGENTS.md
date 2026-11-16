@@ -43,7 +43,7 @@ The repo is a copy of the original `doctor-prescription-app`:
 
 **Nothing here is production-safe for patient data yet.** There is no staging deployment, and the legacy IndexedDB data is demo data.
 
-**Repository state (2026-11-16):** Phase 0 and Phase 1A are code complete on branch `phase-1-prescription-mvp`; the Phase 1A gate run is pending final verification (see `docs/PROGRESS.md` section 4.8). What exists: Auth.js credentials login and clinic sign-up, Postgres with row-level security (forced policies) and composite same-tenant foreign keys, a role matrix enforced in services, patients (register, edit, search, duplicate warning, archive), the prescription lifecycle (draft, save, finalize, amend with a reason, repeat) with database-enforced immutability, per-clinic Rx numbering, an append-only audit log, Vitest unit/integration tests and Playwright e2e. What does not exist: Template Studio and PDF, WhatsApp/email sharing, offline sync, billing, staging. Decisions: `docs/DECISIONS.md` (ADR-0019 to ADR-0026 cover the current state).
+**Repository state (2026-11-16):** Phase 0 and Phase 1A are code complete on branch `phase-1-prescription-mvp`; the automated gate (`node scripts/verify-gate-0.mjs`: 385 unit/integration tests, 15 e2e) passed on 2026-11-16 (see `docs/PROGRESS.md` section 4.8). What exists: Auth.js credentials login and clinic sign-up, Postgres with row-level security (forced policies) and composite same-tenant foreign keys, a role matrix enforced in services, patients (register, edit, search, duplicate warning, archive), the prescription lifecycle (draft, save, finalize, amend with a reason, repeat) with database-enforced immutability, per-clinic Rx numbering, an append-only audit log, Vitest unit/integration tests and Playwright e2e. What does not exist: Template Studio and PDF, WhatsApp/email sharing, offline sync, billing, staging. Decisions: `docs/DECISIONS.md` (ADR-0019 to ADR-0026 cover the current state).
 
 ### What is reusable
 
@@ -191,7 +191,7 @@ Skills live at `~/.agents/skills` (OpenCode) and `~/.claude/skills` (Claude Code
 
 ## 8. Where we are / what is next
 
-See `docs/PROGRESS.md` for the live tracker. Phase 0 (foundation) is code complete and Phase 1A (patients and prescription core) is code complete; the open items are the final Phase 1A verification run and the Phase 0 ops carry-overs (staging, CI on GitHub, pre-commit hook, 360 px check, MFA note). The next milestone is Plan 1B (clinical form, autosave). Read `docs/ROADMAP.md` before starting it.
+See `docs/PROGRESS.md` for the live tracker. Phase 0 (foundation) is code complete and Phase 1A (patients and prescription core) is code complete; the open items are the Phase 0 ops carry-overs (staging, CI on GitHub, pre-commit hook, 360 px check, MFA note). The next milestone is Plan 1B (clinical form, autosave). Read `docs/ROADMAP.md` before starting it.
 
 ---
 
@@ -213,7 +213,7 @@ Track answers in `docs/DECISIONS.md`:
 
 - **The desktop build is a static export and cannot contain server routes.** `scripts/build-desktop.mjs` stashes server-only routes (everything under `src/app/(app)`, auth, API) and exports the legacy shell only. A new server-only route directory outside `(app)` must be added to its list (ADR-0021).
 - **Prescription lock order.** Lock the prescription row `FOR UPDATE` before touching its items or its visit. Another order can deadlock (`40P01`) against a finalize. The immutability triggers (ADR-0023) reject edits of finalized records with SQLSTATE `23000` even on the admin connection; do not work around them.
-- **Composite-FK pattern for new tenant tables.** The parent gets `UNIQUE (tenant_id, id)`; the child references `(tenant_id, x_id)`. Name constraints explicitly (under 63 characters), and use `ON DELETE SET NULL (col)` for nullable parents. A guard test in `tests/integration/tenant-fk.test.ts` fails on a single-column key into a tenant-owned table (ADR-0025). drizzle-kit emits the foreign key before the unique constraint it needs; reorder by hand.
+- **Composite-FK pattern for new tenant tables.** The parent gets `UNIQUE (tenant_id, id)`; the child references `(tenant_id, x_id)`. `doctors` has no `(tenant_id, id)` unique key yet; the first table that references it must add one. Name constraints explicitly (under 63 characters), and use `ON DELETE SET NULL (col)` for nullable parents. A guard test in `tests/integration/tenant-fk.test.ts` fails on a single-column key into a tenant-owned table (ADR-0025). drizzle-kit emits the foreign key before the unique constraint it needs; reorder by hand.
 - **`repeatPrescription` refuses superseded (`amended`) versions** and drafts; only the latest `finalized` version can be repeated (ADR-0026).
 - **Windows vitest needs an UPPERCASE drive letter** in the working directory (`E:\...`). A lowercase `e:` loads two vitest instances and every test fails.
 - **Docker Desktop on this machine lives under `%LOCALAPPDATA%\Programs\DockerDesktop`**, not Program Files.

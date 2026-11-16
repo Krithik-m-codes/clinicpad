@@ -1,8 +1,8 @@
 # ClinicPad — Progress Tracker
 
 **Last updated:** 2026-11-16
-**Current phase:** Phase 1A — Patients and prescription core (code complete; final gate run pending). Phase 0 ops items (staging etc.) still open.
-**Overall status:** 🟡 Gate 0 passed locally on 2026-11-12; Phase 1A gate pending final verification; not yet deployed to staging
+**Current phase:** Phase 1A — Patients and prescription core (code complete; automated gate passed locally 2026-11-16). Phase 0 ops items (staging etc.) still open.
+**Overall status:** 🟡 `node scripts/verify-gate-0.mjs` PASSED locally on 2026-11-12 and again on 2026-11-16 (with the Phase 1A tests); not yet deployed to staging
 
 This is the live source of truth for *what is actually true*. Update it at the end of every work session. Do not mark a task done without evidence (command output, link, screenshot, or commit hash).
 
@@ -15,8 +15,8 @@ This is the live source of truth for *what is actually true*. Update it at the e
 | Product stage | pre-alpha / foundation |
 | Codebase origin | copy of `doctor-prescription-app` |
 | Git initialized | yes (`97a4af0`) |
-| Tests passing | 314 unit/integration in 21 files (`npm run test` excluding `tests/integration/tenant-fk.test.ts`, 2026-11-16); 15 e2e tests are written (smoke 6, patients 4, prescriptions 5) but were NOT run on 2026-11-16. Final counts: pending final verification |
-| Build status | `build:web` and `build:desktop` passed with strict type/lint at Gate 0 (2026-11-12); not re-run since Phase 1A: pending final verification |
+| Tests passing | 385 unit/integration in 22 files + 15 e2e (smoke 6, patients 4, prescriptions 5), all passed on 2026-11-16 (`npm run test`; `node scripts/verify-gate-0.mjs`) |
+| Build status | `build:web` and `build:desktop` pass with strict type/lint (inside `verify-gate-0` on 2026-11-16; `build:desktop` also run alone, exit 0, 6 legacy routes exported, git status clean afterwards) |
 | Paying clinics | 0 |
 | Design partners | 0 |
 | MRR | ₹0 |
@@ -30,7 +30,7 @@ This is the live source of truth for *what is actually true*. Update it at the e
 | Phase | Status | Started | Completed | Evidence |
 |---|---|---|---|---|
 | 0 — Foundation | 🟡 in progress | 2026-11-06 | — | `node scripts/verify-gate-0.mjs` PASSED 2026-11-12 |
-| 1 — Prescription MVP | 🟡 in progress (1A: patients + prescription core code complete; 1B-1D not started) | 2026-11-12 | — | see section 4.8; Gate 1A run pending final verification |
+| 1 — Prescription MVP | 🟡 in progress (1A: patients + prescription core code complete; 1B-1D not started) | 2026-11-12 | — | see section 4.8; `node scripts/verify-gate-0.mjs` PASSED 2026-11-16 (385 tests + 15 e2e) |
 | 2 — Template Studio | ⚪ not started | — | — | — |
 | 3 — Clinic operations | ⚪ not started | — | — | — |
 | 4 — Offline + desktop | ⚪ not started | — | — | — |
@@ -143,17 +143,17 @@ This is the live source of truth for *what is actually true*. Update it at the e
 
 ### 4.8 Phase 1A checklist (patients and prescription core)
 
-A box is ticked only for evidence seen in a run on 2026-11-16: `npm run test` excluding `tests/integration/tenant-fk.test.ts` gave 21 files, 314 tests, all passed (that file is being changed by the in-progress migration 0009 work and was red at the time). Playwright, `build:desktop` and `node scripts/verify-gate-0.mjs` were not run in this pass; every e2e reference below is written but unrun, hence "pending final verification". Per-file counts are from the same run.
+A box is ticked only for evidence seen on 2026-11-16 (after migration 0009 landed, commit `4108b90`): `npm run lint` 0 errors (2 existing warnings), `npm run typecheck` clean, `npm run test` = 22 files, 385 tests passed; `npm run build:desktop` exit 0 with a clean `git status --short`; `node scripts/verify-gate-0.mjs` ended with `15 passed (1.5m)` and `Gate 0 verification PASSED` (it re-ran lint, typecheck, the 385 tests, `build:web`, `build:desktop` and the e2e suite). Per-file counts are from an earlier run of the same suite (excluding `tenant-fk.test.ts`, 71 tests).
 
-- [x] Patients: register, edit, search (name/phone/number), duplicate warning, archive — `tests/integration/patients.test.ts` (57 tests), `tests/unit/{names,phone,age}.test.ts`; e2e `tests/e2e/patients.spec.ts` (4 tests): pending final verification
-- [x] Prescriptions: draft, save, finalize, amend (versioned, reasoned), repeat — `tests/integration/prescriptions-draft.test.ts` (40), `tests/integration/prescriptions-lifecycle.test.ts` (31); e2e `tests/e2e/prescriptions.spec.ts` (5 tests): pending final verification
+- [x] Patients: register, edit, search (name/phone/number), duplicate warning, archive — `tests/integration/patients.test.ts` (57 tests), `tests/unit/{names,phone,age}.test.ts`; e2e `tests/e2e/patients.spec.ts` (4 tests, passed in the 2026-11-16 gate run)
+- [x] Prescriptions: draft, save, finalize, amend (versioned, reasoned), repeat — `tests/integration/prescriptions-draft.test.ts` (40), `tests/integration/prescriptions-lifecycle.test.ts` (31); e2e `tests/e2e/prescriptions.spec.ts` (5 tests, passed in the 2026-11-16 gate run)
 - [x] Immutability enforced in the database (ADR-0023) — `tests/integration/immutability.test.ts` (22), `tests/integration/immutability-races.test.ts` (24, also re-run alone after warming the writer connection: 24 passed)
 - [x] Per-clinic sequential Rx numbers; abandoned drafts leave no gaps; double-finalize burns no number (ADR-0022) — `tests/integration/prescriptions-lifecycle.test.ts` ("abandoned drafts do not consume numbers", "idempotent under a double-click... no burned number", "concurrent finalizes of different drafts"), `tests/integration/numbering-audit.test.ts` (7)
 - [x] Audit events for patient created/updated/archived and prescription drafted/finalized/amendment drafted/amended — written in `src/server/services/{patients,prescriptions}.ts` inside the mutation transaction; asserted in `tests/integration/patients.test.ts`, `prescriptions-draft.test.ts`, `prescriptions-lifecycle.test.ts`
 - [x] Server-side permissions on every service (ADR-0026) — `tests/unit/permissions.test.ts` (50) and the forbidden-role cases in the integration files above
-- [ ] Same-tenant references enforced by composite foreign keys (ADR-0025) — migration 0007 landed; migration 0009 and `tests/integration/tenant-fk.test.ts` are in progress, so this stays open until the final run
-- [ ] `npm run build:desktop` still exports the legacy shell with no stashed or modified files left behind — pending final verification (the new routes live under `src/app/(app)`, which the script already stashes; not yet confirmed)
-- [ ] `node scripts/verify-gate-0.mjs` (now including the Phase 1A tests) shows `Gate 0 verification PASSED` — pending final verification
+- [x] Same-tenant references enforced by composite foreign keys (ADR-0025) — migration 0007 (clinical tables) and 0009 (`branches -> clinics`, `doctors.primary_branch_id -> branches` as `ON DELETE SET NULL ("primary_branch_id")`, `template_versions -> templates`); `tests/integration/tenant-fk.test.ts` (71 tests) passed in the 385-test run, guard allowlist empty. Note: `doctors` has no `(tenant_id, id)` unique key yet; the first table that references it must add one.
+- [x] `npm run build:desktop` still exports the legacy shell with no stashed or modified files left behind — exit 0, 6 routes (`/`, `/manage`, `/patient-infos`, `/prescribe`, `/preview`, `/api/ping`), `git status --short` empty, no `.desktop-stash`; no change to `scripts/build-desktop.mjs` was needed (the new routes live under `src/app/(app)`, already in its list)
+- [x] `node scripts/verify-gate-0.mjs` (now including the Phase 1A tests) — `Gate 0 verification PASSED`, 385 tests, `15 passed (1.5m)` e2e, 2026-11-16
 
 **Phase 1A known limitations and follow-ups**
 
@@ -189,7 +189,7 @@ Decision: proceed / fix
 
 Remaining Phase 0 work is the open boxes in section 4: staging deploy and restore drill on staging, pre-commit hook, SETUP.md clean-machine verification, 360 px visual check, MFA design note, first CI run on GitHub.
 
-Phase 1A is code complete; what is open is the final verification (migration 0009 composite foreign keys, desktop build check, `verify-gate-0`, e2e) tracked in section 4.8.
+Phase 1A is code complete and its automated gate passed locally on 2026-11-16 (section 4.8). What is open is the Phase 0 ops list above and the Phase 1A follow-ups in section 4.8; Phase 1 as a whole (1B-1D) is not done.
 
 **Next:** Plan 1B (clinical form, autosave). ADR numbers 0022-0026 are now taken by Phase 1A, so the planned ADR numbers in the Plan 1B and 1C drafts must be renumbered: 1B's draft ADRs (0025-0029) become 0027-0031 and 1C's (0030-0033) become 0032-0035.
 
@@ -287,10 +287,10 @@ Append to §11 at the end of each working session:
 ---
 
 ### 2026-11-16 — Phase 1A: patients, prescription lifecycle, immutability, audit
-- Did: shipped Phase 1A. Patients (register, edit, search by name/phone/number, duplicate warning, archive); prescription lifecycle (draft, save, finalize, amend with a reason and version + 1, repeat) with per-clinic Rx numbers assigned at finalization (ADR-0022); database-level immutability through triggers (ADR-0023, migrations 0004-0006, 0008); amendments that copy the visit (ADR-0024); composite same-tenant foreign keys (ADR-0025, migration 0007; 0009 in progress); audit events for every patient and prescription mutation; server-side role matrix (ADR-0026). The work went through 14 reviewed commit ranges (one review per range, diffs kept under `.superpowers/sdd/`), which produced the hardening migrations 0005, 0006 and 0008, the superseded-version rule for repeat, and the race tests. This session also quieted the dotenv banner in `drizzle.config.ts` and `playwright.config.ts` and warmed the writer connection in `tests/integration/immutability-races.test.ts`.
-- Evidence: `npm run typecheck` clean; `npm run lint` 0 errors (2 existing warnings); `npm run test` excluding `tenant-fk.test.ts` = 21 files, 314 tests passed; `npx vitest run tests/integration/immutability-races.test.ts` = 24 passed after the warm-up edit. With `tenant-fk.test.ts` included the run showed 15 failures, all in that file, while migration 0009 was being written by a parallel task.
-- Blocked by: migration 0009 and its test not landed at the time of writing; desktop build check, `verify-gate-0` and Playwright deliberately not run in this pass.
-- Next: when 0009 lands, run `npm run build:desktop`, `node scripts/verify-gate-0.mjs` and the e2e suite, then update section 4.8 and the snapshot. Then Plan 1B (see "Next" in section 5 for the ADR renumbering).
+- Did: shipped Phase 1A. Patients (register, edit, search by name/phone/number, duplicate warning, archive); prescription lifecycle (draft, save, finalize, amend with a reason and version + 1, repeat) with per-clinic Rx numbers assigned at finalization (ADR-0022); database-level immutability through triggers (ADR-0023, migrations 0004-0006, 0008); amendments that copy the visit (ADR-0024); composite same-tenant foreign keys (ADR-0025, migrations 0007 and 0009); audit events for every patient and prescription mutation; server-side role matrix (ADR-0026). The work went through 14 reviewed commit ranges (one review per range, diffs kept under `.superpowers/sdd/`), which produced the hardening migrations 0005, 0006 and 0008, the superseded-version rule for repeat, and the race tests. This session also quieted the dotenv banner in `drizzle.config.ts` and `playwright.config.ts` and warmed the writer connection in `tests/integration/immutability-races.test.ts`.
+- Evidence (after migration 0009, commit `4108b90`): `npm run lint` 0 errors (2 existing warnings); `npm run typecheck` clean; `npm run test` = 22 files, 385 tests passed; `npm run build:desktop` exit 0, `git status --short` empty; `node scripts/verify-gate-0.mjs` = `15 passed (1.5m)` and `Gate 0 verification PASSED`. `npx vitest run tests/integration/immutability-races.test.ts` = 24 passed after the warm-up edit.
+- Blocked by: nothing for the automated gate. Staging, CI on GitHub, pre-commit hook, 360 px check and MFA note remain open (Phase 0 carry-overs).
+- Next: Plan 1B (see "Next" in section 5 for the ADR renumbering).
 - Gotchas: on Windows run vitest from an uppercase drive letter. Docker Desktop on this machine lives under `%LOCALAPPDATA%\Programs\DockerDesktop`. In Playwright, `getByRole("alert")` also matches Next's route announcer.
 
 ---
