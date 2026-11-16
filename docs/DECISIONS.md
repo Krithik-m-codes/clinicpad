@@ -1,6 +1,6 @@
 # ClinicPad — Architecture Decision Records
 
-**Last updated:** 2026-11-06
+**Last updated:** 2026-11-16
 **Format:** lightweight ADR (context → decision → consequences → revisit trigger)
 **Rule:** if a decision is hard to reverse or affects tenant safety, patient data, or money, it goes here before implementation.
 
@@ -337,6 +337,104 @@ Shared code must not assume `window` or Node-only APIs without a boundary.
 **Decision:** `npm run build:desktop` runs `scripts/build-desktop.mjs`, which moves server-only routes to `.desktop-stash/`, swaps in a client redirect to `/prescribe`, runs the static export, and always restores the originals (also after an interrupted run). The Tauri desktop app is therefore the offline legacy generator until Phase 4 delivers local SQLite + sync.
 
 **Consequences:** The list of server-only paths in the script must be updated when new server routes are added to the web app. The Tauri installer has not been smoke-tested since the split.
+
+---
+
+## ADR-0022 — Rx numbers are assigned at finalization, per tenant
+
+- **Status:** accepted
+- **Date:** 2026-11-16
+
+**Context:** Prescription numbers are part of a medico-legal sequence. A number handed out to a draft that is later abandoned leaves a hole that has to be explained to an auditor.
+
+**Decision:** Drafts have no number (`rx_no` is null). `finalizePrescription` allocates the next per-tenant number inside the finalize transaction, after every check has passed, through `allocateNumber` (`src/server/services/numbering.ts`): an insert-or-increment upsert on the `tenant_counters` row `(tenant_id, 'rx')`, which takes a row lock so concurrent finalizes queue and receive distinct, consecutive numbers. An amendment keeps its parent's `rx_no` and increases `version`; only a prescription with no parent allocates a number. A finalize that fails, conflicts or rolls back burns no number (tested in `tests/integration/prescriptions-lifecycle.test.ts` and `tests/integration/numbering-audit.test.ts`). Patient numbers use the same counter table under the name `patient`.
+
+**Consequences:** The sequence has no gaps from abandoned drafts, double-clicks or failed finalizes. Finalize serializes per tenant on the counter row, which is acceptable at clinic scale. Amendments of a prescription without a number are refused with `conflict` rather than allocating a second number.
+
+**Revisit trigger:** offline finalize (Phase 4) needs number blocks or a different reservation scheme.
+
+---
+
+## ADR-0023 — Immutability is enforced by Postgres triggers
+
+- **Status:** accepted
+- **Date:** 2026-11-16
+
+**Context:** Invariant 3 says a signed prescription is never overwritten. Application code can have bugs, and the admin connection bypasses RLS, so the rule has to live where every writer passes through it.
+
+**Decision:** `BEFORE` triggers on `prescriptions`, `prescription_items` and `visits` (migrations 0004, 0005, 0006 and 0008; final rules below) reject changes with SQLSTATE `23000`, also for the admin connection.
+
+- A `finalized` or `amended` prescription cannot be updated or deleted. The only allowed change is the `finalized -> amended` status flip, and nothing else (apart from `updated_at`) may change in that statement.
+- Items of a non-draft prescription cannot be inserted, updated, deleted or moved; an update checks both the old and the new parent. Item triggers fail closed on a missing or foreign-tenant parent (`23503`).
+- A finalized visit cannot be updated or deleted. A draft visit whose prescription is no longer a draft accepts only the plain `draft -> finalized` flip (`status`, `finalized_at`, `updated_at` change; no other column).
+- A non-draft row may be deleted only when its tenant row no longer exists (`tenant_is_erased`, `SECURITY DEFINER`, `search_path` pinned, `row_security = off`, fails closed). Tenant offboarding therefore works, and no other foreign-key cascade can erase a signed record. `clinicpad_app` has no `DELETE` on `tenants`.
+- Item and visit triggers read the parent prescription `FOR SHARE`, so a finalize that has not committed yet cannot be raced (`tests/integration/immutability-races.test.ts`).
+
+**Locking rule for every writer:** lock the prescription row `FOR UPDATE` before touching its items or its visit. The services do this (`saveDraft`, `finalizePrescription`, `amendPrescription`). Another order may make PostgreSQL abort one side with `40P01` (deadlock); that is a failed request, not corruption.
+
+**Documented limitations (not enforced by these triggers):**
+- `TRUNCATE`, `ALTER TABLE ... DISABLE TRIGGER` and `session_replication_role = replica` by a superuser or table owner.
+- An `INSERT` of an already-finalized row.
+- The `finalized -> amended` flip does not check that a finalized successor exists.
+- An uncommitted non-draft prescription is invisible to the visit guard.
+- Production must keep the `EXECUTE` grant on `tenant_is_erased` aligned with the role that performs offboarding (migration owner versus admin role split).
+
+**Consequences:** Medico-legal integrity does not depend on application correctness. Services translate `23000` into an `immutable` result. Tests in `tests/integration/immutability.test.ts` and `tests/integration/immutability-races.test.ts` run against the real database.
+
+**Revisit trigger:** a managed-database restriction on triggers, or a legal requirement for cryptographic sealing (hash chain or signature) on top.
+
+---
+
+## ADR-0024 — Amendments copy the visit
+
+- **Status:** accepted
+- **Date:** 2026-11-16
+
+**Context:** A signed prescription must stay exactly as issued, yet doctors need to correct it.
+
+**Decision:** `amendPrescription` creates a new draft visit and a new draft prescription: `parent_prescription_id` points at the source, `version = source.version + 1`, `rx_no` is copied, `amendment_reason` is required (5 to 500 characters), and the items are copied with fresh ids. The originals never change until the new version is finalized, when the parent flips to `amended`. Only a `finalized` source can be amended (a draft is edited directly; an `amended` one is refused with `conflict`). There is at most one open amendment per prescription, enforced by the service and by the partial unique index `prescriptions_one_open_amendment` (migration 0003). The audit event `prescription.amendment_drafted` carries `reasonLength` and `parentPrescriptionId`, never the reason text; finalizing the amendment writes `prescription.amended`.
+
+**Consequences:** Full version history with no in-place edits. The amendment is a second visit row for the same encounter and keeps the original `doctorId` (see Phase 1A follow-ups in `docs/PROGRESS.md`).
+
+**Revisit trigger:** reporting needs one visit per encounter, or the amending doctor must differ from the original author.
+
+---
+
+## ADR-0025 — Same-tenant references are enforced by the database
+
+- **Status:** accepted
+- **Date:** 2026-11-16
+
+**Context:** RLS checks only a row's own `tenant_id`, and foreign-key checks run without RLS. A single-column foreign key could therefore point at another tenant's row.
+
+**Decision:** Relations between tenant-owned tables use composite keys `(tenant_id, x_id) -> parent(tenant_id, id)`. The parent gets `UNIQUE (tenant_id, id)`. Constraint names are explicit and under 63 characters. Migration 0007 converted `prescription_items -> prescriptions`, `prescriptions -> visits`, `prescriptions.parent_prescription_id` and `visits -> patients`; migration 0009 covers the remaining Phase 0 relations (written by a parallel task; confirm against `drizzle/` at final verification). Nullable parents use the `ON DELETE SET NULL (column)` form so the tenant column is not nulled. A guard test in `tests/integration/tenant-fk.test.ts` fails if a single-column key into a tenant-owned table appears. **Pattern for every new tenant-owned table:** unique `(tenant_id, id)` on the parent, foreign key on `(tenant_id, x_id)` in the child. Services still resolve every input id through `withTenant` first.
+
+**Consequences:** Cross-tenant references are impossible even through the admin connection. Migrations need the unique constraint created before the foreign key that references it (drizzle-kit emits them in the wrong order and needs a hand edit).
+
+**Revisit trigger:** partitioning by tenant, which would change how keys are declared.
+
+---
+
+## ADR-0026 — Phase 1A role matrix and repeat rule
+
+- **Status:** accepted
+- **Date:** 2026-11-16
+
+**Decision:** `src/lib/domain/permissions.ts` is the single matrix; every service calls `can(role, action)` before touching data, and unknown roles or actions are denied (`tests/unit/permissions.test.ts`).
+
+| Action | owner | doctor | reception | nurse | pharmacist | accountant |
+|---|---|---|---|---|---|---|
+| `patient.read` | yes | yes | yes | yes | no | no |
+| `patient.write` | yes | yes | yes | no | no | no |
+| `patient.archive` | yes | no | no | no | no | no |
+| `rx.read` | yes | yes | yes | yes | yes | no |
+| `rx.draft`, `rx.finalize`, `rx.amend` | yes | yes | no | no | no | no |
+
+The nurse reads but does not write patients (design spec section 4). The accountant reads neither patients nor prescriptions. Only the owner archives patients.
+
+`repeatPrescription` copies a `finalized` source into a new draft. It refuses a draft source and a superseded (`amended`) source with `conflict`: a superseded version holds exactly the content an amendment corrected, so copying it forward would be a patient-safety hazard. Audit payloads carry ids, counts and field names only, never free text.
+
+**Revisit trigger:** a clinic role model that needs per-clinic custom roles, or nurse charting in Phase 3.
 
 ---
 

@@ -2,7 +2,7 @@
 
 This file is the single source of truth for any AI agent or developer working on ClinicPad. Read it before touching code. Update it when reality diverges from what is written here.
 
-**Last updated:** 2026-11-06
+**Last updated:** 2026-11-16
 **Product stage:** pre-alpha / foundation
 **Working name:** ClinicPad (verify trademark and domain before public launch)
 
@@ -37,12 +37,13 @@ The repo is a copy of the original `doctor-prescription-app`:
 - Client-only state via `src/contexts/PrescriptionContext.tsx`.
 - Persistence via IndexedDB (`src/lib/db/`).
 - Hard-coded doctor identity and design in `src/app/(perscription)/preview/page.tsx`.
-- No authentication, no multi-tenancy, no server database, no billing, no appointments.
-- `next.config.ts` uses static export for Tauri and currently ignores TypeScript/ESLint build errors.
+- That original app (legacy routes) still exists under `src/app/(legacy)/` and is what the desktop build exports.
+- No billing, no appointments, no templates or PDF generation, no sharing, no offline sync for the web app.
+- `next.config.ts` builds a normal server app for the web; the desktop export is a separate build (`scripts/build-desktop.mjs`, ADR-0021). Build errors are no longer ignored.
 
-**Nothing here is production-safe for patient data yet.** Treat all existing data as demo data.
+**Nothing here is production-safe for patient data yet.** There is no staging deployment, and the legacy IndexedDB data is demo data.
 
-**Repository state (2026-11-06):** git initialized with the foundation docs and source copy. `npm run typecheck` passes after installing `@radix-ui/react-tabs`. No test suite, server code, database, or auth exists yet. The Phase 0 implementation plan is `docs/superpowers/plans/2026-11-06-phase-0-foundation.md`.
+**Repository state (2026-11-16):** Phase 0 and Phase 1A are code complete on branch `phase-1-prescription-mvp`; the Phase 1A gate run is pending final verification (see `docs/PROGRESS.md` section 4.8). What exists: Auth.js credentials login and clinic sign-up, Postgres with row-level security (forced policies) and composite same-tenant foreign keys, a role matrix enforced in services, patients (register, edit, search, duplicate warning, archive), the prescription lifecycle (draft, save, finalize, amend with a reason, repeat) with database-enforced immutability, per-clinic Rx numbering, an append-only audit log, Vitest unit/integration tests and Playwright e2e. What does not exist: Template Studio and PDF, WhatsApp/email sharing, offline sync, billing, staging. Decisions: `docs/DECISIONS.md` (ADR-0019 to ADR-0026 cover the current state).
 
 ### What is reusable
 
@@ -190,16 +191,7 @@ Skills live at `~/.agents/skills` (OpenCode) and `~/.claude/skills` (Claude Code
 
 ## 8. Where we are / what is next
 
-See `docs/PROGRESS.md` for the live tracker. The next milestone is **Phase 0 — Foundation**:
-
-1. Rebrand metadata and package name.
-2. Add lint/typecheck/test scripts and make the build strict.
-3. Add Postgres + Drizzle + RLS skeleton.
-4. Add auth and clinic onboarding.
-5. Add the app shell and role-aware navigation.
-6. Seed demo clinic data.
-
-Do not start Phase 1 (prescription MVP) until Phase 0 exits cleanly.
+See `docs/PROGRESS.md` for the live tracker. Phase 0 (foundation) is code complete and Phase 1A (patients and prescription core) is code complete; the open items are the final Phase 1A verification run and the Phase 0 ops carry-overs (staging, CI on GitHub, pre-commit hook, 360 px check, MFA note). The next milestone is Plan 1B (clinical form, autosave). Read `docs/ROADMAP.md` before starting it.
 
 ---
 
@@ -219,10 +211,15 @@ Track answers in `docs/DECISIONS.md`:
 
 ## 10. Things that will bite you
 
-- **`next.config.ts` has `output: "export"`.** Server features (auth callbacks, API routes that need a server) will not work in that mode. Phase 0 must split web and desktop builds.
-- **`ignoreBuildErrors: true`.** Hidden type errors are accumulating. Turn this off in Phase 0.
+- **The desktop build is a static export and cannot contain server routes.** `scripts/build-desktop.mjs` stashes server-only routes (everything under `src/app/(app)`, auth, API) and exports the legacy shell only. A new server-only route directory outside `(app)` must be added to its list (ADR-0021).
+- **Prescription lock order.** Lock the prescription row `FOR UPDATE` before touching its items or its visit. Another order can deadlock (`40P01`) against a finalize. The immutability triggers (ADR-0023) reject edits of finalized records with SQLSTATE `23000` even on the admin connection; do not work around them.
+- **Composite-FK pattern for new tenant tables.** The parent gets `UNIQUE (tenant_id, id)`; the child references `(tenant_id, x_id)`. Name constraints explicitly (under 63 characters), and use `ON DELETE SET NULL (col)` for nullable parents. A guard test in `tests/integration/tenant-fk.test.ts` fails on a single-column key into a tenant-owned table (ADR-0025). drizzle-kit emits the foreign key before the unique constraint it needs; reorder by hand.
+- **`repeatPrescription` refuses superseded (`amended`) versions** and drafts; only the latest `finalized` version can be repeated (ADR-0026).
+- **Windows vitest needs an UPPERCASE drive letter** in the working directory (`E:\...`). A lowercase `e:` loads two vitest instances and every test fails.
+- **Docker Desktop on this machine lives under `%LOCALAPPDATA%\Programs\DockerDesktop`**, not Program Files.
+- **Playwright `getByRole("alert")` also matches Next's route announcer.** Scope the locator or use a test id.
 - **Hard-coded Hindi doctor details** in the preview page. Extract to data before any real clinic uses it.
 - **IndexedDB repositories are client-only.** They cannot be called from server components.
 - **Tauri print path manipulates `document.body.innerHTML`.** Fragile; replace with the template renderer.
 - **PDF generation today is browser-print based.** Server-side PDF is required for WhatsApp/email and consistent output.
-- **No test coverage.** Add tests before refactoring the preview page.
+- **No test coverage of the legacy preview page.** The new app has unit, integration and e2e tests; the legacy routes do not. Add tests before refactoring the preview page.
