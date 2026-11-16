@@ -138,6 +138,7 @@ First-time local setup (needs `.env.local`, see section 3):
 docker compose up -d postgres
 npm run db:migrate    # apply migrations (creates the clinicpad_app role and RLS)
 npm run db:seed       # demo clinic: 3 staff, 50 patients, 20 prescriptions
+npm run db:seed:catalogue   # global medicine and clinical-term lists (idempotent; db:seed also runs it; safe in production)
 ```
 
 Demo login after seeding: `owner@demo.clinicpad.app` / `ClinicPad!2026` (also `doctor@...` and `reception@...`). The seed is idempotent and refuses to run when `NODE_ENV=production`.

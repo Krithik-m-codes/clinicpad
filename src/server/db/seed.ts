@@ -17,6 +17,7 @@ import {
 } from "@/server/db/schema";
 import { hashPassword } from "@/server/auth/password";
 import { newId } from "@/lib/domain/ids";
+import { seedCatalogue } from "@/server/db/catalogue-seed";
 
 const DEMO_SLUG = "demo-clinic";
 const DEMO_PASSWORD = "ClinicPad!2026";
@@ -216,7 +217,11 @@ export async function seedDemo(): Promise<void> {
 const entry = process.argv[1];
 if (entry && import.meta.url === pathToFileURL(entry).href) {
   seedDemo()
-    .then(() => process.exit(0))
+    .then(() => seedCatalogue())
+    .then((report) => {
+      console.log(`Catalogue: ${report.medicines} medicines`);
+      process.exit(0);
+    })
     .catch((error) => {
       console.error(error);
       process.exit(1);
