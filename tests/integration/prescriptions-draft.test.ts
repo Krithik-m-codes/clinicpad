@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { withTenant } from "@/server/db/tenant";
 import { adminDb } from "@/server/db/admin";
-import { auditEvents, prescriptions, visits } from "@/server/db/schema";
+import { auditEvents, doctors, prescriptions, visits } from "@/server/db/schema";
+import type { ServiceContext } from "@/server/services/context";
 import { archivePatient, createPatient } from "@/server/services/patients";
 import {
   getPrescription,
@@ -62,10 +63,46 @@ describe("startPrescription", () => {
     expect(await startPrescription(A.as(role), { patientId })).toMatchObject({ ok: false, code: "forbidden" });
   });
 
+  it.each(["owner", "doctor"])("lets %s start a draft", async (role) => {
+    const started = await startPrescription(A.as(role), { patientId });
+    expect(started.ok).toBe(true);
+  });
+
+  it("records the doctor profile of the user as the visit doctor, or null when there is none", async () => {
+    const [profile] = await adminDb.select({ id: doctors.id }).from(doctors).where(eq(doctors.tenantId, A.tenantId));
+    const visitDoctorId = async (ctx: ServiceContext) => {
+      const started = await startPrescription(ctx, { patientId });
+      if (!started.ok) throw new Error(started.message);
+      const [row] = await adminDb
+        .select({ doctorId: visits.doctorId })
+        .from(prescriptions)
+        .innerJoin(visits, eq(visits.id, prescriptions.visitId))
+        .where(eq(prescriptions.id, started.value.prescriptionId));
+      return row.doctorId;
+    };
+
+    // The test tenant's owner and doctor share one user, and that user has a doctor profile.
+    expect(await visitDoctorId(A.as("doctor"))).toBe(profile.id);
+    expect(await visitDoctorId(A.as("owner"))).toBe(profile.id);
+    // An owner who has no doctor profile can still start and save a draft; the visit has no doctor.
+    const profileless: ServiceContext = { ...A.as("owner"), userId: newId() };
+    expect(await visitDoctorId(profileless)).toBeNull();
+    const id = await startPrescription(profileless, { patientId });
+    if (!id.ok) throw new Error(id.message);
+    expect((await saveDraft(profileless, id.value.prescriptionId, draft())).ok).toBe(true);
+  });
+
   it("returns not_found for unknown, malformed, other-clinic, and archived patients", async () => {
     expect(await startPrescription(A.as("doctor"), { patientId: newId() })).toMatchObject({ ok: false, code: "not_found" });
     expect(await startPrescription(A.as("doctor"), { patientId: "nope" })).toMatchObject({ ok: false, code: "not_found" });
-    expect(await startPrescription(B.as("doctor"), { patientId })).toMatchObject({ ok: false, code: "not_found" });
+    const foreign = await createPatient(A.as("owner"), { name: "Only In Clinic A" });
+    if (!foreign.ok) throw new Error(foreign.message);
+    expect(await startPrescription(B.as("doctor"), { patientId: foreign.value.id })).toMatchObject({
+      ok: false,
+      code: "not_found",
+    });
+    // Nothing was written for the foreign patient (checked on the admin connection, which sees every tenant).
+    expect(await adminDb.select({ id: visits.id }).from(visits).where(eq(visits.patientId, foreign.value.id))).toEqual([]);
 
     const gone = await createPatient(A.as("owner"), { name: "Soon Archived" });
     if (!gone.ok) throw new Error(gone.message);
@@ -153,22 +190,42 @@ describe("saveDraft", () => {
     expect(await saveDraft(A.as("doctor"), id, draft())).toMatchObject({ ok: false, code: "immutable" });
   });
 
-  it("is denied to roles that cannot draft, and hidden from other clinics", async () => {
+  it.each(["reception", "nurse", "accountant", "pharmacist"])("forbids %s from saving a draft", async (role) => {
     const id = await start();
-    expect(await saveDraft(A.as("reception"), id, draft())).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await saveDraft(A.as(role), id, draft())).toMatchObject({ ok: false, code: "forbidden" });
+    const got = await getPrescription(A.as("doctor"), id);
+    expect(got.ok && got.value.items).toEqual([]);
+  });
+
+  it.each(["owner", "doctor"])("lets %s save a draft", async (role) => {
+    const id = await start();
+    expect((await saveDraft(A.as(role), id, draft())).ok).toBe(true);
+  });
+
+  it("hides other clinics' drafts, and treats malformed and unknown ids as not found", async () => {
+    const id = await start();
     expect(await saveDraft(B.as("doctor"), id, draft())).toMatchObject({ ok: false, code: "not_found" });
     expect(await saveDraft(A.as("doctor"), "not-a-uuid", draft())).toMatchObject({ ok: false, code: "not_found" });
+    expect(await saveDraft(A.as("doctor"), newId(), draft())).toMatchObject({ ok: false, code: "not_found" });
   });
 });
 
 describe("getPrescription", () => {
-  it("lets reception and nurses read, denies accountants, and hides other clinics' records", async () => {
+  it.each(["owner", "doctor", "reception", "nurse", "pharmacist"])("lets %s read", async (role) => {
     const id = await start();
-    expect((await getPrescription(A.as("reception"), id)).ok).toBe(true);
-    expect((await getPrescription(A.as("nurse"), id)).ok).toBe(true);
+    expect((await getPrescription(A.as(role), id)).ok).toBe(true);
+  });
+
+  it("denies accountants", async () => {
+    const id = await start();
     expect(await getPrescription(A.as("accountant"), id)).toMatchObject({ ok: false, code: "forbidden" });
+  });
+
+  it("hides other clinics' records, and treats malformed and unknown ids as not found", async () => {
+    const id = await start();
     expect(await getPrescription(B.as("owner"), id)).toMatchObject({ ok: false, code: "not_found" });
     expect(await getPrescription(A.as("owner"), "x")).toMatchObject({ ok: false, code: "not_found" });
+    expect(await getPrescription(A.as("owner"), newId())).toMatchObject({ ok: false, code: "not_found" });
   });
 });
 
@@ -184,5 +241,14 @@ describe("listPrescriptionsForPatient", () => {
     expect(list.ok && list.value.map((r) => r.id)).toEqual([b.value.prescriptionId, a.value.prescriptionId]);
     expect(await listPrescriptionsForPatient(B.as("owner"), p.value.id)).toMatchObject({ ok: false, code: "not_found" });
     expect(await listPrescriptionsForPatient(A.as("accountant"), p.value.id)).toMatchObject({ ok: false, code: "forbidden" });
+  });
+
+  it.each(["owner", "doctor", "reception", "nurse", "pharmacist"])("lets %s list", async (role) => {
+    expect((await listPrescriptionsForPatient(A.as(role), patientId)).ok).toBe(true);
+  });
+
+  it("treats malformed and unknown patient ids as not found", async () => {
+    expect(await listPrescriptionsForPatient(A.as("owner"), "nope")).toMatchObject({ ok: false, code: "not_found" });
+    expect(await listPrescriptionsForPatient(A.as("owner"), newId())).toMatchObject({ ok: false, code: "not_found" });
   });
 });
