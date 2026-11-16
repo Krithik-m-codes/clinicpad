@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
-import { tenants } from "./tenancy";
+import { branches, doctors, tenants } from "./tenancy";
 
 const pk = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
 const createdAt = () =>
@@ -87,6 +87,19 @@ export const visits = pgTable(
       columns: [t.tenantId, t.patientId],
       foreignColumns: [patients.tenantId, patients.id],
     }).onDelete("restrict"),
+    // Same-tenant references, both optional. The delete rule is ON DELETE SET NULL (doctor_id) / (branch_id):
+    // drizzle-kit cannot express the column list, so migration 0010 is hand-edited; keep it in step. Deleting a
+    // doctor or branch that a finalized visit references fails (the SET NULL is an UPDATE the trigger refuses).
+    foreignKey({
+      name: "visits_doctor_fk",
+      columns: [t.tenantId, t.doctorId],
+      foreignColumns: [doctors.tenantId, doctors.id],
+    }).onDelete("set null"),
+    foreignKey({
+      name: "visits_branch_fk",
+      columns: [t.tenantId, t.branchId],
+      foreignColumns: [branches.tenantId, branches.id],
+    }).onDelete("set null"),
   ],
 );
 
@@ -129,6 +142,12 @@ export const prescriptions = pgTable(
       columns: [t.tenantId, t.parentPrescriptionId],
       foreignColumns: [t.tenantId, t.id],
     }),
+    // Same-tenant reference, optional; ON DELETE SET NULL (template_version_id) is hand-written in migration 0010.
+    foreignKey({
+      name: "prescriptions_template_version_fk",
+      columns: [t.tenantId, t.templateVersionId],
+      foreignColumns: [templateVersions.tenantId, templateVersions.id],
+    }).onDelete("set null"),
   ],
 );
 
@@ -197,6 +216,8 @@ export const templateVersions = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
+    // Target of the composite same-tenant foreign key from prescriptions.template_version_id.
+    unique("template_versions_tenant_id_uq").on(t.tenantId, t.id),
     unique("template_versions_template_version_unique").on(t.templateId, t.version),
     // Same-tenant reference: a version can only belong to a template of its own tenant.
     foreignKey({

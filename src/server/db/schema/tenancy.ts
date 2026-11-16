@@ -140,6 +140,10 @@ export const doctors = pgTable(
   (t) => [
     index("doctors_tenant_idx").on(t.tenantId),
     index("doctors_user_idx").on(t.userId),
+    // Target of the composite same-tenant foreign keys from visits.doctor_id and medicine_favourites.doctor_id.
+    unique("doctors_tenant_id_uq").on(t.tenantId, t.id),
+    // One doctor profile per user per clinic, so the user -> doctor lookup (doctorIdFor) is deterministic.
+    unique("doctors_tenant_user_uq").on(t.tenantId, t.userId),
     // Same-tenant reference. The delete rule is ON DELETE SET NULL (primary_branch_id): a plain composite SET NULL
     // would also try to null tenant_id (NOT NULL). drizzle-kit cannot express the column list, so the migration
     // (0009) is hand-edited; keep it in step with this definition.
