@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
+import { z } from "zod";
 import { fail, invalidFrom, ok, type Result } from "@/lib/result";
 import { can } from "@/lib/domain/permissions";
 import { isUuid } from "@/lib/domain/ids";
@@ -7,6 +8,7 @@ import { pgErrorInfo } from "@/server/db/errors";
 import { withTenant, type TenantTx } from "@/server/db/tenant";
 import { draftInputSchema, type DraftItemInput } from "@/server/validation/prescription";
 import type { ServiceContext } from "./context";
+import { allocateNumber } from "./numbering";
 import { recordAudit } from "./audit";
 
 export type ItemView = {
@@ -283,5 +285,193 @@ export async function listPrescriptionsForPatient(
       .where(eq(visits.patientId, patientId))
       .orderBy(desc(prescriptions.createdAt), desc(prescriptions.id));
     return ok(rows);
+  });
+}
+
+const IMMUTABLE_MESSAGE = "This prescription is finalized and cannot be changed.";
+const AMENDMENT_IN_PROGRESS = "An amendment is already in progress.";
+const reasonSchema = z
+  .string()
+  .trim()
+  .min(5, "Give a reason of at least 5 characters")
+  .max(500, "Keep the reason under 500 characters");
+
+export async function finalizePrescription(
+  ctx: ServiceContext,
+  id: string,
+): Promise<Result<{ rxNo: number; version: number }>> {
+  if (!can(ctx.role, "rx.finalize")) return fail("forbidden", "Only doctors can finalize prescriptions.");
+  if (!isUuid(id)) return prescriptionNotFound();
+
+  try {
+    return await withTenant(ctx.tenantId, async (tx): Promise<Result<{ rxNo: number; version: number }>> => {
+      // The row lock comes first: it serializes double-clicks (the second request waits, then sees
+      // "finalized") and it must precede any visit or item write to keep one lock order everywhere.
+      const [rx] = await tx.select().from(prescriptions).where(eq(prescriptions.id, id)).limit(1).for("update");
+      if (!rx) return prescriptionNotFound();
+      if (rx.status !== "draft") return fail("conflict", "This prescription is already finalized.");
+
+      const [{ value: itemCount }] = await tx
+        .select({ value: count() })
+        .from(prescriptionItems)
+        .where(eq(prescriptionItems.prescriptionId, id));
+      if (itemCount === 0) return fail("invalid", "Add at least one medicine before finalizing.", "items");
+
+      // Amendments keep their parent's number; first versions get the next one. Allocating only
+      // after every check passes, inside this transaction, means a failed finalize never burns a number.
+      const rxNo = rx.rxNo ?? (await allocateNumber(tx, ctx.tenantId, "rx"));
+      const now = new Date();
+
+      await tx
+        .update(prescriptions)
+        .set({ status: "finalized", rxNo, finalizedAt: now, finalizedBy: ctx.userId })
+        .where(eq(prescriptions.id, id));
+      // Only status and finalized_at may change on a visit whose prescription is already finalized.
+      await tx.update(visits).set({ status: "finalized", finalizedAt: now }).where(eq(visits.id, rx.visitId));
+      if (rx.parentPrescriptionId) {
+        // The parent flip may change nothing but status.
+        await tx
+          .update(prescriptions)
+          .set({ status: "amended" })
+          .where(eq(prescriptions.id, rx.parentPrescriptionId));
+      }
+      await recordAudit(tx, ctx, {
+        action: rx.parentPrescriptionId ? "prescription.amended" : "prescription.finalized",
+        entityType: "prescription",
+        entityId: id,
+        after: { rxNo, version: rx.version },
+      });
+      return ok({ rxNo, version: rx.version });
+    });
+  } catch (error) {
+    if (pgErrorInfo(error).code === "23000") return fail("immutable", IMMUTABLE_MESSAGE);
+    throw error;
+  }
+}
+
+export async function amendPrescription(
+  ctx: ServiceContext,
+  input: { prescriptionId: string; reason: string },
+): Promise<Result<{ prescriptionId: string; version: number }>> {
+  if (!can(ctx.role, "rx.amend")) return fail("forbidden", "Only doctors can amend prescriptions.");
+  if (!isUuid(input.prescriptionId)) return prescriptionNotFound();
+  const reason = reasonSchema.safeParse(input.reason);
+  if (!reason.success) return fail("invalid", reason.error.issues[0].message, "reason");
+
+  try {
+    return await withTenant(ctx.tenantId, async (tx): Promise<Result<{ prescriptionId: string; version: number }>> => {
+      const [source] = await tx
+        .select()
+        .from(prescriptions)
+        .where(eq(prescriptions.id, input.prescriptionId))
+        .limit(1)
+        .for("update");
+      if (!source) return prescriptionNotFound();
+      if (source.status === "draft") return fail("conflict", "A draft cannot be amended; edit it directly.");
+      if (source.status !== "finalized") {
+        return fail("conflict", "A newer version of this prescription already exists.");
+      }
+
+      const [open] = await tx
+        .select({ id: prescriptions.id })
+        .from(prescriptions)
+        .where(and(eq(prescriptions.parentPrescriptionId, source.id), eq(prescriptions.status, "draft")))
+        .limit(1);
+      if (open) return fail("conflict", AMENDMENT_IN_PROGRESS);
+
+      const [oldVisit] = await tx.select().from(visits).where(eq(visits.id, source.visitId)).limit(1);
+      const [newVisit] = await tx
+        .insert(visits)
+        .values({
+          tenantId: ctx.tenantId,
+          patientId: oldVisit.patientId,
+          doctorId: oldVisit.doctorId,
+          branchId: oldVisit.branchId,
+          status: "draft",
+          visitType: oldVisit.visitType,
+          chiefComplaint: oldVisit.chiefComplaint,
+          vitals: oldVisit.vitals,
+          diagnosis: oldVisit.diagnosis,
+          advice: oldVisit.advice,
+          followUpDate: oldVisit.followUpDate,
+        })
+        .returning({ id: visits.id });
+      const [rx] = await tx
+        .insert(prescriptions)
+        .values({
+          tenantId: ctx.tenantId,
+          visitId: newVisit.id,
+          rxNo: source.rxNo,
+          version: source.version + 1,
+          status: "draft",
+          parentPrescriptionId: source.id,
+          amendmentReason: reason.data,
+          templateVersionId: source.templateVersionId,
+        })
+        .returning({ id: prescriptions.id, version: prescriptions.version });
+      await copyItems(tx, ctx, source.id, rx.id);
+      // The reason is free text and lives on the prescription row; the audit log keeps only its length.
+      await recordAudit(tx, ctx, {
+        action: "prescription.amendment_drafted",
+        entityType: "prescription",
+        entityId: rx.id,
+        before: { version: source.version },
+        after: { version: rx.version, reasonLength: reason.data.length },
+      });
+      return ok({ prescriptionId: rx.id, version: rx.version });
+    });
+  } catch (error) {
+    // The partial unique index is the backstop for a race the row lock did not catch.
+    if (pgErrorInfo(error).code === "23505") return fail("conflict", AMENDMENT_IN_PROGRESS);
+    throw error;
+  }
+}
+
+export async function repeatPrescription(
+  ctx: ServiceContext,
+  id: string,
+): Promise<Result<{ prescriptionId: string }>> {
+  if (!can(ctx.role, "rx.draft")) return fail("forbidden", "Only doctors can write prescriptions.");
+  if (!isUuid(id)) return prescriptionNotFound();
+
+  return withTenant(ctx.tenantId, async (tx): Promise<Result<{ prescriptionId: string }>> => {
+    const [source] = await tx.select().from(prescriptions).where(eq(prescriptions.id, id)).limit(1);
+    if (!source) return prescriptionNotFound();
+    if (source.status === "draft") return fail("conflict", "Finalize this draft before repeating it.");
+
+    const [oldVisit] = await tx.select().from(visits).where(eq(visits.id, source.visitId)).limit(1);
+    const [patient] = await tx
+      .select({ id: patients.id })
+      .from(patients)
+      .where(and(eq(patients.id, oldVisit.patientId), isNull(patients.deletedAt)))
+      .limit(1);
+    if (!patient) return patientNotFound();
+
+    const [newVisit] = await tx
+      .insert(visits)
+      .values({
+        tenantId: ctx.tenantId,
+        patientId: patient.id,
+        doctorId: await doctorIdFor(tx, ctx.userId),
+        branchId: oldVisit.branchId,
+        status: "draft",
+        visitType: "follow-up",
+        chiefComplaint: oldVisit.chiefComplaint,
+        diagnosis: oldVisit.diagnosis,
+        advice: oldVisit.advice,
+      })
+      .returning({ id: visits.id });
+    const [rx] = await tx
+      .insert(prescriptions)
+      .values({ tenantId: ctx.tenantId, visitId: newVisit.id, status: "draft", version: 1 })
+      .returning({ id: prescriptions.id });
+    await copyItems(tx, ctx, source.id, rx.id);
+    await recordAudit(tx, ctx, {
+      action: "prescription.drafted",
+      entityType: "prescription",
+      entityId: rx.id,
+      after: { version: 1, repeatedFrom: source.id },
+    });
+    return ok({ prescriptionId: rx.id });
   });
 }
