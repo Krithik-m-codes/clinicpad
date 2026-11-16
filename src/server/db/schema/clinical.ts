@@ -175,7 +175,11 @@ export const templates = pgTable(
     status: text("status").notNull().default("draft"),
     createdAt: createdAt(),
   },
-  (t) => [index("templates_tenant_idx").on(t.tenantId)],
+  (t) => [
+    index("templates_tenant_idx").on(t.tenantId),
+    // Target of the composite same-tenant foreign key from template_versions.
+    unique("templates_tenant_id_uq").on(t.tenantId, t.id),
+  ],
 );
 
 export const templateVersions = pgTable(
@@ -185,16 +189,22 @@ export const templateVersions = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    templateId: uuid("template_id")
-      .notNull()
-      .references(() => templates.id, { onDelete: "cascade" }),
+    templateId: uuid("template_id").notNull(),
     version: integer("version").notNull(),
     fileKey: text("file_key"),
     mapping: jsonb("mapping").$type<Record<string, string>>(),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     createdAt: createdAt(),
   },
-  (t) => [unique("template_versions_template_version_unique").on(t.templateId, t.version)],
+  (t) => [
+    unique("template_versions_template_version_unique").on(t.templateId, t.version),
+    // Same-tenant reference: a version can only belong to a template of its own tenant.
+    foreignKey({
+      name: "template_versions_template_fk",
+      columns: [t.tenantId, t.templateId],
+      foreignColumns: [templates.tenantId, templates.id],
+    }).onDelete("cascade"),
+  ],
 );
 
 export const auditEvents = pgTable(

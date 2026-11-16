@@ -64,6 +64,13 @@
       "when": 1794831616782,
       "tag": "0008_immutability_race_and_visit_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794846016755,
+      "tag": "0009_tenant_composite_fks_phase0",
+      "breakpoints": true
     }
   ]
 }

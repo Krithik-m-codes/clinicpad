@@ -1,5 +1,6 @@
 import {
   boolean,
+  foreignKey,
   index,
   integer,
   pgTable,
@@ -47,7 +48,11 @@ export const clinics = pgTable(
     logoUrl: text("logo_url"),
     createdAt: createdAt(),
   },
-  (t) => [index("clinics_tenant_idx").on(t.tenantId)],
+  (t) => [
+    index("clinics_tenant_idx").on(t.tenantId),
+    // Target of the composite same-tenant foreign keys (a foreign key needs a unique key to point at).
+    unique("clinics_tenant_id_uq").on(t.tenantId, t.id),
+  ],
 );
 
 export const branches = pgTable(
@@ -57,9 +62,7 @@ export const branches = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    clinicId: uuid("clinic_id")
-      .notNull()
-      .references(() => clinics.id, { onDelete: "cascade" }),
+    clinicId: uuid("clinic_id").notNull(),
     name: text("name").notNull(),
     address: text("address"),
     phone: text("phone"),
@@ -69,6 +72,13 @@ export const branches = pgTable(
   (t) => [
     index("branches_tenant_idx").on(t.tenantId),
     index("branches_clinic_idx").on(t.clinicId),
+    unique("branches_tenant_id_uq").on(t.tenantId, t.id),
+    // Same-tenant reference: a branch can only belong to a clinic of its own tenant.
+    foreignKey({
+      name: "branches_clinic_fk",
+      columns: [t.tenantId, t.clinicId],
+      foreignColumns: [clinics.tenantId, clinics.id],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -118,9 +128,7 @@ export const doctors = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
     userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
-    primaryBranchId: uuid("primary_branch_id").references(() => branches.id, {
-      onDelete: "set null",
-    }),
+    primaryBranchId: uuid("primary_branch_id"),
     regNo: text("reg_no"),
     qualifications: text("qualifications"),
     specialties: text("specialties").array(),
@@ -132,5 +140,13 @@ export const doctors = pgTable(
   (t) => [
     index("doctors_tenant_idx").on(t.tenantId),
     index("doctors_user_idx").on(t.userId),
+    // Same-tenant reference. The delete rule is ON DELETE SET NULL (primary_branch_id): a plain composite SET NULL
+    // would also try to null tenant_id (NOT NULL). drizzle-kit cannot express the column list, so the migration
+    // (0009) is hand-edited; keep it in step with this definition.
+    foreignKey({
+      name: "doctors_primary_branch_fk",
+      columns: [t.tenantId, t.primaryBranchId],
+      foreignColumns: [branches.tenantId, branches.id],
+    }).onDelete("set null"),
   ],
 );

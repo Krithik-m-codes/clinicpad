@@ -3,7 +3,18 @@ import { eq, sql } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
 import { withTenant } from "@/server/db/tenant";
 import { pgErrorInfo } from "@/server/db/errors";
-import { patients, prescriptionItems, prescriptions, tenants, visits } from "@/server/db/schema";
+import {
+  branches,
+  clinics,
+  doctors,
+  patients,
+  prescriptionItems,
+  prescriptions,
+  templates,
+  templateVersions,
+  tenants,
+  visits,
+} from "@/server/db/schema";
 
 // RLS only checks a row's OWN tenant_id, and foreign-key checks run without RLS. A single-column key therefore
 // happily points at another tenant's row. These tests pin the composite (tenant_id, x_id) keys that close that.
@@ -274,6 +285,187 @@ describe("prescription_items: the foreign key itself enforces the tenant", () =>
   });
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+// The remaining Phase 0 relations: branches -> clinics, template_versions -> templates, doctors -> branches.
+
+/** A clinic with a branch and a doctor based there, and a template with one version, all in one tenant. */
+async function seedPhase0(tenant: string, templateVersion = 1) {
+  const [clinic] = await adminDb.insert(clinics).values({ tenantId: tenant, name: "Tenant FK clinic" }).returning();
+  const [branch] = await adminDb
+    .insert(branches)
+    .values({ tenantId: tenant, clinicId: clinic.id, name: "Tenant FK branch" })
+    .returning();
+  const [doctor] = await adminDb
+    .insert(doctors)
+    .values({ tenantId: tenant, primaryBranchId: branch.id, regNo: "FK-1" })
+    .returning();
+  const [template] = await adminDb.insert(templates).values({ tenantId: tenant, name: "Tenant FK template" }).returning();
+  const [version] = await adminDb
+    .insert(templateVersions)
+    .values({ tenantId: tenant, templateId: template.id, version: templateVersion })
+    .returning();
+  return { clinic, branch, doctor, template, version };
+}
+type Phase0Records = Awaited<ReturnType<typeof seedPhase0>>;
+
+/** Tenant A's own records (plus a spare to move things to; its version number differs) and tenant B's. */
+async function phase0Context() {
+  const own = await seedPhase0(tenantA, 1);
+  const spare = await seedPhase0(tenantA, 2);
+  const foreign = await seedPhase0(tenantB, 1);
+  return { own, spare, foreign };
+}
+type Phase0Context = Awaited<ReturnType<typeof phase0Context>>;
+
+/** Nothing of tenant A's hangs off tenant B's clinic, branch or template. */
+async function expectPhase0Untouched(foreign: Phase0Records) {
+  const [branchesOfClinic, doctorsOfBranch, versionsOfTemplate] = await Promise.all([
+    adminDb.select({ id: branches.id }).from(branches).where(eq(branches.clinicId, foreign.clinic.id)),
+    adminDb.select({ id: doctors.id }).from(doctors).where(eq(doctors.primaryBranchId, foreign.branch.id)),
+    adminDb.select({ id: templateVersions.id }).from(templateVersions).where(eq(templateVersions.templateId, foreign.template.id)),
+  ]);
+  expect(branchesOfClinic.map((r) => r.id)).toEqual([foreign.branch.id]);
+  expect(doctorsOfBranch.map((r) => r.id)).toEqual([foreign.doctor.id]);
+  expect(versionsOfTemplate.map((r) => r.id)).toEqual([foreign.version.id]);
+}
+
+type Phase0Relation = {
+  name: string;
+  constraint: string;
+  crossInsert: (c: Conn, x: Phase0Context) => Promise<unknown>;
+  crossRepoint: (c: Conn, x: Phase0Context) => Promise<unknown>;
+  sameInsert: (c: Conn, x: Phase0Context) => Promise<{ id: string }[]>;
+  sameRepoint: (c: Conn, x: Phase0Context) => Promise<{ id: string }[]>;
+};
+
+const phase0Relations: Phase0Relation[] = [
+  {
+    name: "branches.clinic_id -> clinics (cascade)",
+    constraint: "branches_clinic_fk",
+    crossInsert: (c, x) => c.insert(branches).values({ tenantId: tenantA, clinicId: x.foreign.clinic.id, name: "Intruder" }),
+    crossRepoint: (c, x) => c.update(branches).set({ clinicId: x.foreign.clinic.id }).where(eq(branches.id, x.own.branch.id)),
+    sameInsert: (c, x) =>
+      c.insert(branches).values({ tenantId: tenantA, clinicId: x.own.clinic.id, name: "Own" }).returning({ id: branches.id }),
+    sameRepoint: (c, x) =>
+      c.update(branches).set({ clinicId: x.spare.clinic.id }).where(eq(branches.id, x.own.branch.id)).returning({ id: branches.id }),
+  },
+  {
+    name: "template_versions.template_id -> templates (cascade)",
+    constraint: "template_versions_template_fk",
+    crossInsert: (c, x) =>
+      c.insert(templateVersions).values({ tenantId: tenantA, templateId: x.foreign.template.id, version: 9 }),
+    crossRepoint: (c, x) =>
+      c
+        .update(templateVersions)
+        .set({ templateId: x.foreign.template.id, version: 9 })
+        .where(eq(templateVersions.id, x.own.version.id)),
+    sameInsert: (c, x) =>
+      c
+        .insert(templateVersions)
+        .values({ tenantId: tenantA, templateId: x.own.template.id, version: 9 })
+        .returning({ id: templateVersions.id }),
+    sameRepoint: (c, x) =>
+      c
+        .update(templateVersions)
+        .set({ templateId: x.spare.template.id, version: 9 })
+        .where(eq(templateVersions.id, x.own.version.id))
+        .returning({ id: templateVersions.id }),
+  },
+  {
+    name: "doctors.primary_branch_id -> branches (set null, nullable)",
+    constraint: "doctors_primary_branch_fk",
+    crossInsert: (c, x) => c.insert(doctors).values({ tenantId: tenantA, primaryBranchId: x.foreign.branch.id }),
+    crossRepoint: (c, x) =>
+      c.update(doctors).set({ primaryBranchId: x.foreign.branch.id }).where(eq(doctors.id, x.own.doctor.id)),
+    sameInsert: (c, x) =>
+      c.insert(doctors).values({ tenantId: tenantA, primaryBranchId: x.own.branch.id }).returning({ id: doctors.id }),
+    sameRepoint: (c, x) =>
+      c.update(doctors).set({ primaryBranchId: x.spare.branch.id }).where(eq(doctors.id, x.own.doctor.id)).returning({ id: doctors.id }),
+  },
+];
+
+describe.each(phase0Relations)("$name", (relation) => {
+  describe.each(connections)("through $label", (connection) => {
+    it("rejects an INSERT that references another tenant's row with 23503", async () => {
+      const x = await phase0Context();
+      await expectForeignKeyViolation(connection.run((c) => relation.crossInsert(c, x)), relation.constraint);
+      await expectPhase0Untouched(x.foreign);
+    });
+
+    it("rejects an UPDATE that re-points a row at another tenant's row with 23503", async () => {
+      const x = await phase0Context();
+      await expectForeignKeyViolation(connection.run((c) => relation.crossRepoint(c, x)), relation.constraint);
+      await expectPhase0Untouched(x.foreign);
+    });
+
+    it("still accepts an INSERT that references a row of the same tenant", async () => {
+      const x = await phase0Context();
+      const rows = await connection.run((c) => relation.sameInsert(c, x));
+      expect(rows, "the INSERT must create exactly one row").toHaveLength(1);
+    });
+
+    it("still accepts an UPDATE that re-points a row inside the same tenant", async () => {
+      const x = await phase0Context();
+      const rows = await connection.run((c) => relation.sameRepoint(c, x));
+      expect(rows, "the UPDATE must change exactly one row").toHaveLength(1);
+    });
+  });
+});
+
+describe("doctors.primary_branch_id stays optional", () => {
+  it("accepts a doctor with no primary branch", async () => {
+    const rows = await adminDb.insert(doctors).values({ tenantId: tenantA }).returning({ id: doctors.id });
+    expect(rows).toHaveLength(1);
+  });
+});
+
+describe("the Phase 0 delete rules still hold", () => {
+  const deleters: { label: string; run: <T>(fn: (c: Pick<typeof adminDb, "delete" | "select">) => Promise<T>) => Promise<T> }[] = [
+    { label: "the app role", run: (fn) => withTenant(tenantA, fn) },
+    { label: "the admin connection", run: (fn) => fn(adminDb) },
+  ];
+
+  describe.each(deleters)("through $label", (deleter) => {
+    it("deleting a clinic deletes its branches (cascade) and leaves the doctor's branch pointer null", async () => {
+      const own = await seedPhase0(tenantA);
+      const other = await seedPhase0(tenantA);
+      await deleter.run((c) => c.delete(clinics).where(eq(clinics.id, own.clinic.id)));
+      expect(await adminDb.select().from(branches).where(eq(branches.id, own.branch.id))).toHaveLength(0);
+      expect(await adminDb.select().from(branches).where(eq(branches.id, other.branch.id))).toHaveLength(1);
+      const [doctor] = await adminDb.select().from(doctors).where(eq(doctors.id, own.doctor.id));
+      expect(doctor.primaryBranchId).toBeNull();
+      expect(doctor.tenantId).toBe(tenantA);
+    });
+
+    it("deleting a template deletes its versions (cascade)", async () => {
+      const own = await seedPhase0(tenantA);
+      const other = await seedPhase0(tenantA);
+      await deleter.run((c) => c.delete(templates).where(eq(templates.id, own.template.id)));
+      expect(await adminDb.select().from(templateVersions).where(eq(templateVersions.id, own.version.id))).toHaveLength(0);
+      expect(await adminDb.select().from(templateVersions).where(eq(templateVersions.id, other.version.id))).toHaveLength(1);
+    });
+
+    it("deleting a branch sets the doctor's primary_branch_id to NULL and keeps tenant_id", async () => {
+      const own = await seedPhase0(tenantA);
+      await deleter.run((c) => c.delete(branches).where(eq(branches.id, own.branch.id)));
+      const [doctor] = await adminDb.select().from(doctors).where(eq(doctors.id, own.doctor.id));
+      expect(doctor, "the doctor must survive the branch").toBeDefined();
+      expect(doctor.primaryBranchId).toBeNull();
+      expect(doctor.tenantId).toBe(tenantA);
+    });
+  });
+
+  it("deleting tenant B's clinic never reaches tenant A's rows", async () => {
+    const own = await seedPhase0(tenantA);
+    const foreign = await seedPhase0(tenantB);
+    await adminDb.delete(clinics).where(eq(clinics.id, foreign.clinic.id));
+    expect(await adminDb.select().from(branches).where(eq(branches.id, foreign.branch.id))).toHaveLength(0);
+    expect(await adminDb.select().from(branches).where(eq(branches.id, own.branch.id))).toHaveLength(1);
+    const [doctor] = await adminDb.select().from(doctors).where(eq(doctors.id, own.doctor.id));
+    expect(doctor.primaryBranchId).toBe(own.branch.id);
+  });
+});
+
 describe("the probe that motivated the composite keys", () => {
   it("tenant A cannot hang records on tenant B's rows, and B's own amendment is not blocked", async () => {
     const b = await seedRecords(tenantB);
@@ -344,15 +536,11 @@ describe("the foreign keys in the catalog", () => {
        order by c.conname`);
   }
 
-  // Phase 0 relations outside the clinical tables. They still use a single-column key. Do not add to this list:
-  // convert the key instead. When one is converted, remove it here (the test says so).
-  const knownSingleColumn = [
-    "branches_clinic_id_clinics_id_fk",
-    "doctors_primary_branch_id_branches_id_fk",
-    "template_versions_template_id_templates_id_fk",
-  ];
+  // Single-column keys into a tenant-owned table that are tolerated. The list is EMPTY and must stay empty:
+  // a new relation to a tenant-owned table uses a composite (tenant_id, x_id) key instead of an entry here.
+  const knownSingleColumn: string[] = [];
 
-  it("has no single-column key into a tenant-owned table, apart from the known Phase 0 ones", async () => {
+  it("has no single-column key into a tenant-owned table", async () => {
     const rows = await foreignKeysIntoTenantOwnedTables();
     const singleColumn = rows
       .filter((r) => !(r.child_cols.length === 2 && r.child_cols[0] === "tenant_id" && r.parent_cols.join() === "tenant_id,id"))
@@ -369,7 +557,20 @@ describe("the foreign keys in the catalog", () => {
       prescriptions_visit_fk: "CASCADE",
       prescriptions_parent_fk: "NO ACTION",
       rx_items_prescription_fk: "CASCADE",
+      branches_clinic_fk: "CASCADE",
+      template_versions_template_fk: "CASCADE",
+      doctors_primary_branch_fk: "SET NULL",
     });
+  });
+
+  it("nulls only primary_branch_id (not tenant_id) when a branch is deleted", async () => {
+    const [row] = await adminDb.execute<{ set_cols: string[] | null }>(sql`
+      select (select array_agg(a.attname::text order by k.ord)
+                from unnest(c.confdelsetcols) with ordinality k(attnum, ord)
+                join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum) as set_cols
+        from pg_constraint c
+       where c.conname = 'doctors_primary_branch_fk' and c.connamespace = 'public'::regnamespace`);
+    expect(row?.set_cols).toEqual(["primary_branch_id"]);
   });
 
   it("still refuses to delete a patient who has visits (restrict)", async () => {
