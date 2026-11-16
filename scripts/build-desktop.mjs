@@ -18,6 +18,7 @@ const SERVER_ONLY = [
   "src/app/(auth)",
   "src/app/api/auth",
   "src/app/api/health",
+  "src/app/api/catalogue",
   "src/app/api/clean-data",
   "src/app/page.tsx", // server redirect to /dashboard; replaced below
   "src/middleware.ts",
