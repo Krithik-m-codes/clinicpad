@@ -58,9 +58,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  // Deleting the tenant must still work while it owns finalized and amended records.
-  await adminDb.delete(tenants).where(eq(tenants.id, tenantId));
-  await adminDb.delete(tenants).where(eq(tenants.id, otherTenantId));
+  // Deleting the tenant must still work while it owns finalized and amended records. Each cleanup runs on its own,
+  // so a failure of the first cannot leak the second tenant; the first failure is rethrown afterwards.
+  const results = await Promise.allSettled([
+    adminDb.delete(tenants).where(eq(tenants.id, tenantId)),
+    adminDb.delete(tenants).where(eq(tenants.id, otherTenantId)),
+  ]);
+  const failed = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (failed) throw failed.reason;
   const left = await adminDb.select().from(prescriptions).where(eq(prescriptions.tenantId, tenantId));
   expect(left).toHaveLength(0);
 });
@@ -232,8 +237,14 @@ describe("the RLS-bound app connection (clinicpad_app) is held to the same rules
 
   it("still lets the app role edit and delete its own draft prescription", async () => {
     const { rx, item } = await draftRx(null);
-    await withTenant(tenantId, (tx) => tx.update(prescriptionItems).set({ dose: "1" }).where(eq(prescriptionItems.id, item.id)));
-    await withTenant(tenantId, (tx) => tx.delete(prescriptions).where(eq(prescriptions.id, rx.id)));
+    const updated = await withTenant(tenantId, (tx) =>
+      tx.update(prescriptionItems).set({ dose: "1" }).where(eq(prescriptionItems.id, item.id)).returning({ id: prescriptionItems.id }),
+    );
+    expect(updated, "the UPDATE must change exactly one row").toHaveLength(1);
+    const deleted = await withTenant(tenantId, (tx) =>
+      tx.delete(prescriptions).where(eq(prescriptions.id, rx.id)).returning({ id: prescriptions.id }),
+    );
+    expect(deleted, "the DELETE must remove exactly one row").toHaveLength(1);
     expect(await adminDb.select().from(prescriptions).where(eq(prescriptions.id, rx.id))).toHaveLength(0);
   });
 });

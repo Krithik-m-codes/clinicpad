@@ -108,8 +108,8 @@ type Relation = {
   crossInsert: (c: Conn, x: Context) => Promise<unknown>;
   crossRepoint: (c: Conn, x: Context) => Promise<unknown>;
   /** The same two operations, against a parent in tenant A. */
-  sameInsert: (c: Conn, x: Context) => Promise<unknown>;
-  sameRepoint: (c: Conn, x: Context) => Promise<unknown>;
+  sameInsert: (c: Conn, x: Context) => Promise<{ id: string }[]>;
+  sameRepoint: (c: Conn, x: Context) => Promise<{ id: string }[]>;
 };
 
 const relations: Relation[] = [
@@ -118,16 +118,28 @@ const relations: Relation[] = [
     constraint: "visits_patient_fk",
     crossInsert: (c, x) => c.insert(visits).values({ tenantId: tenantA, patientId: x.foreign.patient.id }),
     crossRepoint: (c, x) => c.update(visits).set({ patientId: x.foreign.patient.id }).where(eq(visits.id, x.own.visit.id)),
-    sameInsert: (c, x) => c.insert(visits).values({ tenantId: tenantA, patientId: x.own.patient.id }),
-    sameRepoint: (c, x) => c.update(visits).set({ patientId: x.spare.patient.id }).where(eq(visits.id, x.own.visit.id)),
+    sameInsert: (c, x) =>
+      c.insert(visits).values({ tenantId: tenantA, patientId: x.own.patient.id }).returning({ id: visits.id }),
+    sameRepoint: (c, x) =>
+      c
+        .update(visits)
+        .set({ patientId: x.spare.patient.id })
+        .where(eq(visits.id, x.own.visit.id))
+        .returning({ id: visits.id }),
   },
   {
     name: "prescriptions.visit_id -> visits (cascade)",
     constraint: "prescriptions_visit_fk",
     crossInsert: (c, x) => c.insert(prescriptions).values({ tenantId: tenantA, visitId: x.foreign.visit.id, rxNo: null }),
     crossRepoint: (c, x) => c.update(prescriptions).set({ visitId: x.foreign.visit.id }).where(eq(prescriptions.id, x.own.rx.id)),
-    sameInsert: (c, x) => c.insert(prescriptions).values({ tenantId: tenantA, visitId: x.own.visit.id, rxNo: null }),
-    sameRepoint: (c, x) => c.update(prescriptions).set({ visitId: x.spare.visit.id }).where(eq(prescriptions.id, x.own.rx.id)),
+    sameInsert: (c, x) =>
+      c.insert(prescriptions).values({ tenantId: tenantA, visitId: x.own.visit.id, rxNo: null }).returning({ id: prescriptions.id }),
+    sameRepoint: (c, x) =>
+      c
+        .update(prescriptions)
+        .set({ visitId: x.spare.visit.id })
+        .where(eq(prescriptions.id, x.own.rx.id))
+        .returning({ id: prescriptions.id }),
   },
   {
     name: "prescriptions.parent_prescription_id -> prescriptions (no action, nullable)",
@@ -145,18 +157,25 @@ const relations: Relation[] = [
       c.update(prescriptions).set({ parentPrescriptionId: x.foreign.rx.id }).where(eq(prescriptions.id, x.own.rx.id)),
     sameInsert: async (c, x) => {
       await finalizeRecords(x.spare);
-      return c.insert(prescriptions).values({
-        tenantId: tenantA,
-        visitId: x.own.visit.id,
-        rxNo: null,
-        version: 2,
-        parentPrescriptionId: x.spare.rx.id,
-        amendmentReason: "same-tenant amendment",
-      });
+      return c
+        .insert(prescriptions)
+        .values({
+          tenantId: tenantA,
+          visitId: x.own.visit.id,
+          rxNo: null,
+          version: 2,
+          parentPrescriptionId: x.spare.rx.id,
+          amendmentReason: "same-tenant amendment",
+        })
+        .returning({ id: prescriptions.id });
     },
     sameRepoint: async (c, x) => {
       await finalizeRecords(x.spare);
-      return c.update(prescriptions).set({ parentPrescriptionId: x.spare.rx.id }).where(eq(prescriptions.id, x.own.rx.id));
+      return c
+        .update(prescriptions)
+        .set({ parentPrescriptionId: x.spare.rx.id })
+        .where(eq(prescriptions.id, x.own.rx.id))
+        .returning({ id: prescriptions.id });
     },
   },
   {
@@ -168,9 +187,16 @@ const relations: Relation[] = [
     crossRepoint: (c, x) =>
       c.update(prescriptionItems).set({ prescriptionId: x.foreign.rx.id }).where(eq(prescriptionItems.id, x.own.item.id)),
     sameInsert: (c, x) =>
-      c.insert(prescriptionItems).values({ tenantId: tenantA, prescriptionId: x.own.rx.id, drugName: "Own item" }),
+      c
+        .insert(prescriptionItems)
+        .values({ tenantId: tenantA, prescriptionId: x.own.rx.id, drugName: "Own item" })
+        .returning({ id: prescriptionItems.id }),
     sameRepoint: (c, x) =>
-      c.update(prescriptionItems).set({ prescriptionId: x.spare.rx.id }).where(eq(prescriptionItems.id, x.own.item.id)),
+      c
+        .update(prescriptionItems)
+        .set({ prescriptionId: x.spare.rx.id })
+        .where(eq(prescriptionItems.id, x.own.item.id))
+        .returning({ id: prescriptionItems.id }),
   },
 ];
 
@@ -190,12 +216,14 @@ describe.each(relations)("$name", (relation) => {
 
     it("still accepts an INSERT that references a row of the same tenant", async () => {
       const x = await context();
-      await connection.run((c) => relation.sameInsert(c, x));
+      const rows = await connection.run((c) => relation.sameInsert(c, x));
+      expect(rows, "the INSERT must create exactly one row").toHaveLength(1);
     });
 
     it("still accepts an UPDATE that re-points a row inside the same tenant", async () => {
       const x = await context();
-      await connection.run((c) => relation.sameRepoint(c, x));
+      const rows = await connection.run((c) => relation.sameRepoint(c, x));
+      expect(rows, "the UPDATE must change exactly one row").toHaveLength(1);
     });
   });
 });
