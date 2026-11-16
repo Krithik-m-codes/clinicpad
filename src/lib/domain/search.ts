@@ -21,9 +21,15 @@ export function searchTerm(raw: unknown, max = 60): string {
   return Array.from(collapsed).slice(0, max).join("").trim();
 }
 
-/** Page size from untrusted input: a whole number between 1 and `max`; `fallback` when unreadable. */
+/**
+ * Page size from untrusted input: a whole number between 1 and `max`. Only numbers and
+ * strings are read; anything else (including objects, whose `toString` may throw), NaN, and
+ * Infinity use `fallback`. The result is always within [1, max], the fallback included.
+ */
 export function clampLimit(raw: unknown, fallback: number, max: number): number {
-  const n = typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(Math.max(Math.trunc(n), 1), max);
+  const clamp = (n: number): number => (Number.isFinite(n) ? Math.min(Math.max(Math.trunc(n), 1), max) : 1);
+  let n = Number.NaN;
+  if (typeof raw === "number") n = raw;
+  else if (typeof raw === "string") n = Number.parseInt(raw, 10);
+  return clamp(Number.isFinite(n) ? n : fallback);
 }

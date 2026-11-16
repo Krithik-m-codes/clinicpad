@@ -20,6 +20,14 @@ describe("catalogueKey", () => {
     expect([..."\u0915\u093c"]).toHaveLength(2);
     expect(catalogueKey("\u0958")).toBe(catalogueKey("\u0915\u093c"));
   });
+
+  it("ignores zero-width spaces and soft hyphens pasted from WhatsApp or Word", () => {
+    expect([..."Dolo\u200b 650"]).toHaveLength(9);
+    expect([..."Para\u00adcetamol"]).toHaveLength(12);
+    expect(catalogueKey("Dolo\u200b 650")).toBe(catalogueKey("Dolo 650"));
+    expect(catalogueKey("Para\u00adcetamol")).toBe(catalogueKey("Paracetamol"));
+    expect(catalogueKey("Dolo\ufeff 650\u202e")).toBe("dolo 650");
+  });
 });
 
 describe("searchTerm", () => {
@@ -58,5 +66,32 @@ describe("clampLimit", () => {
     [100000, 50],
   ])("clamps %j to %i", (raw, expected) => {
     expect(clampLimit(raw, 20, 50)).toBe(expected);
+  });
+
+  it("uses the fallback for Infinity and for values that are neither numbers nor strings", () => {
+    expect(clampLimit(Infinity, 20, 50)).toBe(20);
+    expect(clampLimit(-Infinity, 20, 50)).toBe(20);
+    expect(clampLimit(null, 20, 50)).toBe(20);
+    expect(clampLimit(true, 20, 50)).toBe(20);
+    expect(clampLimit([5], 20, 50)).toBe(20);
+  });
+
+  it("never throws on exotic objects", () => {
+    const throwing = {
+      toString() {
+        throw new Error("boom");
+      },
+    };
+    expect(() => clampLimit(throwing, 20, 50)).not.toThrow();
+    expect(clampLimit(throwing, 20, 50)).toBe(20);
+    expect(() => clampLimit(Object.create(null), 20, 50)).not.toThrow();
+    expect(clampLimit(Object.create(null), 20, 50)).toBe(20);
+  });
+
+  it("clamps the fallback too, so the result is always within 1 and max", () => {
+    expect(clampLimit("abc", 999, 50)).toBe(50);
+    expect(clampLimit(undefined, 0, 50)).toBe(1);
+    expect(clampLimit(undefined, -3, 50)).toBe(1);
+    expect(clampLimit(undefined, Number.NaN, 50)).toBe(1);
   });
 });

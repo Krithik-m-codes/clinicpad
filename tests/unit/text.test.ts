@@ -25,6 +25,56 @@ describe("cleanText", () => {
     expect(cleanText('<img src=x onerror="alert(1)">')).toBe('<img src=x onerror="alert(1)">');
   });
 
+  it.each([
+    ["zero-width space", "\u200b"],
+    ["soft hyphen", "\u00ad"],
+    ["byte order mark / zero-width no-break space", "\ufeff"],
+    ["word joiner", "\u2060"],
+    ["left-to-right embedding", "\u202a"],
+    ["right-to-left embedding", "\u202b"],
+    ["pop directional formatting", "\u202c"],
+    ["left-to-right override", "\u202d"],
+    ["right-to-left override", "\u202e"],
+    ["left-to-right isolate", "\u2066"],
+    ["right-to-left isolate", "\u2067"],
+    ["first strong isolate", "\u2068"],
+    ["pop directional isolate", "\u2069"],
+    ["C1 control U+0080", "\u0080"],
+    ["C1 control U+009F", "\u009f"],
+  ])("removes the invisible character %s", (_name, invisible) => {
+    expect([...invisible]).toHaveLength(1);
+    const input = `a${invisible}b`;
+    expect([...input]).toHaveLength(3);
+    const result = cleanText(input);
+    expect(result).toBe("ab");
+    expect([...result]).toHaveLength(2);
+  });
+
+  it("removes every invisible character from one string", () => {
+    const input = "a\u200bb\u00adc\ufeffd\u202ee";
+    expect([...input]).toHaveLength(9);
+    expect(cleanText(input)).toBe("abcde");
+  });
+
+  it("turns NEL, line separator, and paragraph separator into a line feed", () => {
+    const input = "one\u0085two\u2028three\u2029four";
+    expect([...input]).toHaveLength(18);
+    expect(cleanText(input)).toBe("one\ntwo\nthree\nfour");
+    expect(cleanText("x\r\u0085y")).toBe("x\ny");
+  });
+
+  it("keeps ZWJ and ZWNJ, which Devanagari conjuncts need", () => {
+    const zwj = "\u0915\u094d\u200d\u0937";
+    const zwnj = "\u0915\u094d\u200c\u0937";
+    expect([...zwj]).toHaveLength(4);
+    expect([...zwnj]).toHaveLength(4);
+    expect(cleanText(zwj)).toBe(zwj);
+    expect(cleanText(zwnj)).toBe(zwnj);
+    expect([...cleanText(zwj)]).toHaveLength(4);
+    expect([...cleanText(zwnj)]).toHaveLength(4);
+    expect(cleanText(zwj)).not.toBe(cleanText(zwnj));
+  });
+
   it("does not trim", () => {
     expect(cleanText("  padded  ")).toBe("  padded  ");
   });
