@@ -1,15 +1,6 @@
 import { z } from "zod";
 import { normalizePhone } from "@/lib/domain/phone";
-
-const blankToUndefined = (value: unknown) =>
-  typeof value === "string" && value.trim() === "" ? undefined : value;
-
-/** Postgres text cannot hold a NUL byte (it raises an encoding error), so refuse it at the boundary. */
-const hasNoNul = (value: string) => !value.includes("\u0000");
-const NUL_MESSAGE = "Text contains an invalid character";
-
-const optionalText = (max: number) =>
-  z.preprocess(blankToUndefined, z.string().trim().max(max).refine(hasNoNul, NUL_MESSAGE).optional());
+import { blankToUndefined, hasNoNul, NUL_MESSAGE, optionalText } from "./text";
 
 const EARLIEST_DOB = "1900-01-01";
 

@@ -1,12 +1,11 @@
 import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
-import { z } from "zod";
-import { fail, invalidFrom, ok, type Result } from "@/lib/result";
+import { fail, invalidFrom, ok, type Result, type ServiceError } from "@/lib/result";
 import { can } from "@/lib/domain/permissions";
 import { isUuid } from "@/lib/domain/ids";
 import { doctors, patients, prescriptionItems, prescriptions, visits } from "@/server/db/schema";
 import { pgErrorInfo } from "@/server/db/errors";
 import { withTenant, type TenantTx } from "@/server/db/tenant";
-import { draftInputSchema, type DraftItemInput } from "@/server/validation/prescription";
+import { amendReasonSchema, draftInputSchema, type DraftItemInput } from "@/server/validation/prescription";
 import type { ServiceContext } from "./context";
 import { allocateNumber } from "./numbering";
 import { recordAudit } from "./audit";
@@ -31,7 +30,7 @@ export type PrescriptionView = {
   amendmentReason: string | null;
   parentPrescriptionId: string | null;
   finalizedAt: Date | null;
-  patient: { id: string; name: string; patientNo: number | null };
+  patient: { id: string; name: string; patientNo: number | null; allergies: string[] };
   visit: {
     id: string;
     visitType: string;
@@ -59,6 +58,21 @@ const patientNotFound = () => fail("not_found", "Patient not found.");
 async function doctorIdFor(tx: TenantTx, userId: string): Promise<string | null> {
   const [doctor] = await tx.select({ id: doctors.id }).from(doctors).where(eq(doctors.userId, userId)).limit(1);
   return doctor?.id ?? null;
+}
+
+const BAD_TEXT_MESSAGE = "Some text contains a character that cannot be saved.";
+const BAD_DATE_MESSAGE = "Enter a real follow-up date.";
+
+/**
+ * Defence in depth behind the validation layer: Postgres refusing a value (SQLSTATE 22021 invalid byte
+ * sequence, 22007/22008 bad or out-of-range date) is bad input, not a server fault. Returns null for
+ * any other error so the caller keeps its own handling.
+ */
+function invalidFromDatabase(error: unknown, fields: { text?: string; date?: string }): ServiceError | null {
+  const { code } = pgErrorInfo(error);
+  if (code === "22021") return fail("invalid", BAD_TEXT_MESSAGE, fields.text);
+  if (code === "22007" || code === "22008") return fail("invalid", BAD_DATE_MESSAGE, fields.date);
+  return null;
 }
 
 /** Copies items (used by amend and repeat). Items are inserted while the target is a draft. */
@@ -140,7 +154,7 @@ export async function getPrescription(ctx: ServiceContext, id: string): Promise<
       .select({
         rx: prescriptions,
         visit: visits,
-        patient: { id: patients.id, name: patients.name, patientNo: patients.patientNo },
+        patient: { id: patients.id, name: patients.name, patientNo: patients.patientNo, allergies: patients.allergies },
       })
       .from(prescriptions)
       .innerJoin(visits, eq(visits.id, prescriptions.visitId))
@@ -163,7 +177,7 @@ export async function getPrescription(ctx: ServiceContext, id: string): Promise<
       amendmentReason: row.rx.amendmentReason,
       parentPrescriptionId: row.rx.parentPrescriptionId,
       finalizedAt: row.rx.finalizedAt,
-      patient: row.patient,
+      patient: { ...row.patient, allergies: row.patient.allergies ?? [] },
       visit: {
         id: row.visit.id,
         visitType: row.visit.visitType,
@@ -255,6 +269,9 @@ export async function saveDraft(
     if (pgErrorInfo(error).code === "23000") {
       return fail("immutable", "This prescription is finalized. Amend it to make changes.");
     }
+    // The transaction has rolled back, so nothing was written.
+    const invalid = invalidFromDatabase(error, { date: "followUpDate" });
+    if (invalid) return invalid;
     throw error;
   }
 }
@@ -291,11 +308,6 @@ export async function listPrescriptionsForPatient(
 const IMMUTABLE_MESSAGE = "This prescription is finalized and cannot be changed.";
 const AMENDMENT_IN_PROGRESS = "An amendment is already in progress.";
 const OPEN_AMENDMENT_INDEX = "prescriptions_one_open_amendment";
-const reasonSchema = z
-  .string()
-  .trim()
-  .min(5, "Give a reason of at least 5 characters")
-  .max(500, "Keep the reason under 500 characters");
 
 export async function finalizePrescription(
   ctx: ServiceContext,
@@ -367,7 +379,7 @@ export async function amendPrescription(
 ): Promise<Result<{ prescriptionId: string; version: number }>> {
   if (!can(ctx.role, "rx.amend")) return fail("forbidden", "Only doctors can amend prescriptions.");
   if (!isUuid(input.prescriptionId)) return prescriptionNotFound();
-  const reason = reasonSchema.safeParse(input.reason);
+  const reason = amendReasonSchema.safeParse(input.reason);
   if (!reason.success) return fail("invalid", reason.error.issues[0].message, "reason");
 
   try {
@@ -439,6 +451,9 @@ export async function amendPrescription(
     if (info.code === "23505" && info.constraint === OPEN_AMENDMENT_INDEX) {
       return fail("conflict", AMENDMENT_IN_PROGRESS);
     }
+    // Only the reason is new free text here (the rest is copied from rows that already passed the database).
+    const invalid = invalidFromDatabase(error, { text: "reason" });
+    if (invalid) return invalid;
     throw error;
   }
 }

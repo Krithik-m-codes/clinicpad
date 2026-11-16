@@ -167,6 +167,64 @@ describe("saveDraft", () => {
     expect(await saveDraft(A.as("doctor"), id, input)).toMatchObject({ ok: false, code: "invalid", field });
   });
 
+  describe("a NUL character in free text", () => {
+    // Written as an escape so the source file holds no invisible character; the next test proves it is one code point.
+    const NUL = "\u0000";
+
+    it("is a single code point", () => {
+      expect([...NUL]).toHaveLength(1);
+      expect(NUL.codePointAt(0)).toBe(0);
+      expect(`a${NUL}b`).toHaveLength(3);
+    });
+
+    it.each([
+      ["drugName", "items", (v: string) => ({ items: [{ drugName: v }] })],
+      ["strength", "items", (v: string) => ({ items: [{ drugName: "X", strength: v }] })],
+      ["form", "items", (v: string) => ({ items: [{ drugName: "X", form: v }] })],
+      ["route", "items", (v: string) => ({ items: [{ drugName: "X", route: v }] })],
+      ["dose", "items", (v: string) => ({ items: [{ drugName: "X", dose: v }] })],
+      ["timing", "items", (v: string) => ({ items: [{ drugName: "X", timing: v }] })],
+      ["foodRelation", "items", (v: string) => ({ items: [{ drugName: "X", foodRelation: v }] })],
+      ["remarks", "items", (v: string) => ({ items: [{ drugName: "X", remarks: v }] })],
+      ["chiefComplaint", "chiefComplaint", (v: string) => ({ chiefComplaint: v })],
+      ["diagnosis entry", "diagnosis", (v: string) => ({ diagnosis: ["Fine", v] })],
+      ["advice", "advice", (v: string) => ({ advice: v })],
+    ])("is refused in %s as invalid and writes nothing", async (_name, field, build) => {
+      const id = await start();
+      expect((await saveDraft(A.as("doctor"), id, draft([{ drugName: "Original" }]))).ok).toBe(true);
+
+      const result = await saveDraft(A.as("doctor"), id, build(`bad${NUL}text`));
+      expect(result).toMatchObject({ ok: false, code: "invalid", field });
+
+      const got = await getPrescription(A.as("doctor"), id);
+      if (!got.ok) throw new Error(got.message);
+      expect(got.value.items.map((i) => i.drugName)).toEqual(["Original"]);
+      expect(got.value.visit).toMatchObject({ chiefComplaint: "Fever for 2 days", advice: "Rest and fluids" });
+    });
+  });
+
+  describe("follow-up date range", () => {
+    it.each(["0000-01-01", "1899-12-31", "2101-01-01", "2026-02-30"])("refuses %s as invalid and writes nothing", async (date) => {
+      const id = await start();
+      expect((await saveDraft(A.as("doctor"), id, draft())).ok).toBe(true);
+      expect(await saveDraft(A.as("doctor"), id, { ...draft([{ drugName: "Changed" }]), followUpDate: date })).toMatchObject({
+        ok: false,
+        code: "invalid",
+        field: "followUpDate",
+      });
+      const got = await getPrescription(A.as("doctor"), id);
+      expect(got.ok && got.value.visit.followUpDate).toBe("2026-12-01");
+      expect(got.ok && got.value.items.map((i) => i.drugName)).toEqual(["Paracetamol"]);
+    });
+
+    it.each(["1900-01-01", "2026-12-01", "2100-12-31"])("accepts %s", async (date) => {
+      const id = await start();
+      expect((await saveDraft(A.as("doctor"), id, { ...draft(), followUpDate: date })).ok).toBe(true);
+      const got = await getPrescription(A.as("doctor"), id);
+      expect(got.ok && got.value.visit.followUpDate).toBe(date);
+    });
+  });
+
   it("refuses a finalized prescription as immutable and leaves it untouched", async () => {
     const id = await start();
     await saveDraft(A.as("doctor"), id, draft());
@@ -219,6 +277,23 @@ describe("getPrescription", () => {
   it("denies accountants", async () => {
     const id = await start();
     expect(await getPrescription(A.as("accountant"), id)).toMatchObject({ ok: false, code: "forbidden" });
+  });
+
+  it("carries the patient's allergies, as an empty array when there are none", async () => {
+    const none = await start();
+    const withNone = await getPrescription(A.as("doctor"), none);
+    expect(withNone.ok && withNone.value.patient.allergies).toEqual([]);
+
+    const allergic = await createPatient(A.as("reception"), { name: "Allergic Patient", allergies: ["Penicillin", "Sulfa"] });
+    if (!allergic.ok) throw new Error(allergic.message);
+    const started = await startPrescription(A.as("doctor"), { patientId: allergic.value.id });
+    if (!started.ok) throw new Error(started.message);
+    const rxId = started.value.prescriptionId;
+
+    for (const role of ["owner", "doctor", "reception", "nurse", "pharmacist"]) {
+      const got = await getPrescription(A.as(role), rxId);
+      expect(got.ok && got.value.patient.allergies).toEqual(["Penicillin", "Sulfa"]);
+    }
   });
 
   it("hides other clinics' records, and treats malformed and unknown ids as not found", async () => {

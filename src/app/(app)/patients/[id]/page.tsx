@@ -6,6 +6,7 @@ import { ageLabel } from "@/lib/domain/age";
 import { getPatient } from "@/server/services/patients";
 import { updatePatientAction } from "@/server/actions/patients";
 import { PatientForm } from "@/components/patients/patient-form";
+import { AllergyBanner } from "@/components/patients/allergy-banner";
 import { listPrescriptionsForPatient } from "@/server/services/prescriptions";
 import { startPrescriptionAction } from "@/server/actions/prescriptions";
 import { RedirectError } from "@/components/rx/redirect-error";
@@ -42,11 +43,7 @@ export default async function PatientPage({
             .filter(Boolean)
             .join(" · ")}
         </p>
-        {p.allergies?.length ? (
-          <p className="mt-2 inline-block rounded bg-red-50 px-2 py-1 text-sm text-red-800">
-            Allergies: {p.allergies.join(", ")}
-          </p>
-        ) : null}
+        <AllergyBanner allergies={p.allergies} />
         {can(session.role, "rx.draft") ? (
           <form action={startPrescriptionAction.bind(null, p.id)} className="mt-3">
             <SubmitButton>New prescription</SubmitButton>

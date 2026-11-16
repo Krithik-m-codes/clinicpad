@@ -4,6 +4,7 @@ import { requireSession } from "@/server/auth/session";
 import { can } from "@/lib/domain/permissions";
 import { getPrescription } from "@/server/services/prescriptions";
 import { amendAction, repeatAction, saveDraftAction } from "@/server/actions/prescriptions";
+import { AllergyBanner } from "@/components/patients/allergy-banner";
 import { DraftEditor, type EditorInitial } from "@/components/rx/draft-editor";
 import { AmendForm } from "@/components/rx/amend-form";
 import { ReadOnlyView } from "@/components/rx/read-only-view";
@@ -57,6 +58,7 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
           </Link>
           {rx.patient.patientNo ? ` · Patient #${rx.patient.patientNo}` : ""} · {rx.status}
         </p>
+        <AllergyBanner allergies={rx.patient.allergies} showWhenEmpty />
         {rx.amendmentReason ? (
           <p className="text-sm">
             <span className="text-muted-foreground">Amendment reason: </span>

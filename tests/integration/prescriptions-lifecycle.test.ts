@@ -349,6 +349,20 @@ describe("amendPrescription", () => {
     });
   });
 
+  it("rejects a NUL character in the reason as invalid and writes no amendment", async () => {
+    const NUL = "\u0000";
+    expect([...NUL]).toHaveLength(1);
+    const { id } = await finalized();
+    const before = await rowCounts();
+    expect(await amendPrescription(doctor(), { prescriptionId: id, reason: `Wrong${NUL} dose` })).toMatchObject({
+      ok: false,
+      code: "invalid",
+      field: "reason",
+    });
+    expect(await rowCounts()).toEqual(before);
+    await expectStatus(id, "finalized");
+  });
+
   it("allows only one open amendment, and none from an already-amended version", async () => {
     const { id } = await finalized();
     const first = await amendPrescription(doctor(), { prescriptionId: id, reason: "First amendment" });

@@ -14,13 +14,15 @@ test("write, save, finalize, amend, and repeat a prescription", async ({ page })
   await page.goto("/patients/new");
   await page.getByLabel("Name").fill("Ravi Sharma");
   await page.getByLabel("Phone").fill("9822012345");
+  await page.getByLabel("Allergies").fill("Penicillin");
   await page.getByRole("button", { name: /register patient/i }).click();
   await expect(page.getByRole("heading", { name: "Ravi Sharma" })).toBeVisible();
 
-  // Start a draft.
+  // Start a draft. The allergy is on the prescription screen, where the doctor chooses medicines.
   await page.getByRole("button", { name: /new prescription/i }).click();
   await expect(page).toHaveURL(/\/prescriptions\/[0-9a-f-]{36}$/);
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
+  await expect(page.getByText("Allergies: Penicillin")).toBeVisible();
 
   // Finalizing an empty draft is refused with a message.
   await page.getByRole("button", { name: /^finalize$/i }).click();
@@ -47,6 +49,7 @@ test("write, save, finalize, amend, and repeat a prescription", async ({ page })
   await page.getByRole("button", { name: /^finalize$/i }).click();
   await expect(page.getByRole("heading", { name: /Rx #1/ })).toBeVisible();
   await expect(page.getByText("Paracetamol")).toBeVisible();
+  await expect(page.getByText("Allergies: Penicillin")).toBeVisible();
   await expect(page.getByRole("button", { name: /^finalize$/i })).toHaveCount(0);
 
   // Amend needs a reason.
@@ -92,6 +95,7 @@ test("finalize keeps edits that were never saved, and hostile text stays inert",
   await expect(page.getByRole("heading", { name: "Unsaved Edits" })).toBeVisible();
   await page.getByRole("button", { name: /new prescription/i }).click();
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
+  await expect(page.getByText("No known allergies recorded")).toBeVisible();
 
   // Finalize straight away, without pressing Save draft first.
   const hostile = "<img src=x onerror=alert(1)>";
