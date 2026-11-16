@@ -1,46 +1,44 @@
 import { and, asc, count, desc, eq, isNull } from "drizzle-orm";
-import { fail, invalidFrom, ok, type Result, type ServiceError } from "@/lib/result";
+import { fail, invalidFrom, ok, type Ok, type Result, type ServiceError } from "@/lib/result";
 import { can } from "@/lib/domain/permissions";
 import { isUuid } from "@/lib/domain/ids";
 import { doctors, patients, prescriptionItems, prescriptions, visits } from "@/server/db/schema";
 import { pgErrorInfo } from "@/server/db/errors";
 import { withTenant, type TenantTx } from "@/server/db/tenant";
-import { amendReasonSchema, draftInputSchema, type DraftItemInput } from "@/server/validation/prescription";
+import { amendReasonSchema, draftInputSchema } from "@/server/validation/prescription";
 import type { ServiceContext } from "./context";
 import { allocateNumber } from "./numbering";
 import { recordAudit } from "./audit";
+import {
+  itemValues,
+  toItemView,
+  toVisitView,
+  visitColumns,
+  type ClinicalVisitView,
+  type ItemView,
+} from "./rx-mapping";
 
-export type ItemView = {
-  drugName: string;
-  strength: string | null;
-  form: string | null;
-  route: string | null;
-  dose: string | null;
-  timing: string | null;
-  foodRelation: string | null;
-  durationDays: number | null;
-  remarks: string | null;
-};
+export type { ClinicalVisitView, ItemView } from "./rx-mapping";
 
 export type PrescriptionView = {
   id: string;
   status: string;
   version: number;
+  /** Draft save counter; send it back as `baseRevision`. */
+  revision: number;
   rxNo: number | null;
   amendmentReason: string | null;
   parentPrescriptionId: string | null;
   finalizedAt: Date | null;
+  /** Read live from the patient row (Plan 1C snapshots it at finalize); allergies are [] when none. */
   patient: { id: string; name: string; patientNo: number | null; allergies: string[] };
-  visit: {
-    id: string;
-    visitType: string;
-    chiefComplaint: string | null;
-    diagnosis: string[];
-    advice: string | null;
-    followUpDate: string | null;
-  };
+  visit: ClinicalVisitView;
   items: ItemView[];
 };
+
+/** A save based on an older revision than the one stored. */
+export type DraftConflict = ServiceError & { code: "conflict"; currentRevision: number };
+export type SaveDraftResult = Ok<{ savedAt: Date; revision: number }> | ServiceError | DraftConflict;
 
 export type PrescriptionSummary = {
   id: string;
@@ -173,67 +171,49 @@ export async function getPrescription(ctx: ServiceContext, id: string): Promise<
       id: row.rx.id,
       status: row.rx.status,
       version: row.rx.version,
+      revision: row.rx.draftRevision,
       rxNo: row.rx.rxNo,
       amendmentReason: row.rx.amendmentReason,
       parentPrescriptionId: row.rx.parentPrescriptionId,
       finalizedAt: row.rx.finalizedAt,
       patient: { ...row.patient, allergies: row.patient.allergies ?? [] },
-      visit: {
-        id: row.visit.id,
-        visitType: row.visit.visitType,
-        chiefComplaint: row.visit.chiefComplaint,
-        diagnosis: row.visit.diagnosis ?? [],
-        advice: row.visit.advice,
-        followUpDate: row.visit.followUpDate,
-      },
-      items: items.map((i) => ({
-        drugName: i.drugName,
-        strength: i.strength,
-        form: i.form,
-        route: i.route,
-        dose: i.dose,
-        timing: i.timing,
-        foodRelation: i.foodRelation,
-        durationDays: i.durationDays,
-        remarks: i.remarks,
-      })),
+      visit: toVisitView(row.visit),
+      items: items.map(toItemView),
     });
   });
 }
 
-function itemValues(ctx: ServiceContext, prescriptionId: string, items: DraftItemInput[]) {
-  return items.map((item, index) => ({
-    tenantId: ctx.tenantId,
-    prescriptionId,
-    sortOrder: index,
-    drugName: item.drugName,
-    strength: item.strength ?? null,
-    form: item.form ?? null,
-    route: item.route ?? null,
-    dose: item.dose ?? null,
-    timing: item.timing ?? null,
-    foodRelation: item.foodRelation ?? null,
-    durationDays: item.durationDays ?? null,
-    remarks: item.remarks ?? null,
-  }));
-}
-
+/**
+ * Saves a full draft snapshot. With `baseRevision` the save succeeds only if the stored
+ * draft is still at that revision; otherwise it returns `conflict` with the current
+ * revision and changes nothing. The row lock serializes concurrent saves, so of two saves
+ * from the same revision exactly one wins and items are never mixed.
+ */
 export async function saveDraft(
   ctx: ServiceContext,
   id: string,
   raw: unknown,
-): Promise<Result<{ savedAt: Date }>> {
+  opts: { baseRevision?: number } = {},
+): Promise<SaveDraftResult> {
   if (!can(ctx.role, "rx.draft")) return fail("forbidden", "Only doctors can edit prescriptions.");
   if (!isUuid(id)) return prescriptionNotFound();
+  const { baseRevision } = opts;
+  if (baseRevision !== undefined && (!Number.isInteger(baseRevision) || baseRevision < 0)) {
+    return fail("invalid", "The draft revision is not valid. Reload the page.", "baseRevision");
+  }
   const parsed = draftInputSchema.safeParse(raw);
   if (!parsed.success) return invalidFrom(parsed.error);
   const input = parsed.data;
 
   try {
-    return await withTenant(ctx.tenantId, async (tx): Promise<Result<{ savedAt: Date }>> => {
-      // Lock the prescription first so a concurrent finalize cannot interleave with this save.
+    return await withTenant(ctx.tenantId, async (tx): Promise<SaveDraftResult> => {
       const [rx] = await tx
-        .select({ id: prescriptions.id, status: prescriptions.status, visitId: prescriptions.visitId })
+        .select({
+          id: prescriptions.id,
+          status: prescriptions.status,
+          visitId: prescriptions.visitId,
+          draftRevision: prescriptions.draftRevision,
+        })
         .from(prescriptions)
         .where(eq(prescriptions.id, id))
         .limit(1)
@@ -242,27 +222,28 @@ export async function saveDraft(
       if (rx.status !== "draft") {
         return fail("immutable", "This prescription is finalized. Amend it to make changes.");
       }
+      if (baseRevision !== undefined && baseRevision !== rx.draftRevision) {
+        return {
+          ok: false,
+          code: "conflict",
+          message: "This draft was changed in another window or device.",
+          currentRevision: rx.draftRevision,
+        };
+      }
 
-      await tx
-        .update(visits)
-        .set({
-          visitType: input.visitType,
-          chiefComplaint: input.chiefComplaint ?? null,
-          diagnosis: input.diagnosis,
-          advice: input.advice ?? null,
-          followUpDate: input.followUpDate ?? null,
-        })
-        .where(eq(visits.id, rx.visitId));
+      // Lock order: the prescription row above, then its visit and items (ADR-0023).
+      await tx.update(visits).set(visitColumns(input)).where(eq(visits.id, rx.visitId));
       await tx.delete(prescriptionItems).where(eq(prescriptionItems.prescriptionId, id));
-      if (input.items.length > 0) {
-        await tx.insert(prescriptionItems).values(itemValues(ctx, id, input.items));
+      const items = input.items ?? [];
+      if (items.length > 0) {
+        await tx.insert(prescriptionItems).values(itemValues(ctx, id, items));
       }
       const [saved] = await tx
         .update(prescriptions)
-        .set({ updatedAt: new Date() })
+        .set({ draftRevision: rx.draftRevision + 1, updatedAt: new Date() })
         .where(eq(prescriptions.id, id))
-        .returning({ updatedAt: prescriptions.updatedAt });
-      return ok({ savedAt: saved.updatedAt });
+        .returning({ updatedAt: prescriptions.updatedAt, revision: prescriptions.draftRevision });
+      return ok({ savedAt: saved.updatedAt, revision: saved.revision });
     });
   } catch (error) {
     // The database refuses changes to finalized records (SQLSTATE 23000); report it as immutable.
