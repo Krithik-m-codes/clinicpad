@@ -4,6 +4,7 @@ import { adminDb } from "@/server/db/admin";
 import { withTenant } from "@/server/db/tenant";
 import { pgErrorInfo } from "@/server/db/errors";
 import { auditEvents, prescriptionItems, prescriptions, tenantCounters, visits } from "@/server/db/schema";
+import { NUL_MESSAGE } from "@/server/validation/text";
 import { archivePatient, createPatient } from "@/server/services/patients";
 import {
   amendPrescription,
@@ -358,6 +359,8 @@ describe("amendPrescription", () => {
       ok: false,
       code: "invalid",
       field: "reason",
+      // The validation guard's own message, not the database fallback's: removing the guard must fail this.
+      message: NUL_MESSAGE,
     });
     expect(await rowCounts()).toEqual(before);
     await expectStatus(id, "finalized");

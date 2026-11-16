@@ -1,4 +1,6 @@
+import { asc, eq } from "drizzle-orm";
 import { prescriptionItems, visits } from "@/server/db/schema";
+import type { TenantTx } from "@/server/db/tenant";
 import type { Investigation, Vitals } from "@/lib/domain/rx-options";
 import type { DraftInput, DraftItemInput } from "@/server/validation/prescription";
 import type { ServiceContext } from "./context";
@@ -140,4 +142,97 @@ export function itemValues(ctx: ServiceContext, prescriptionId: string, items: D
     durationDays: item.durationDays ?? null,
     remarks: item.remarks ?? null,
   }));
+}
+
+type VisitInsert = typeof visits.$inferInsert;
+
+/** Copies every item column (amend and repeat). Items are inserted while the target is a draft. */
+export async function copyItems(
+  tx: TenantTx,
+  ctx: ServiceContext,
+  fromPrescriptionId: string,
+  toPrescriptionId: string,
+): Promise<void> {
+  const rows = await tx
+    .select()
+    .from(prescriptionItems)
+    .where(eq(prescriptionItems.prescriptionId, fromPrescriptionId))
+    .orderBy(asc(prescriptionItems.sortOrder));
+  if (rows.length === 0) return;
+  await tx.insert(prescriptionItems).values(
+    rows.map((row) => ({
+      ...omit(row, ["id", "createdAt"] as const),
+      tenantId: ctx.tenantId,
+      prescriptionId: toPrescriptionId,
+    })),
+  );
+}
+
+/** An amendment corrects the same visit, so it carries every column of the original. */
+export function amendVisitValues(old: VisitRow): VisitInsert {
+  return { ...omit(old, ["id", "status", "finalizedAt", "createdAt", "updatedAt"] as const), status: "draft" };
+}
+
+/**
+ * A repeat is a new visit: it copies what was prescribed, not what was measured or found
+ * on the old day (vitals, examination notes, follow-up).
+ */
+export function repeatVisitValues(old: VisitRow, doctorId: string | null): VisitInsert {
+  return {
+    tenantId: old.tenantId,
+    patientId: old.patientId,
+    doctorId,
+    branchId: old.branchId,
+    status: "draft",
+    visitType: "follow-up",
+    chiefComplaint: old.chiefComplaint,
+    complaints: old.complaints,
+    diagnosis: old.diagnosis,
+    medicalHistory: old.medicalHistory,
+    drugHistory: old.drugHistory,
+    investigations: old.investigations,
+    advice: old.advice,
+  };
+}
+
+const SUMMARY_FIELDS = [
+  "chiefComplaint",
+  "complaints",
+  "diagnosis",
+  "medicalHistory",
+  "drugHistory",
+  "examinationNotes",
+  "vitals",
+  "investigations",
+  "advice",
+  "followUpDate",
+  "followUpReason",
+] as const;
+
+export type ClinicalSummary = {
+  itemCount: number;
+  diagnosisCount: number;
+  investigationCount: number;
+  vitalsRecorded: string[];
+  filledFields: string[];
+};
+
+/** Audit-safe description of a visit: field names and counts only, never the text itself. */
+export function clinicalSummary(visit: VisitRow, itemCount: number): ClinicalSummary {
+  const filledFields = SUMMARY_FIELDS.filter((key) => {
+    const value: unknown = visit[key];
+    if (value === null || value === undefined) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object") return Object.keys(value).length > 0;
+    return String(value).trim() !== "";
+  });
+  return {
+    itemCount,
+    diagnosisCount: visit.diagnosis?.length ?? 0,
+    investigationCount: visit.investigations?.length ?? 0,
+    vitalsRecorded: Object.keys(visit.vitals ?? {})
+      .filter((key) => key !== "notes")
+      .sort(),
+    filledFields: [...filledFields],
+  };
 }

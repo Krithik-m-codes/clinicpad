@@ -10,7 +10,11 @@ import type { ServiceContext } from "./context";
 import { allocateNumber } from "./numbering";
 import { recordAudit } from "./audit";
 import {
+  amendVisitValues,
+  clinicalSummary,
+  copyItems,
   itemValues,
+  repeatVisitValues,
   toItemView,
   toVisitView,
   visitColumns,
@@ -72,37 +76,6 @@ function invalidFromDatabase(error: unknown, fields: { text?: string; date?: str
   if (code === "22021" || code === "22P02" || code === "22P05") return fail("invalid", BAD_TEXT_MESSAGE, fields.text);
   if (code === "22007" || code === "22008") return fail("invalid", BAD_DATE_MESSAGE, fields.date);
   return null;
-}
-
-/** Copies items (used by amend and repeat). Items are inserted while the target is a draft. */
-export async function copyItems(
-  tx: TenantTx,
-  ctx: ServiceContext,
-  fromPrescriptionId: string,
-  toPrescriptionId: string,
-): Promise<void> {
-  const rows = await tx
-    .select()
-    .from(prescriptionItems)
-    .where(eq(prescriptionItems.prescriptionId, fromPrescriptionId))
-    .orderBy(asc(prescriptionItems.sortOrder));
-  if (rows.length === 0) return;
-  await tx.insert(prescriptionItems).values(
-    rows.map((r) => ({
-      tenantId: ctx.tenantId,
-      prescriptionId: toPrescriptionId,
-      sortOrder: r.sortOrder,
-      drugName: r.drugName,
-      strength: r.strength,
-      form: r.form,
-      route: r.route,
-      dose: r.dose,
-      timing: r.timing,
-      foodRelation: r.foodRelation,
-      durationDays: r.durationDays,
-      remarks: r.remarks,
-    })),
-  );
 }
 
 export async function startPrescription(
@@ -315,23 +288,31 @@ const OPEN_AMENDMENT_INDEX = "prescriptions_one_open_amendment";
 export async function finalizePrescription(
   ctx: ServiceContext,
   id: string,
+  opts: { expectedRevision?: number } = {},
 ): Promise<Result<{ rxNo: number; version: number }>> {
   if (!can(ctx.role, "rx.finalize")) return fail("forbidden", "Only doctors can finalize prescriptions.");
   if (!isUuid(id)) return prescriptionNotFound();
 
   try {
     return await withTenant(ctx.tenantId, async (tx): Promise<Result<{ rxNo: number; version: number }>> => {
-      // The row lock comes first: it serializes double-clicks (the second request waits, then sees
-      // "finalized") and it must precede any visit or item write to keep one lock order everywhere.
+      // The row lock comes first: it serializes double-clicks and racing autosaves (the second request waits,
+      // then sees "finalized"), and it must precede any visit or item write. Two lock orders exist (ADR-0023,
+      // AGENTS.md section 10): writers lock prescription -> items/visit, and finalizing an amendment locks the
+      // child and then the parent. The second is safe because amendPrescription never writes while a child is open.
       const [rx] = await tx.select().from(prescriptions).where(eq(prescriptions.id, id)).limit(1).for("update");
       if (!rx) return prescriptionNotFound();
       if (rx.status !== "draft") return fail("conflict", "This prescription is already finalized.");
+      // Finalize exactly the revision the doctor saw: a save from another window in between wins.
+      if (opts.expectedRevision !== undefined && rx.draftRevision !== opts.expectedRevision) {
+        return fail("conflict", "This draft changed after you last saw it. Review it, then finalize again.");
+      }
 
       const [{ value: itemCount }] = await tx
         .select({ value: count() })
         .from(prescriptionItems)
         .where(eq(prescriptionItems.prescriptionId, id));
       if (itemCount === 0) return fail("invalid", "Add at least one medicine before finalizing.", "items");
+      const [visit] = await tx.select().from(visits).where(eq(visits.id, rx.visitId)).limit(1);
 
       // First versions (no parent) get the next number; amendments must already carry their parent's.
       // An amendment without a number means a corrupt chain: refuse rather than allocate a second number
@@ -354,19 +335,21 @@ export async function finalizePrescription(
       // Only status and finalized_at may change on a visit whose prescription is already finalized.
       await tx.update(visits).set({ status: "finalized", finalizedAt: now }).where(eq(visits.id, rx.visitId));
       if (rx.parentPrescriptionId) {
-        // The parent flip may change nothing but status.
+        // The parent flip may change nothing but status. This locks the parent after the child (ADR-0023's
+        // second lock order), which is safe because amendPrescription never writes while a child is open.
         await tx
           .update(prescriptions)
           .set({ status: "amended" })
           .where(eq(prescriptions.id, rx.parentPrescriptionId));
       }
+      const summary = clinicalSummary(visit, itemCount);
       await recordAudit(tx, ctx, {
         action: rx.parentPrescriptionId ? "prescription.amended" : "prescription.finalized",
         entityType: "prescription",
         entityId: id,
         after: rx.parentPrescriptionId
-          ? { rxNo, version: rx.version, parentPrescriptionId: rx.parentPrescriptionId }
-          : { rxNo, version: rx.version },
+          ? { rxNo, version: rx.version, parentPrescriptionId: rx.parentPrescriptionId, ...summary }
+          : { rxNo, version: rx.version, ...summary },
       });
       return ok({ rxNo, version: rx.version });
     });
@@ -387,6 +370,8 @@ export async function amendPrescription(
 
   try {
     return await withTenant(ctx.tenantId, async (tx): Promise<Result<{ prescriptionId: string; version: number }>> => {
+      // Lock the parent first. Every check below returns before any write: finalizing an amendment locks the
+      // child and then the parent, so writing here while a child is open could deadlock (ADR-0023).
       const [source] = await tx
         .select()
         .from(prescriptions)
@@ -406,23 +391,9 @@ export async function amendPrescription(
         .limit(1);
       if (open) return fail("conflict", AMENDMENT_IN_PROGRESS);
 
+      // Writes start here. amendVisitValues copies every visit column (the new clinical ones included).
       const [oldVisit] = await tx.select().from(visits).where(eq(visits.id, source.visitId)).limit(1);
-      const [newVisit] = await tx
-        .insert(visits)
-        .values({
-          tenantId: ctx.tenantId,
-          patientId: oldVisit.patientId,
-          doctorId: oldVisit.doctorId,
-          branchId: oldVisit.branchId,
-          status: "draft",
-          visitType: oldVisit.visitType,
-          chiefComplaint: oldVisit.chiefComplaint,
-          vitals: oldVisit.vitals,
-          diagnosis: oldVisit.diagnosis,
-          advice: oldVisit.advice,
-          followUpDate: oldVisit.followUpDate,
-        })
-        .returning({ id: visits.id });
+      const [newVisit] = await tx.insert(visits).values(amendVisitValues(oldVisit)).returning({ id: visits.id });
       const [rx] = await tx
         .insert(prescriptions)
         .values({
@@ -487,17 +458,7 @@ export async function repeatPrescription(
 
     const [newVisit] = await tx
       .insert(visits)
-      .values({
-        tenantId: ctx.tenantId,
-        patientId: patient.id,
-        doctorId: await doctorIdFor(tx, ctx.userId),
-        branchId: oldVisit.branchId,
-        status: "draft",
-        visitType: "follow-up",
-        chiefComplaint: oldVisit.chiefComplaint,
-        diagnosis: oldVisit.diagnosis,
-        advice: oldVisit.advice,
-      })
+      .values(repeatVisitValues(oldVisit, await doctorIdFor(tx, ctx.userId)))
       .returning({ id: visits.id });
     const [rx] = await tx
       .insert(prescriptions)
