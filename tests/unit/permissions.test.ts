@@ -51,6 +51,16 @@ describe("can", () => {
       expect(can("owner", action as Action)).toBe(false);
     }
   });
+
+  it("lets nurses and pharmacists search the catalogue, but only owners and doctors add to it", () => {
+    expect(can("nurse", "catalogue.read")).toBe(true);
+    expect(can("pharmacist", "catalogue.read")).toBe(true);
+    expect(can("reception", "catalogue.read")).toBe(false);
+    expect(can("accountant", "catalogue.read")).toBe(false);
+    expect(can("nurse", "catalogue.write")).toBe(false);
+    expect(can("mystery", "catalogue.read")).toBe(false);
+    expect(can(undefined, "catalogue.write")).toBe(false);
+  });
 });
 
 describe("role x action matrix", () => {
@@ -63,6 +73,8 @@ describe("role x action matrix", () => {
     "rx.draft": ["owner", "doctor"],
     "rx.finalize": ["owner", "doctor"],
     "rx.amend": ["owner", "doctor"],
+    "catalogue.read": ["owner", "doctor", "nurse", "pharmacist"],
+    "catalogue.write": ["owner", "doctor"],
   };
   const actions = Object.keys(granted) as Action[];
 
