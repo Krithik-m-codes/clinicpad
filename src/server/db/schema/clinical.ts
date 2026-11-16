@@ -1,9 +1,11 @@
 import {
+  boolean,
   date,
   foreignKey,
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   primaryKey,
   text,
@@ -14,6 +16,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
+import type { Investigation, Vitals } from "../../../lib/domain/rx-options";
 import { branches, doctors, tenants } from "./tenancy";
 
 const pk = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
@@ -70,10 +73,16 @@ export const visits = pgTable(
     status: text("status").notNull().default("draft"),
     visitType: text("visit_type").notNull().default("new"),
     chiefComplaint: text("chief_complaint"),
-    vitals: jsonb("vitals").$type<Record<string, string | number>>(),
+    vitals: jsonb("vitals").$type<Vitals>(),
     diagnosis: text("diagnosis").array(),
     advice: text("advice"),
     followUpDate: date("follow_up_date"),
+    complaints: text("complaints").array(),
+    medicalHistory: text("medical_history").array(),
+    drugHistory: text("drug_history").array(),
+    examinationNotes: text("examination_notes"),
+    investigations: jsonb("investigations").$type<Investigation[]>(),
+    followUpReason: text("follow_up_reason"),
     finalizedAt: timestamp("finalized_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -113,6 +122,8 @@ export const prescriptions = pgTable(
     visitId: uuid("visit_id").notNull(),
     rxNo: integer("rx_no"),
     version: integer("version").notNull().default(1),
+    /** Optimistic-concurrency counter for draft saves (Plan 1B). Frozen with the row at finalize. */
+    draftRevision: integer("draft_revision").notNull().default(0),
     status: text("status").notNull().default("draft"),
     templateVersionId: uuid("template_version_id"),
     pdfUrl: text("pdf_url"),
@@ -169,6 +180,15 @@ export const prescriptionItems = pgTable(
     foodRelation: text("food_relation"),
     durationDays: integer("duration_days"),
     remarks: text("remarks"),
+    genericName: text("generic_name"),
+    doseMorning: numeric("dose_morning", { precision: 5, scale: 2, mode: "number" }),
+    doseAfternoon: numeric("dose_afternoon", { precision: 5, scale: 2, mode: "number" }),
+    doseEvening: numeric("dose_evening", { precision: 5, scale: 2, mode: "number" }),
+    doseNight: numeric("dose_night", { precision: 5, scale: 2, mode: "number" }),
+    periodicity: text("periodicity"),
+    isSos: boolean("is_sos").notNull().default(false),
+    durationValue: integer("duration_value"),
+    durationUnit: text("duration_unit"),
     createdAt: createdAt(),
   },
   (t) => [
