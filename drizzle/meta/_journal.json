@@ -50,6 +50,13 @@
       "when": 1794480802505,
       "tag": "0006_tenant_boundary_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794830451882,
+      "tag": "0007_tenant_composite_fks",
+      "breakpoints": true
     }
   ]
 }

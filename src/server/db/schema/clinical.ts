@@ -1,6 +1,6 @@
 import {
-  type AnyPgColumn,
   date,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -52,6 +52,8 @@ export const patients = pgTable(
     index("patients_tenant_name_idx").on(t.tenantId, t.name),
     index("patients_tenant_phone_idx").on(t.tenantId, t.phoneNormalized),
     unique("patients_tenant_no_unique").on(t.tenantId, t.patientNo),
+    // Target of the composite same-tenant foreign keys (a foreign key needs a unique key to point at).
+    unique("patients_tenant_id_uq").on(t.tenantId, t.id),
   ],
 );
 
@@ -62,9 +64,7 @@ export const visits = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    patientId: uuid("patient_id")
-      .notNull()
-      .references(() => patients.id, { onDelete: "restrict" }),
+    patientId: uuid("patient_id").notNull(),
     doctorId: uuid("doctor_id"),
     branchId: uuid("branch_id"),
     status: text("status").notNull().default("draft"),
@@ -78,7 +78,16 @@ export const visits = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("visits_tenant_patient_idx").on(t.tenantId, t.patientId)],
+  (t) => [
+    index("visits_tenant_patient_idx").on(t.tenantId, t.patientId),
+    unique("visits_tenant_id_uq").on(t.tenantId, t.id),
+    // Same-tenant reference: a visit can only belong to a patient of its own tenant.
+    foreignKey({
+      name: "visits_patient_fk",
+      columns: [t.tenantId, t.patientId],
+      foreignColumns: [patients.tenantId, patients.id],
+    }).onDelete("restrict"),
+  ],
 );
 
 export const prescriptions = pgTable(
@@ -88,17 +97,13 @@ export const prescriptions = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    visitId: uuid("visit_id")
-      .notNull()
-      .references(() => visits.id, { onDelete: "cascade" }),
+    visitId: uuid("visit_id").notNull(),
     rxNo: integer("rx_no"),
     version: integer("version").notNull().default(1),
     status: text("status").notNull().default("draft"),
     templateVersionId: uuid("template_version_id"),
     pdfUrl: text("pdf_url"),
-    parentPrescriptionId: uuid("parent_prescription_id").references(
-      (): AnyPgColumn => prescriptions.id,
-    ),
+    parentPrescriptionId: uuid("parent_prescription_id"),
     amendmentReason: text("amendment_reason"),
     finalizedBy: uuid("finalized_by"),
     updatedAt: updatedAt(),
@@ -111,6 +116,19 @@ export const prescriptions = pgTable(
     uniqueIndex("prescriptions_one_open_amendment")
       .on(t.parentPrescriptionId)
       .where(sql`${t.status} = 'draft' and ${t.parentPrescriptionId} is not null`),
+    unique("prescriptions_tenant_id_uq").on(t.tenantId, t.id),
+    // Same-tenant references. parent_prescription_id is nullable: a composite key is MATCH SIMPLE, so a NULL
+    // there skips the check (tenant_id is NOT NULL).
+    foreignKey({
+      name: "prescriptions_visit_fk",
+      columns: [t.tenantId, t.visitId],
+      foreignColumns: [visits.tenantId, visits.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "prescriptions_parent_fk",
+      columns: [t.tenantId, t.parentPrescriptionId],
+      foreignColumns: [t.tenantId, t.id],
+    }),
   ],
 );
 
@@ -121,9 +139,7 @@ export const prescriptionItems = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    prescriptionId: uuid("prescription_id")
-      .notNull()
-      .references(() => prescriptions.id, { onDelete: "cascade" }),
+    prescriptionId: uuid("prescription_id").notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
     drugName: text("drug_name").notNull(),
     strength: text("strength"),
@@ -136,7 +152,15 @@ export const prescriptionItems = pgTable(
     remarks: text("remarks"),
     createdAt: createdAt(),
   },
-  (t) => [index("rx_items_prescription_idx").on(t.prescriptionId)],
+  (t) => [
+    index("rx_items_prescription_idx").on(t.prescriptionId),
+    // The item trigger also checks this; the key makes it a structural guarantee.
+    foreignKey({
+      name: "rx_items_prescription_fk",
+      columns: [t.tenantId, t.prescriptionId],
+      foreignColumns: [prescriptions.tenantId, prescriptions.id],
+    }).onDelete("cascade"),
+  ],
 );
 
 export const templates = pgTable(
