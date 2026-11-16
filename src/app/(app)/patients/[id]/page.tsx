@@ -17,6 +17,7 @@ export default async function PatientPage({ params }: { params: Promise<{ id: st
   if (!result.ok) notFound();
   const p = result.value;
   const age = p.dob ? ageLabel(p.dob, new Date()) : "";
+  const canWrite = can(session.role, "patient.write");
 
   return (
     <div className="space-y-6">
@@ -34,7 +35,7 @@ export default async function PatientPage({ params }: { params: Promise<{ id: st
         ) : null}
       </header>
 
-      {can(session.role, "patient.write") ? (
+      {canWrite ? (
         <section className="space-y-3">
           <h2 className="font-medium">Details</h2>
           <PatientForm
@@ -51,7 +52,19 @@ export default async function PatientPage({ params }: { params: Promise<{ id: st
             }}
           />
         </section>
-      ) : null}
+      ) : (
+        <section className="space-y-3">
+          <h2 className="font-medium">Details</h2>
+          <dl className="grid max-w-xl gap-x-4 gap-y-2 text-sm sm:grid-cols-[10rem_1fr]">
+            <dt className="text-muted-foreground">Date of birth</dt>
+            <dd>{p.dob ? `${p.dob}${age ? ` (${age})` : ""}` : "—"}</dd>
+            <dt className="text-muted-foreground">Address</dt>
+            <dd>{p.address || "—"}</dd>
+            <dt className="text-muted-foreground">Notes</dt>
+            <dd className="whitespace-pre-wrap">{p.notes || "—"}</dd>
+          </dl>
+        </section>
+      )}
     </div>
   );
 }

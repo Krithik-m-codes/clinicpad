@@ -9,17 +9,47 @@ import { Input } from "@/components/ui/input";
 
 export const dynamic = "force-dynamic";
 
+const PAGE_SIZE = 25;
+const MAX_OFFSET = 10_000;
+
+type RawParam = string | string[] | undefined;
+
+/** A repeated query param arrives as an array; use the first value. */
+function firstParam(value: RawParam): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/** Non-negative whole number; anything else becomes 0. */
+function parseOffset(value: RawParam): number {
+  const raw = firstParam(value)?.trim() ?? "";
+  if (!/^\d{1,9}$/.test(raw)) return 0;
+  return Math.min(Number(raw), MAX_OFFSET);
+}
+
+function pageHref(q: string | undefined, offset: number): string {
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (offset > 0) params.set("offset", String(offset));
+  const query = params.toString();
+  return query ? `/patients?${query}` : "/patients";
+}
+
 export default async function PatientsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string }>;
+  searchParams: Promise<{ q?: RawParam; offset?: RawParam }>;
 }) {
   const session = await requireSession();
   if (!can(session.role, "patient.read")) redirect("/dashboard");
 
-  const { q } = await searchParams;
-  const result = await searchPatients(session, { q });
-  const rows = result.ok ? result.value : [];
+  const params = await searchParams;
+  const q = firstParam(params.q);
+  const offset = parseOffset(params.offset);
+  // Ask for one extra row to learn whether a next page exists.
+  const result = await searchPatients(session, { q, limit: PAGE_SIZE + 1, offset });
+  const fetched = result.ok ? result.value : [];
+  const rows = fetched.slice(0, PAGE_SIZE);
+  const hasNext = fetched.length > PAGE_SIZE;
   const now = new Date();
 
   return (
@@ -42,11 +72,17 @@ export default async function PatientsPage({
 
       {!result.ok ? <p className="text-sm text-destructive">{result.message}</p> : null}
 
-      {rows.length === 0 ? (
+      {result.ok && rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          {q ? "No patients match that search." : "No patients yet. Register your first patient to get started."}
+          {offset > 0
+            ? "No more patients."
+            : q
+              ? "No patients match that search."
+              : "No patients yet. Register your first patient to get started."}
         </p>
-      ) : (
+      ) : null}
+
+      {rows.length > 0 ? (
         <div className="overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
             <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
@@ -73,7 +109,27 @@ export default async function PatientsPage({
             </tbody>
           </table>
         </div>
-      )}
+      ) : null}
+
+      {offset > 0 || hasNext ? (
+        <nav aria-label="Pagination" className="flex items-center justify-between gap-3 text-sm">
+          <span className="text-muted-foreground">
+            {rows.length > 0 ? `Showing ${offset + 1}-${offset + rows.length}` : ""}
+          </span>
+          <span className="flex gap-2">
+            {offset > 0 ? (
+              <Button asChild variant="outline" size="sm">
+                <Link href={pageHref(q, Math.max(0, offset - PAGE_SIZE))}>Previous</Link>
+              </Button>
+            ) : null}
+            {hasNext ? (
+              <Button asChild variant="outline" size="sm">
+                <Link href={pageHref(q, offset + PAGE_SIZE)}>Next</Link>
+              </Button>
+            ) : null}
+          </span>
+        </nav>
+      ) : null}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,7 +22,7 @@ const selectClass =
 function FieldError({ state, field }: { state: PatientFormState; field: string }) {
   if (state.field !== field || !state.error) return null;
   return (
-    <p id={`${field}-error`} className="text-sm text-destructive">
+    <p id={`${field}-error`} aria-live="polite" className="text-sm text-destructive">
       {state.error}
     </p>
   );
@@ -39,11 +39,38 @@ function invalidProps(state: PatientFormState, field: string) {
 export function PatientForm({ action, initial, submitLabel, allowDuplicateConfirm }: Props) {
   const [state, formAction, pending] = useActionState(action, {} as PatientFormState);
   const v = state.values ?? initial ?? {};
+  const formRef = useRef<HTMLFormElement>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
+
+  // Editing the name or phone after a duplicate warning makes that warning stale: the number may no
+  // longer match, or may now match someone else. Dismissing it removes the confirm button, so the
+  // next submit runs the duplicate check again.
+  const [dismissedFor, setDismissedFor] = useState<PatientFormState | null>(null);
+  const duplicateWarning = Boolean(state.candidates?.length) && dismissedFor !== state;
+  const dismissWarning = () => setDismissedFor(state);
+
   // Errors without a field (duplicates, permissions, not found) are shown at the form level.
-  const formLevelError = state.error && !state.field ? state.error : null;
+  const showFormError = Boolean(state.error) && !state.field && (!state.candidates?.length || duplicateWarning);
+
+  // Move focus to the first invalid field after a failed submit.
+  useEffect(() => {
+    if (state.field) document.getElementById(state.field)?.focus();
+  }, [state]);
+
+  // The confirm button is a plain button, not a submit button, so implicit submission (Enter in a
+  // field) always uses the main submit button and can never confirm a duplicate.
+  function confirmDuplicate() {
+    const form = formRef.current;
+    const flag = confirmRef.current;
+    if (!form || !flag) return;
+    flag.value = "yes";
+    form.requestSubmit();
+    flag.value = "";
+  }
 
   return (
-    <form action={formAction} className="max-w-xl space-y-4">
+    <form ref={formRef} action={formAction} className="max-w-xl space-y-4">
+      <input ref={confirmRef} type="hidden" name="confirmDuplicate" defaultValue="" />
       <div className="space-y-2">
         <Label htmlFor="name">Name</Label>
         <Input
@@ -52,6 +79,7 @@ export function PatientForm({ action, initial, submitLabel, allowDuplicateConfir
           required
           minLength={2}
           defaultValue={v.name ?? ""}
+          onChange={dismissWarning}
           {...invalidProps(state, "name")}
         />
         <FieldError state={state} field="name" />
@@ -65,6 +93,7 @@ export function PatientForm({ action, initial, submitLabel, allowDuplicateConfir
             type="tel"
             autoComplete="off"
             defaultValue={v.phone ?? ""}
+            onChange={dismissWarning}
             {...invalidProps(state, "phone")}
           />
           <FieldError state={state} field="phone" />
@@ -115,13 +144,13 @@ export function PatientForm({ action, initial, submitLabel, allowDuplicateConfir
         <FieldError state={state} field="notes" />
       </div>
 
-      {formLevelError ? (
+      {showFormError ? (
         <p role="alert" className="text-sm text-destructive">
-          {formLevelError}
+          {state.error}
         </p>
       ) : null}
 
-      {state.candidates?.length ? (
+      {duplicateWarning && state.candidates ? (
         <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
           <p className="font-medium">Possible existing patients with this phone number:</p>
           <ul className="list-disc pl-5">
@@ -136,7 +165,7 @@ export function PatientForm({ action, initial, submitLabel, allowDuplicateConfir
             ))}
           </ul>
           {allowDuplicateConfirm ? (
-            <Button type="submit" name="confirmDuplicate" value="yes" variant="outline" disabled={pending}>
+            <Button type="button" variant="outline" disabled={pending} onClick={confirmDuplicate}>
               Register anyway — this is a different person
             </Button>
           ) : null}
