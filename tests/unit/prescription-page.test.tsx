@@ -3,6 +3,10 @@ import { render, screen } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   getPrescription: vi.fn(),
+  getVersionLinks: vi.fn(),
+  loadRxDocument: vi.fn(),
+  listPrescriptionOutputs: vi.fn(),
+  getPadReadiness: vi.fn(),
   notFound: vi.fn(),
   session: { tenantId: "t", userId: "u", role: "doctor" },
 }));
@@ -19,6 +23,12 @@ vi.mock("@/server/auth/session", () => ({
 }));
 vi.mock("@/server/services/prescriptions", () => ({ getPrescription: mocks.getPrescription }));
 vi.mock("@/server/services/catalogue", () => ({ listFavourites: vi.fn() }));
+vi.mock("@/server/services/rx-documents", () => ({
+  getVersionLinks: mocks.getVersionLinks,
+  loadRxDocument: mocks.loadRxDocument,
+}));
+vi.mock("@/server/services/rx-output", () => ({ listPrescriptionOutputs: mocks.listPrescriptionOutputs }));
+vi.mock("@/server/services/pad-settings", () => ({ getPadReadiness: mocks.getPadReadiness }));
 vi.mock("@/server/actions/prescriptions", () => ({
   amendAction: vi.fn(),
   repeatAction: vi.fn(),
@@ -38,7 +48,50 @@ const params = Promise.resolve({ id: ID });
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.session.role = "doctor";
+  mocks.getVersionLinks.mockResolvedValue({ ok: true, value: { supersededBy: null, replaces: null } });
+  mocks.loadRxDocument.mockResolvedValue({ ok: false, code: "not_found", message: "x" });
+  mocks.listPrescriptionOutputs.mockResolvedValue({ ok: true, value: { count: 0, lastAt: null } });
+  mocks.getPadReadiness.mockResolvedValue({ ok: true, value: { missing: [] } });
 });
+
+function finalizedView(status: "finalized" | "amended") {
+  return {
+    ok: true,
+    value: {
+      id: ID,
+      status,
+      version: 1,
+      revision: 3,
+      rxNo: 7,
+      amendmentReason: null,
+      parentPrescriptionId: null,
+      finalizedAt: new Date("2026-11-12T05:30:00.000Z"),
+      patient: { id: "p1", name: "Live Name", patientNo: 1, allergies: ["Penicillin"] },
+      visit: {},
+      items: [],
+    },
+  };
+}
+
+/** The parts of a loadRxDocument result the page reads. */
+function printable(overrides: { patientName?: string; registrationNo?: string | null } = {}) {
+  return {
+    ok: true,
+    value: {
+      prescriptionId: ID,
+      logo: null,
+      signature: null,
+      document: {
+        snapshotSource: "finalize",
+        snapshot: {
+          patient: { name: overrides.patientName ?? "Live Name" },
+          doctor: { name: "Dr Shah", registrationNo: overrides.registrationNo === undefined ? "MMC-1" : overrides.registrationNo },
+          clinic: { timezone: "Asia/Kolkata" },
+        },
+      },
+    },
+  };
+}
 
 function draftView(parentPrescriptionId: string | null) {
   return {
@@ -95,3 +148,67 @@ describe("prescription page failed reads", () => {
     await expect(PrescriptionPage({ params })).rejects.toThrow("NEXT_NOT_FOUND");
   });
 });
+
+describe("prescription page print panel and notices", () => {
+  it("offers print and download on a finalized version and shows the name it was finalized with", async () => {
+    mocks.getPrescription.mockResolvedValue(finalizedView("finalized"));
+    mocks.loadRxDocument.mockResolvedValue(printable({ patientName: "Frozen Name" }));
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByRole("link", { name: "Frozen Name" })).toHaveAttribute("href", "/patients/p1");
+    expect(screen.getByText(/now recorded as Live Name/)).toBeInTheDocument();
+    // The allergy banner is a live safety prompt, not part of the frozen record.
+    expect(screen.getByText("Allergies: Penicillin")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Print" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download PDF" })).toBeInTheDocument();
+    expect(screen.getByText("Not printed or downloaded yet.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /repeat as new prescription/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /start amendment/i })).toBeInTheDocument();
+    expect(mocks.loadRxDocument).toHaveBeenCalledWith(mocks.session, ID, { withAssets: false });
+  });
+
+  it("marks a superseded version, keeps it printable, and offers no repeat or amendment", async () => {
+    mocks.getPrescription.mockResolvedValue(finalizedView("amended"));
+    mocks.loadRxDocument.mockResolvedValue(printable());
+    mocks.getVersionLinks.mockResolvedValue({ ok: true, value: { supersededBy: { id: "v2-id", version: 2 }, replaces: null } });
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByText(/Superseded by/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "version 2" })).toHaveAttribute("href", "/prescriptions/v2-id");
+    expect(screen.getByRole("button", { name: "Print" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /repeat as new prescription/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /start amendment/i })).toBeNull();
+  });
+
+  it("says what a finalized copy prints without", async () => {
+    mocks.getPrescription.mockResolvedValue(finalizedView("finalized"));
+    mocks.loadRxDocument.mockResolvedValue(printable({ registrationNo: null }));
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByText(/This copy prints without a registration number/)).toBeInTheDocument();
+  });
+
+  it.each(["reception", "nurse", "pharmacist"])("marks a draft as not a prescription for %s and offers only a preview", async (role) => {
+    mocks.session.role = role;
+    mocks.getPrescription.mockResolvedValue(draftView(null));
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByText(/This draft is not a prescription yet/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Preview pad" })).toHaveAttribute("href", `/prescriptions/${ID}/document?purpose=preview`);
+    expect(screen.queryByRole("button", { name: "Print" })).toBeNull();
+    expect(mocks.getPadReadiness).not.toHaveBeenCalled();
+  });
+
+  it("warns a prescriber before finalizing: an incomplete profile, or no doctor profile at all", async () => {
+    mocks.getPrescription.mockResolvedValue(draftView(null));
+    mocks.getPadReadiness.mockResolvedValue({ ok: true, value: { missing: ["registrationNo"] } });
+    const first = render(await PrescriptionPage({ params }));
+    expect(screen.getByText(/missing your registration number/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Complete your profile" })).toHaveAttribute("href", "/settings/profile");
+    expect(screen.queryByText(/This draft is not a prescription yet/)).toBeNull();
+    first.unmount();
+
+    mocks.session.role = "owner";
+    mocks.getPadReadiness.mockResolvedValue({ ok: true, value: { missing: ["noDoctorProfile"] } });
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByText(/no doctor profile in this clinic/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Complete your profile" })).toBeNull();
+  });
+});
+

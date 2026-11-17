@@ -2,8 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireSession } from "@/server/auth/session";
 import { can } from "@/lib/domain/permissions";
+import { pdfFileName } from "@/lib/rx-render/format";
 import { getPrescription } from "@/server/services/prescriptions";
 import { listFavourites } from "@/server/services/catalogue";
+import { getPadReadiness } from "@/server/services/pad-settings";
+import { getVersionLinks, loadRxDocument } from "@/server/services/rx-documents";
+import { listPrescriptionOutputs } from "@/server/services/rx-output";
 import { amendAction, discardDraftAction, repeatAction } from "@/server/actions/prescriptions";
 import { AllergyBanner } from "@/components/patients/allergy-banner";
 import { AmendForm } from "@/components/rx/amend-form";
@@ -11,6 +15,7 @@ import { ClinicalEditor } from "@/components/rx/clinical-editor";
 import { DiscardDraftForm } from "@/components/rx/discard-draft-form";
 import { PrescriptionReadOnly } from "@/components/rx/prescription-view";
 import { RepeatForm } from "@/components/rx/repeat-form";
+import { RxOutputPanel, type PrintGap } from "@/components/rx/rx-output-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +44,22 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
   const isDraft = rx.status === "draft";
   // Clinical content is editable only by roles with rx.draft (owner, doctor); everyone else reads.
   const canEdit = isDraft && can(session.role, "rx.draft");
-  const favourites = canEdit ? await listFavourites(session) : null;
+  // Independent reads, in parallel. A failed one only drops its notice; it never fails the page.
+  const [favourites, links, readiness, outputs, printable] = await Promise.all([
+    canEdit ? listFavourites(session) : null,
+    getVersionLinks(session, rx.id),
+    canEdit ? getPadReadiness(session) : null,
+    isDraft ? null : listPrescriptionOutputs(session, rx.id),
+    isDraft ? null : loadRxDocument(session, rx.id, { withAssets: false }),
+  ]);
+  // A finalized version shows the record as finalized (ADR-0032). The allergy banner stays live on purpose:
+  // it is a safety prompt for whoever acts on the prescription today.
+  const frozen =
+    printable?.ok && printable.value.document.snapshotSource === "finalize" ? printable.value.document.snapshot : null;
+  const patientName = frozen ? frozen.patient.name : rx.patient.name;
+  const printedWithout: PrintGap[] = [];
+  if (frozen && !frozen.doctor.name.trim()) printedWithout.push("doctorName");
+  if (frozen && !frozen.doctor.registrationNo?.trim()) printedWithout.push("registrationNo");
   const label = rx.rxNo ? `Rx #${rx.rxNo}` : "Prescription";
   const heading = isDraft
     ? rx.version > 1
@@ -53,8 +73,9 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
         <h1 className="text-2xl font-semibold">{heading}</h1>
         <p className="text-sm text-muted-foreground">
           <Link className="underline" href={`/patients/${rx.patient.id}`}>
-            {rx.patient.name}
+            {patientName}
           </Link>
+          {frozen && frozen.patient.name !== rx.patient.name ? ` (now recorded as ${rx.patient.name})` : ""}
           {rx.patient.patientNo ? ` · Patient #${rx.patient.patientNo}` : ""} · {rx.status}
         </p>
         <AllergyBanner allergies={rx.patient.allergies} showWhenEmpty />
@@ -65,6 +86,19 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
           </p>
         ) : null}
       </header>
+
+      <RxOutputPanel
+        prescriptionId={rx.id}
+        isDraft={isDraft}
+        canEdit={canEdit}
+        fileName={pdfFileName(rx)}
+        supersededBy={links.ok ? links.value.supersededBy : null}
+        replaces={links.ok ? links.value.replaces : null}
+        missingProfile={readiness?.ok ? readiness.value.missing : []}
+        printedWithout={printedWithout}
+        outputs={outputs?.ok ? outputs.value : null}
+        timeZone={frozen?.clinic.timezone ?? "Asia/Kolkata"}
+      />
 
       {canEdit ? (
         <ClinicalEditor
