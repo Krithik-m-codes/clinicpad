@@ -41,3 +41,26 @@ describe("normalizePhone", () => {
     expect(normalizePhone("9123456789")).toBe("9123456789");
   });
 });
+
+describe("normalizePhone dialling noise (Plan 1D)", () => {
+  it.each([
+    ["tel:+91 98765 43210", "9876543210"],
+    ["TEL:9876543210", "9876543210"],
+    ["+0091 98765 43210", "9876543210"],
+    ["\u200E+91 98765 43210", "9876543210"],
+    ["\u202A+1 415 555 0100\u202C", "14155550100"],
+    ["tel:+1-415-555-0100", "14155550100"],
+    ["98765\u200B43210", "9876543210"],
+    ["\uFEFF+91 98765 43210", "9876543210"],
+    ["  tel: +91 98765 43210 ", "9876543210"],
+  ])("%j -> %j", (raw, expected) => {
+    expect(Array.from(raw).some((ch) => /\p{Cf}/u.test(ch)) || /tel:|\+00/i.test(raw)).toBe(true);
+    expect(normalizePhone(raw)).toBe(expected);
+  });
+
+  it("still refuses nonsense", () => {
+    expect(normalizePhone("tel:")).toBeNull();
+    expect(normalizePhone("\u200E\u200F")).toBeNull();
+    expect(normalizePhone("+00")).toBeNull();
+  });
+});

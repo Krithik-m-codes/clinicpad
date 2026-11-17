@@ -2,16 +2,19 @@
  * Normalizes a phone number for matching. Indian numbers (default) become 10 digits:
  * "+91 98765 43210", "919876543210", "09876543210" and "0091 98765 43210" all map to
  * "9876543210". A "+" or "00" dialling prefix marks an international number; other
- * country codes keep their full digits. Returns null when it is not plausible.
+ * country codes keep their full digits. "tel:+91 ...", "+0091 ..." and numbers carrying invisible format
+ * characters normalize the same way. Returns null when it is not plausible.
  */
 export function normalizePhone(raw: string): string | null {
-  const trimmed = raw.trim();
+  // Dialling noise, not part of the number: Unicode format characters (bidi marks, zero-width spaces pasted
+  // from chat apps) and a "tel:" prefix copied from a link.
+  const trimmed = raw.replace(/\p{Cf}/gu, "").trim().replace(/^tel:/i, "").trim();
   let digits = trimmed.replace(/\D/g, "");
   if (digits.length === 0) return null;
 
-  // "+" or the "00" dialling prefix marks an international number.
+  // "+" or the "00" dialling prefix marks an international number ("+00 91 ..." is a typing slip for "+91").
   let international = trimmed.startsWith("+");
-  if (!international && digits.startsWith("00")) {
+  if (digits.startsWith("00")) {
     international = true;
     digits = digits.slice(2);
   }
