@@ -10,6 +10,8 @@ import { MedicineRow } from "./medicine-row";
 type Props = {
   medicines: EditorMedicine[];
   favourites: FavouriteView[];
+  /** Result of the last favourite removal, when it failed. */
+  favouriteNote?: string;
   canAddToClinic: boolean;
   onPatch: (key: string, patch: Partial<EditorMedicine>) => void;
   onPick: (key: string, hit: MedicineHit) => void;
@@ -61,6 +63,10 @@ export function MedicinesSection(props: Props) {
           ))}
         </div>
       ) : null}
+
+      <span role="status" className="block text-xs text-destructive">
+        {props.favouriteNote}
+      </span>
 
       {medicines.map((m, index) => (
         <MedicineRow

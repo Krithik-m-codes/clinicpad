@@ -23,11 +23,12 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
     // A save landed in the middle of the read: not a missing prescription.
     return (
       <div className="max-w-xl space-y-3">
-        <h1 className="text-xl font-semibold">This prescription changed while loading</h1>
+        <h1 className="text-xl font-semibold">This prescription changed while loading.</h1>
         <p className="text-sm text-muted-foreground">It was saved from another window. Refresh to see the latest version.</p>
-        <Link className="underline" href={`/prescriptions/${id}`} prefetch={false}>
+        {/* A plain link on purpose: a full page load, not a client-side navigation that could reuse this state. */}
+        <a className="underline" href={`/prescriptions/${id}`}>
           Refresh
-        </Link>
+        </a>
       </div>
     );
   }

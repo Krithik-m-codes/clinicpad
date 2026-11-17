@@ -12,25 +12,23 @@ import {
   isBlankMedicine,
   medicineFrom,
   newKey,
-  toItemPayload,
   type EditorInvestigation,
   type EditorMedicine,
   type EditorState,
 } from "@/lib/rx/editor-state";
-import { addClinicMedicineAction, removeFavouriteAction, saveFavouriteAction } from "@/server/actions/catalogue";
 import type { FavouriteView } from "@/server/services/catalogue";
 import type { ClinicalVisitView, ItemView } from "@/server/services/rx-mapping";
 import { AdviceSection } from "./advice-section";
+import type { AutosaveStatus } from "@/lib/rx/autosave";
 import { AutosaveStatusBar } from "./autosave-status";
 import { ClinicalNotesSection } from "./clinical-notes-section";
 import { InvestigationsSection } from "./investigations-section";
 import { MedicinesSection } from "./medicines-section";
-import { FINALIZE_OFFLINE_MESSAGE, useAutosave } from "./use-autosave";
+import { COULD_NOT_CONFIRM_MESSAGE, isUnknownOutcome, useAutosave } from "./use-autosave";
+import { useFavourites } from "./use-favourites";
 import { VitalsSection } from "./vitals-section";
 
 const selectClass = "flex h-11 w-full rounded-md border-2 border-gray-200 bg-white px-3 text-sm";
-const NO_CONNECTION = "Could not reach the server. Check your connection and try again.";
-const MAYBE_FINALIZED = "Could not confirm that the prescription was finalized. Reloading its current state; if it is still a draft, try again.";
 
 type Props = {
   prescriptionId: string;
@@ -55,16 +53,33 @@ export function ClinicalEditor({
   const router = useRouter();
   const [state, setState] = useState<EditorState>(() => editorStateFromView({ visit, items }));
   const initialState = useRef(state);
-  const [favourites, setFavourites] = useState<FavouriteView[]>(initialFavourites);
+  const fav = useFavourites(initialFavourites);
   const [finalizing, setFinalizing] = useState(false);
+  // Set after a successful finalize and never reset: the page is about to become the read-only view.
+  const [finalized, setFinalized] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const autosave = useAutosave(prescriptionId, initialState.current, revision);
   const { update } = autosave;
 
   // Every edit produces a new state object; each one reaches the autosaver exactly once.
   useEffect(() => {
-    if (state !== initialState.current) update(state);
+    if (state !== initialState.current) {
+      update(state);
+      setFinalizeError(null); // the message was about the previous content
+    }
   }, [state, update]);
+
+  // A later successful save also clears it. The status that came with the failure itself is ignored.
+  const errorStatus = useRef<AutosaveStatus | null>(null);
+  useEffect(() => {
+    if (finalizeError === null) {
+      errorStatus.current = null;
+    } else if (errorStatus.current === null) {
+      errorStatus.current = autosave.status;
+    } else if (autosave.status !== errorStatus.current && autosave.status.state === "saved") {
+      setFinalizeError(null);
+    }
+  }, [autosave.status, finalizeError]);
 
   const set = <K extends keyof EditorState>(key: K, value: EditorState[K]) =>
     setState((s) => ({ ...s, [key]: value }));
@@ -97,39 +112,6 @@ export function ClinicalEditor({
     );
   }
 
-  async function saveFavourite(m: EditorMedicine): Promise<string> {
-    try {
-      const res = await saveFavouriteAction(toItemPayload(m));
-      if (!res.ok) return res.message;
-      const saved = res.value;
-      setFavourites((list) =>
-        [...list.filter((f) => f.id !== saved.id), saved].sort((a, b) => a.drugName.localeCompare(b.drugName)),
-      );
-      return "Saved as favourite";
-    } catch {
-      return NO_CONNECTION;
-    }
-  }
-
-  async function removeFavourite(f: FavouriteView): Promise<void> {
-    try {
-      const res = await removeFavouriteAction(f.id);
-      if (res.ok) setFavourites((list) => list.filter((x) => x.id !== f.id));
-    } catch {
-      // Nothing changed on the server, so the favourite stays listed.
-    }
-  }
-
-  async function addToClinic(name: string, genericName: string): Promise<string> {
-    try {
-      const res = await addClinicMedicineAction({ name, genericName });
-      if (!res.ok) return res.message;
-      return res.value.created ? "Added to the clinic list" : "Already in the clinic list";
-    } catch {
-      return NO_CONNECTION;
-    }
-  }
-
   async function finalize() {
     setFinalizing(true);
     setFinalizeError(null);
@@ -137,21 +119,24 @@ export function ClinicalEditor({
       const res = await autosave.finalize();
       if (res.ok) {
         autosave.stop(); // finalized: nothing left to save
+        setFinalized(true); // stay locked until the refreshed page replaces this editor
         router.refresh(); // the page re-renders as the read-only finalized view
         return;
       }
-      if (res.code === "internal") {
-        // The server may have finalized before failing: re-read it. If the draft is gone, the page
-        // swaps this editor for the finalized view; otherwise the message below stays.
-        setFinalizeError(MAYBE_FINALIZED);
+      // A failure without a revision leaves autosave held; let it carry on.
+      if (typeof res.revision !== "number") autosave.retryNow();
+      if (isUnknownOutcome(res.code)) {
+        // The server may have finalized before the answer was lost: re-read it. If the draft is gone
+        // the page swaps this editor for the finalized view; otherwise the message stays.
+        setFinalizeError(COULD_NOT_CONFIRM_MESSAGE);
         router.refresh();
         return;
       }
       setFinalizeError(res.message);
-      // A failed finalize holds autosave (the draft's state was unknown); resume it.
-      if (typeof res.revision !== "number") void autosave.flush();
-    } catch {
-      setFinalizeError(FINALIZE_OFFLINE_MESSAGE);
+      // Already finalized (for example from another window): show the finalized view.
+      if (res.code === "immutable" || (res.code === "conflict" && typeof res.currentRevision !== "number")) {
+        router.refresh();
+      }
     } finally {
       setFinalizing(false);
     }
@@ -162,10 +147,13 @@ export function ClinicalEditor({
     window.location.reload();
   };
 
+  // Finalizing over a conflict, a locked draft or rejected content would fail; the status bar says why.
+  const blocked = ["conflict", "locked", "invalid"].includes(autosave.status.state);
+
   return (
     // Disabled until the autosaver is live (after hydration): text typed into server-rendered inputs
     // before that would be wiped by React. Playwright's fill/click wait for enabled controls.
-    <fieldset disabled={!autosave.ready} className="min-w-0 space-y-8 border-0 p-0">
+    <fieldset disabled={!autosave.ready || finalizing || finalized} className="min-w-0 space-y-8 border-0 p-0">
       <section className="grid gap-4 sm:grid-cols-3">
         <div className="space-y-1">
           <label htmlFor="visitType" className="text-sm font-medium">
@@ -209,16 +197,17 @@ export function ClinicalEditor({
 
       <MedicinesSection
         medicines={state.medicines}
-        favourites={favourites}
+        favourites={fav.favourites}
+        favouriteNote={fav.removeNote}
         canAddToClinic={canAddToClinic}
         onPatch={(key, patch) => setMedicine(key, (m) => ({ ...m, ...patch }))}
         onPick={(key, hit) => setMedicine(key, (m) => applyHit(m, hit))}
         onAdd={() => appendMedicine(emptyMedicine(), false)}
         onAddFavourite={(f) => appendMedicine(medicineFrom(f), true)}
         onRemove={removeMedicine}
-        onSaveFavourite={saveFavourite}
-        onRemoveFavourite={removeFavourite}
-        onAddToClinic={addToClinic}
+        onSaveFavourite={fav.saveFavourite}
+        onRemoveFavourite={fav.removeFavourite}
+        onAddToClinic={fav.addToClinic}
       />
 
       <InvestigationsSection
@@ -252,7 +241,7 @@ export function ClinicalEditor({
             Save now
           </Button>
           {canFinalize ? (
-            <Button type="button" disabled={finalizing} onClick={() => void finalize()}>
+            <Button type="button" disabled={finalizing || blocked} onClick={() => void finalize()}>
               {finalizing ? "Finalizing…" : "Finalize"}
             </Button>
           ) : null}

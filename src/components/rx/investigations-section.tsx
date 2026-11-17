@@ -19,15 +19,19 @@ export function InvestigationsSection({ items, onAdd, onPatch, onRemove }: Props
       <h2 id="tests-heading" className="font-medium">
         Investigations
       </h2>
-      {/* The phrase input is used only as an adder: each confirmed name becomes a row below. */}
-      <TermListInput
-        label="Add test"
-        kind="test"
-        values={[]}
-        max={RX_LIMITS.investigations - items.length}
-        placeholder="Type a test and press Enter"
-        onChange={(values) => values.forEach(onAdd)}
-      />
+      {items.length >= RX_LIMITS.investigations ? (
+        <p className="text-sm text-muted-foreground">Limit of {RX_LIMITS.investigations} tests reached.</p>
+      ) : (
+        // The phrase input is used only as an adder: each confirmed name becomes a row below.
+        <TermListInput
+          label="Add test"
+          kind="test"
+          values={[]}
+          max={RX_LIMITS.investigations - items.length}
+          placeholder="Type a test and press Enter"
+          onChange={(values) => values.forEach(onAdd)}
+        />
+      )}
       {items.length > 0 ? (
         <ul className="space-y-2">
           {items.map((test) => (

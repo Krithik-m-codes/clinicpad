@@ -43,6 +43,7 @@ export function VitalsSection({ vitals, notes, onChange, onNotesChange }: Props)
               step={field.step}
               className="h-9 px-2"
               value={vitals[field.key]}
+              onWheel={(e) => e.currentTarget.blur()}
               onChange={(e) => onChange(field.key, e.target.value)}
             />
           </div>

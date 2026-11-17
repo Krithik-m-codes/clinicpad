@@ -116,6 +116,7 @@ export function MedicineRow({ index, medicine, canAddToClinic, onPatch, onPick, 
             placeholder="Duration"
             className="h-9"
             value={medicine.durationValue}
+            onWheel={(e) => e.currentTarget.blur()}
             onChange={(e) => onPatch({ durationValue: e.target.value })}
           />
           <select

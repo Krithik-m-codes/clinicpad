@@ -58,6 +58,7 @@ export function ScheduleInput({ medicine, onChange }: Props) {
               step={0.25}
               className="h-9 px-2"
               value={medicine[slot.key]}
+              onWheel={(e) => e.currentTarget.blur()}
               onChange={(e) => {
                 const patch: Partial<EditorMedicine> = {};
                 patch[slot.key] = e.target.value;

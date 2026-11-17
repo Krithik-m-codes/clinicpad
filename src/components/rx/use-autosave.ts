@@ -5,7 +5,33 @@ import { createAutosaver, outcomeFromResponse, type Autosaver, type AutosaveStat
 import { toDraftPayload, type EditorState } from "@/lib/rx/editor-state";
 import { autosaveDraftAction, finalizeDraftAction, type FinalizeResponse } from "@/server/actions/drafts";
 
-export const FINALIZE_OFFLINE_MESSAGE = "Could not reach the server. Nothing was finalized; your draft is still here.";
+/** A finalize that has not answered after this long is treated as an unknown outcome. */
+export const FINALIZE_TIMEOUT_MS = 45_000;
+/** The server may have finalized even though no answer arrived, so never claim it did not. */
+export const COULD_NOT_CONFIRM_MESSAGE =
+  "Could not confirm that the prescription was finalized. Reloading its current state; if it is still a draft, try again.";
+
+/** Failure codes after which the prescription may or may not have been finalized. */
+export function isUnknownOutcome(code: string): boolean {
+  return code === "internal" || code === "unreachable";
+}
+
+/** Rejects with `undefined` when the call does not settle in time; the late answer is ignored. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 /**
  * Connects the pure autosaver to React and the server actions. The saver is created in an
@@ -56,16 +82,30 @@ export function useAutosave(prescriptionId: string, initial: EditorState, initia
   const stop = useCallback(() => saverRef.current?.discard(), []);
   const hasUnsavedChanges = useCallback(() => saverRef.current?.hasUnsavedChanges() ?? false, []);
 
-  /** Saves the latest snapshot and finalizes exactly that revision, after any in-flight save. */
+  /**
+   * Saves the latest snapshot and finalizes exactly that revision, after any in-flight save.
+   * Never rejects: a lost or late answer is `unreachable` (outcome unknown) and an engine refusal
+   * (saving stopped, editor closed) is `not_run`.
+   */
   const finalize = useCallback(async (): Promise<FinalizeResponse> => {
     const saver = saverRef.current;
-    if (!saver) return { ok: false, code: "not_ready", message: "The editor is still loading. Try again." };
-    return saver.exclusive<FinalizeResponse>(async (snapshot, baseRevision) => {
-      const res = await finalizeDraftAction(prescriptionId, toDraftPayload(snapshot), baseRevision);
-      return res.ok
-        ? { revision: null, value: res }
-        : { revision: typeof res.revision === "number" ? res.revision : null, savedAt: res.savedAt, value: res };
-    });
+    if (!saver) return { ok: false, code: "not_run", message: "The editor is still loading. Try again." };
+    try {
+      return await saver.exclusive<FinalizeResponse>(async (snapshot, baseRevision) => {
+        let res: FinalizeResponse;
+        try {
+          res = await withTimeout(finalizeDraftAction(prescriptionId, toDraftPayload(snapshot), baseRevision), FINALIZE_TIMEOUT_MS);
+        } catch {
+          res = { ok: false, code: "unreachable", message: COULD_NOT_CONFIRM_MESSAGE };
+        }
+        return res.ok
+          ? { revision: null, value: res }
+          : { revision: typeof res.revision === "number" ? res.revision : null, savedAt: res.savedAt, value: res };
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.replace(/\.$/, "") : "unknown reason";
+      return { ok: false, code: "not_run", message: `Finalize did not run: ${reason}. See the save status above.` };
+    }
   }, [prescriptionId]);
 
   return { status, ready, update, flush, retryNow, overwrite, stop, hasUnsavedChanges, finalize };
