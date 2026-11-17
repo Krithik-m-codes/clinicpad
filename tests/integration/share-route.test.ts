@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
 import { auditEvents, clinics, shareLinks } from "@/server/db/schema";
@@ -36,7 +36,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   engine.failWith = null;
-  deps = { limiter: createRateLimiter({ windowMs: 60_000, max: 1000 }), engine, pdfLimiter: createLimiter({ concurrency: 2, maxQueue: 5 }) };
+  deps = { limiter: createRateLimiter({ windowMs: 60_000, max: 1000 }), tokenLimiter: createRateLimiter({ windowMs: 60_000, max: 1000 }), engine, pdfLimiter: createLimiter({ concurrency: 2, maxQueue: 5 }) };
 });
 
 describe("GET /s/<token>", () => {
@@ -162,14 +162,103 @@ describe("POST /s/<token>", () => {
     expect(await opens(link.linkId)).toBe(0);
   });
 
-  it("refuses a POST whose Origin names another host, and accepts the page's own origin", async () => {
+  it("serves the PDF for the page's own form post under Referrer-Policy: no-referrer (Chromium sends Origin: null with Sec-Fetch-Site: same-origin)", async () => {
     const s = await shareablePrescription(A, PATIENT);
     const link = await linkFor(A, s.prescriptionId);
-    expect((await post(link.token, { origin: "https://evil.example", host: "localhost:3000" })).status).toBe(404);
-    expect((await post(link.token, { origin: "null", host: "localhost:3000" })).status).toBe(404);
-    expect(await opens(link.linkId)).toBe(0);
-    expect((await post(link.token, { origin: "http://localhost:3000", host: "localhost:3000" })).status).toBe(200);
+    const res = await post(link.token, { origin: "null", "sec-fetch-site": "same-origin", host: "localhost:3000" });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/pdf");
     expect(await opens(link.linkId)).toBe(1);
+  });
+
+  it("decides on Sec-Fetch-Site alone when it is present, and on Origin only when it is absent", async () => {
+    const s = await shareablePrescription(A, PATIENT);
+    const link = await linkFor(A, s.prescriptionId);
+    const host = "localhost:3000";
+    // Another site is refused even with a matching Origin.
+    expect((await post(link.token, { "sec-fetch-site": "cross-site", origin: "http://localhost:3000", host })).status).toBe(404);
+    expect((await post(link.token, { "sec-fetch-site": "same-site", origin: "null", host })).status).toBe(404);
+    // No Sec-Fetch-Site: a different Origin host is refused, "null" and the page's own origin pass.
+    expect((await post(link.token, { origin: "https://evil.example", host })).status).toBe(404);
+    expect((await post(link.token, { origin: "not a url", host })).status).toBe(404);
+    expect(await opens(link.linkId)).toBe(0);
+    expect((await post(link.token, { origin: "null", host })).status).toBe(200);
+    expect((await post(link.token, { origin: "http://localhost:3000", host })).status).toBe(200);
+    expect(await opens(link.linkId)).toBe(2);
+  });
+
+  it("logs why a POST was refused, never the token", async () => {
+    const s = await shareablePrescription(A, PATIENT);
+    const link = await linkFor(A, s.prescriptionId);
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await post(link.token, { "sec-fetch-site": "cross-site" });
+      const lines = spy.mock.calls.map((c) => c.join(" "));
+      expect(lines.some((l) => l.includes("cross-site"))).toBe(true);
+      expect(lines.join(" | ")).not.toContain(link.token);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("answers a refused POST with exactly the bytes and headers of an unknown link's POST", async () => {
+    const s = await shareablePrescription(A, PATIENT);
+    const link = await linkFor(A, s.prescriptionId);
+    const refused = await post(link.token, { "sec-fetch-site": "cross-site" });
+    const unknown = await post("a".repeat(43), { "sec-fetch-site": "same-origin" });
+    expect(refused.status).toBe(404);
+    expect(await refused.clone().text()).toBe(await unknown.clone().text());
+    expect(headerMap(refused)).toEqual(headerMap(unknown));
+  });
+
+  it("limits one link to a few requests a minute across addresses, and groups an IPv6 address by its /64", async () => {
+    const tokenLimiter = createRateLimiter({ windowMs: 60_000, max: 2 });
+    const from = (ip: string) => get("short", { "x-vercel-forwarded-for": ip }, { tokenLimiter });
+    expect((await from("203.0.113.1")).status).toBe(404);
+    expect((await from("203.0.113.2")).status).toBe(404);
+    expect((await from("203.0.113.3")).status).toBe(429);
+    const tight = createRateLimiter({ windowMs: 60_000, max: 2 });
+    const v6 = (ip: string) => get("short", { "x-vercel-forwarded-for": ip }, { limiter: tight });
+    expect((await v6("2001:db8:1:2:aaaa:bbbb:cccc:1")).status).toBe(404);
+    expect((await v6("2001:db8:1:2:1111:2222:3333:4444")).status).toBe(404);
+    expect((await v6("2001:db8:1:2::9")).status).toBe(429);
+    expect((await v6("2001:db8:1:3::9")).status).toBe(404);
+  });
+
+  it("answers the double-tap with its own page, not the generic one, and counts one open", async () => {
+    const s = await shareablePrescription(A, PATIENT);
+    const link = await linkFor(A, s.prescriptionId);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started: () => void = () => undefined;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const slow = createFakePdfEngine(1);
+    const original = slow.render.bind(slow);
+    slow.render = async (doc, opts) => {
+      started();
+      await held;
+      return original(doc, opts);
+    };
+    const first = post(link.token, {}, { engine: slow });
+    await running;
+    const second = await post(link.token, {}, { engine: slow });
+    expect(second.status).toBe(503);
+    expect(await second.text()).toContain("already opening");
+    release();
+    expect((await first).status).toBe(200);
+    expect(await opens(link.linkId)).toBe(1);
+  });
+
+  it("puts frame-ancestors none on the PDF response", async () => {
+    const s = await shareablePrescription(A, PATIENT);
+    const link = await linkFor(A, s.prescriptionId);
+    const res = await post(link.token, { "sec-fetch-site": "same-origin" });
+    expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
   });
 
   it("answers 503 when the public PDF queue is full, and burns no open", async () => {

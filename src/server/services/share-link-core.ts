@@ -27,3 +27,11 @@ export function linkStatus(link: { revokedAt: Date | null; expiresAt: Date; open
   return "active";
 }
 
+
+/**
+ * Only a signed copy that holds its finalize-time snapshot is shared. A row finalized before print snapshots existed
+ * would be rendered from live data (today's clinic details on an old pad), which is not what the doctor signed.
+ */
+export function hasFinalSnapshot(status: string, renderSnapshot: unknown): boolean {
+  return status !== "draft" && renderSnapshot !== null && renderSnapshot !== undefined;
+}

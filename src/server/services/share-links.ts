@@ -9,7 +9,7 @@ import { recordAudit } from "./audit";
 import { currentSharingConsentIn } from "./consent";
 import type { ServiceContext } from "./context";
 import { primaryClinic } from "./render-snapshot";
-import { SHARE_LIMITS, linkStatus, type CreatedLink, type ShareChannel, type ShareLinkView } from "./share-link-core";
+import { SHARE_LIMITS, hasFinalSnapshot, linkStatus, type CreatedLink, type ShareChannel, type ShareLinkView } from "./share-link-core";
 
 export { SHARE_LIMITS, linkStatus } from "./share-link-core";
 export type { CreatedLink, ShareChannel, ShareLinkStatus, ShareLinkSummary, ShareLinkView } from "./share-link-core";
@@ -21,6 +21,7 @@ const MESSAGES = {
   notFound: "Prescription not found.",
   draft: "Finalize this prescription before sharing it.",
   superseded: "This version was replaced by a newer one. Share the latest version.",
+  noSnapshot: "This prescription was finalized before print snapshots were recorded, so it cannot be shared as a link. Print it or amend it to share a new version.",
   off: "Sharing is turned off for this clinic. The owner can turn it on in Settings.",
   consent: "Record the patient's consent to sharing first.",
   tooManyActive: "This prescription already has 10 active links. Withdraw one first.",
@@ -42,7 +43,7 @@ export async function createShareLinkIn(
   now: Date,
 ): Promise<Result<CreatedLink>> {
   const [rx] = await tx
-    .select({ id: prescriptions.id, status: prescriptions.status, rxNo: prescriptions.rxNo, version: prescriptions.version, patientId: visits.patientId })
+    .select({ id: prescriptions.id, status: prescriptions.status, rxNo: prescriptions.rxNo, renderSnapshot: prescriptions.renderSnapshot, version: prescriptions.version, patientId: visits.patientId })
     .from(prescriptions)
     .innerJoin(visits, eq(visits.id, prescriptions.visitId))
     .where(and(eq(prescriptions.tenantId, ctx.tenantId), eq(prescriptions.id, input.prescriptionId)))
@@ -50,6 +51,7 @@ export async function createShareLinkIn(
   if (!rx) return fail("not_found", MESSAGES.notFound);
   if (rx.status === "draft") return fail("conflict", MESSAGES.draft);
   if (rx.status !== "finalized" || rx.rxNo === null) return fail("conflict", MESSAGES.superseded);
+  if (!hasFinalSnapshot(rx.status, rx.renderSnapshot)) return fail("conflict", MESSAGES.noSnapshot);
 
   const [patient] = await tx
     .select({ id: patients.id })

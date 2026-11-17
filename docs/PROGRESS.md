@@ -405,6 +405,8 @@ Append to §11 at the end of each working session:
 - Next: Plan 1D (sharing, CSV import, filters, hardening). Human decisions before any pilot: Hindi label review, a Safari print check, owner finalizing without a doctor profile, reception/pharmacist reading and printing clinical content, clinical review of the sample medicine list.
 - Gotchas: Gotenberg must be up for the e2e PDF checks (`docker compose up -d gotenberg`); with `GOTENBERG_REQUIRED=1` or `CI=true` the smoke tests fail instead of skipping. Run vitest from an uppercase drive letter (a bash shell started as `/e/...` makes every test fail). `pdftoppm` is not installed here: read PDF pages through PyMuPDF. Chromium footer templates need `html{width:100%}` or the two footer spans sit side by side. A print frame that is sandboxed without `allow-scripts` never runs timers, so an e2e `print()` stub must dispatch `afterprint` synchronously.
 
+- Plan 1D, public share route (Task 9b fix round): verify at the first deployment that `/s/<token>` renders a PDF with the Devanagari fonts on the host (`outputFileTracingIncludes` lists the font files for `/s/**` as for `/prescriptions/**`; it cannot be proven by a local build), and set `SHARE_CLIENT_IP_HEADER` if the host is not Vercel (production logs once when no client address header arrives).
+
 ---
 
 ## 12. How to update this file

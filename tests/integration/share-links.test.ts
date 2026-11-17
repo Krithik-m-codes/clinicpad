@@ -1,10 +1,11 @@
 // @vitest-environment node
 import { createHash, randomBytes } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
 import { withTenant } from "@/server/db/tenant";
-import { auditEvents, clinics, patients, prescriptionOutputs, shareLinks } from "@/server/db/schema";
+import { SHARING_CONSENT_VERSION } from "@/lib/domain/consent";
+import { auditEvents, clinics, patientConsents, patients, prescriptionOutputs, shareLinks } from "@/server/db/schema";
 import { amendPrescription, startPrescription } from "@/server/services/prescriptions";
 import { archivePatient } from "@/server/services/patients";
 import { withdrawSharingConsent } from "@/server/services/consent";
@@ -19,6 +20,7 @@ import {
 } from "@/server/services/share-links";
 import { createLimiter } from "@/server/pdf/limiter";
 import { createFakePdfEngine } from "../helpers/fake-pdf-engine";
+import { legacyFinalized } from "../helpers/legacy-rx";
 import { finalizeNow } from "../helpers/rx";
 import { finalizedPrescription, linkFor, shareablePrescription } from "../helpers/share";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
@@ -84,6 +86,13 @@ describe("creating a link", () => {
     expect(await create(B, amendment.value.prescriptionId)).toMatchObject({ ok: false, code: "not_found" });
     await adminDb.update(patients).set({ deletedAt: new Date() }).where(eq(patients.id, s.patientId));
     expect(await create(A, amendment.value.prescriptionId)).toMatchObject({ ok: false, code: "not_found" });
+  });
+
+  it("refuses to create a link for a prescription with no finalize-time snapshot", async () => {
+    const patient = await shareablePrescription(A, "Link Legacy Rx");
+    const id = await legacyFinalized(A, patient.patientId, new Date("2026-11-12T10:00:00.000Z"));
+    expect(await create(A, id)).toMatchObject({ ok: false, code: "conflict", message: expect.stringContaining("before print snapshots") });
+    expect(await adminDb.select().from(shareLinks).where(eq(shareLinks.prescriptionId, id))).toHaveLength(0);
   });
 
   it("allows at most 10 active links per prescription, and a revoked one frees a place", async () => {
@@ -203,6 +212,44 @@ describe("resolving and opening a link", () => {
     expect(await adminDb.select().from(prescriptionOutputs).where(eq(prescriptionOutputs.shareLinkId, link.linkId))).toHaveLength(0);
   });
 
+  it("frees the one-render-per-link guard after a failed or throwing render", async () => {
+    const s = await shareablePrescription(A, "Link Guard Release");
+    const link = await linkFor(A, s.prescriptionId);
+    engine.failWith = "pdf_failed";
+    try {
+      expect(await open(link.token)).toMatchObject({ ok: false, code: "unavailable" });
+    } finally {
+      engine.failWith = null;
+    }
+    const throwing = createFakePdfEngine(1);
+    throwing.render = async () => {
+      throw new Error("engine exploded");
+    };
+    await expect(open(link.token, { engine: throwing })).rejects.toThrow("engine exploded");
+    expect((await open(link.token)).ok).toBe(true);
+    expect((await row(link.linkId)).openCount).toBe(1);
+  });
+
+  it("logs a cancelled request as aborted, not as a PDF timeout", async () => {
+    const s = await shareablePrescription(A, "Link Abort Log");
+    const link = await linkFor(A, s.prescriptionId);
+    const controller = new AbortController();
+    const timingOut = createFakePdfEngine(1);
+    timingOut.render = async () => {
+      controller.abort();
+      return { ok: false, code: "pdf_timeout", message: "x" };
+    };
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(await open(link.token, { engine: timingOut, signal: controller.signal })).toMatchObject({ ok: false, code: "unavailable" });
+      const lines = spy.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(lines).toContain("aborted");
+      expect(lines).not.toContain("pdf_timeout");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("keeps opening a version that was superseded later, marked SUPERSEDED on the pad", async () => {
     const s = await shareablePrescription(A, "Link Superseded");
     const link = await linkFor(A, s.prescriptionId);
@@ -239,15 +286,20 @@ describe("resolving and opening a link", () => {
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let started: () => void = () => undefined;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
     const slow = createFakePdfEngine(1);
     const original = slow.render.bind(slow);
     slow.render = async (doc, opts) => {
+      started();
       await held;
       return original(doc, opts);
     };
     const first = open(link.token, { engine: slow });
-    await new Promise((r) => setTimeout(r, 300));
-    expect(await open(link.token, { engine: slow })).toMatchObject({ ok: false, code: "unavailable" });
+    await running;
+    expect(await open(link.token, { engine: slow })).toMatchObject({ ok: false, code: "conflict" });
     release();
     expect((await first).ok).toBe(true);
     expect((await row(link.linkId)).openCount).toBe(1);
@@ -277,5 +329,66 @@ describe("resolving and opening a link", () => {
     expect(await open(link.token, { engine: cancelling, signal: controller.signal })).toMatchObject({ ok: false, code: "unavailable" });
     expect((await row(link.linkId)).openCount).toBe(0);
     expect(await adminDb.select().from(prescriptionOutputs).where(eq(prescriptionOutputs.shareLinkId, link.linkId))).toHaveLength(0);
+  });
+
+  it("counts at the database: another process taking the last open while this one renders leaves 10, not 11", async () => {
+    const s = await shareablePrescription(A, "Link Nine Of Ten");
+    const link = await linkFor(A, s.prescriptionId);
+    // The trigger lets the counter move one step at a time, as the real open does.
+    const step = (to: number) => adminDb.update(shareLinks).set({ openCount: to }).where(eq(shareLinks.id, link.linkId));
+    for (let i = 1; i < SHARE_LIMITS.maxOpens; i += 1) await step(i);
+    const racing = createFakePdfEngine(1);
+    const original = racing.render.bind(racing);
+    racing.render = async (doc, opts) => {
+      await step(SHARE_LIMITS.maxOpens);
+      return original(doc, opts);
+    };
+    expect(await open(link.token, { engine: racing })).toMatchObject({ ok: false, code: "not_found" });
+    expect((await row(link.linkId)).openCount).toBe(SHARE_LIMITS.maxOpens);
+    expect(await adminDb.select().from(prescriptionOutputs).where(eq(prescriptionOutputs.shareLinkId, link.linkId))).toHaveLength(0);
+  });
+
+  it("re-checks the patient inside the counting transaction (archived, or consent withdrawn, while rendering)", async () => {
+    const s = await shareablePrescription(A, "Link Patient Recheck");
+    const link = await linkFor(A, s.prescriptionId);
+    const archiving = createFakePdfEngine(1);
+    const original = archiving.render.bind(archiving);
+    archiving.render = async (doc, opts) => {
+      await adminDb.update(patients).set({ deletedAt: new Date() }).where(eq(patients.id, s.patientId));
+      return original(doc, opts);
+    };
+    expect(await open(link.token, { engine: archiving })).toMatchObject({ ok: false, code: "not_found" });
+    expect((await row(link.linkId)).openCount).toBe(0);
+
+    const t = await shareablePrescription(A, "Link Consent Recheck");
+    const second = await linkFor(A, t.prescriptionId);
+    const withdrawing = createFakePdfEngine(1);
+    const orig2 = withdrawing.render.bind(withdrawing);
+    withdrawing.render = async (doc, opts) => {
+      // Withdrawn without touching the link rows, the way a second server instance could be mid-way.
+      await adminDb
+        .insert(patientConsents)
+        .values({ tenantId: A.tenantId, patientId: t.patientId, purpose: "sharing", version: SHARING_CONSENT_VERSION, granted: false, method: "verbal", capturedBy: A.as("owner").userId });
+      return orig2(doc, opts);
+    };
+    expect(await open(second.token, { engine: withdrawing })).toMatchObject({ ok: false, code: "not_found" });
+    expect((await row(second.linkId)).openCount).toBe(0);
+  });
+
+  it("counts against the clock at the moment of counting, not when the request began", async () => {
+    const s = await shareablePrescription(A, "Link Fresh Clock");
+    // Created so that it expires 150 ms from now: valid when the request starts, expired when the render ends.
+    const created = await withTenant(A.tenantId, (tx) =>
+      createShareLinkIn(tx, A.as("doctor"), { prescriptionId: s.prescriptionId, channel: "whatsapp" }, new Date(Date.now() - SHARE_LIMITS.ttlDays * DAY + 150)),
+    );
+    if (!created.ok) throw new Error(created.message);
+    const slow = createFakePdfEngine(1);
+    const original = slow.render.bind(slow);
+    slow.render = async (doc, opts) => {
+      await new Promise((r) => setTimeout(r, 400));
+      return original(doc, opts);
+    };
+    expect(await open(created.value.token, { engine: slow })).toMatchObject({ ok: false, code: "not_found" });
+    expect((await row(created.value.linkId)).openCount).toBe(0);
   });
 });

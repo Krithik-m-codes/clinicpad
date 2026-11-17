@@ -45,6 +45,14 @@ export function unavailablePage(): Response {
   );
 }
 
+/** The same link opened twice at once (a double tap): the first request is still making the PDF. */
+export function alreadyOpeningPage(): Response {
+  return new Response(
+    page("Opening - ClinicPad", "<h1>Your prescription is already opening</h1><p>This prescription is already opening. Wait a few seconds, then go back and tap again.</p>"),
+    { status: 503, headers: { ...PAGE_HEADERS, "Retry-After": "5" } },
+  );
+}
+
 export function tooManyPage(): Response {
   return new Response(page("Too many requests - ClinicPad", "<h1>Too many requests</h1><p>Wait a minute, then try again.</p>"), {
     status: 429,
@@ -76,6 +84,9 @@ export function pdfResponse(pdf: ArrayBuffer, fileName: string): Response {
       "Content-Type": "application/pdf",
       "Content-Disposition": contentDisposition("inline", fileName),
       "Content-Length": String(pdf.byteLength),
+      // The PDF must never be framed by another page (clickjacking of the patient's own document).
+      "Content-Security-Policy": "frame-ancestors 'none'",
+      "X-Frame-Options": "DENY",
     },
   });
 }

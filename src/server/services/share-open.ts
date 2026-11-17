@@ -2,7 +2,7 @@ import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { fail, ok, type Result } from "@/lib/result";
 import { pdfFileName } from "@/lib/rx-render/format";
 import { RENDERER_VERSION } from "@/lib/rx-render/render";
-import { prescriptionOutputs, shareLinks } from "@/server/db/schema";
+import { patients, prescriptionOutputs, prescriptions, shareLinks, visits } from "@/server/db/schema";
 import { withShareToken } from "@/server/db/share-token";
 import { withTenant } from "@/server/db/tenant";
 import { getPdfEngine } from "@/server/pdf";
@@ -10,12 +10,14 @@ import type { PdfEngine } from "@/server/pdf/engine";
 import { createLimiter, type Limiter } from "@/server/pdf/limiter";
 import { isShareToken, shareTokenHash } from "@/server/sharing/token";
 import { recordSystemAudit } from "./audit";
+import { currentSharingConsentIn } from "./consent";
 import { primaryClinic } from "./render-snapshot";
 import { loadRxDocumentIn } from "./rx-documents";
 import { htmlSha256, renderDocument } from "./rx-output";
 import { linkGone, linkStatus, type ShareLinkSummary } from "./share-link-core";
 
 const UNAVAILABLE = "The prescription cannot be shown right now.";
+const ALREADY_OPENING = "This prescription is already opening. Wait a few seconds, then tap again.";
 
 /**
  * Public renders get their own small engine budget, apart from the signed-in staff limiter (renderLimiter), so
@@ -53,10 +55,10 @@ export async function openSharedPrescription(
   const resolved = await resolveShareLink(token, now);
   if (!resolved.ok) return resolved;
   const { linkId, tenantId } = resolved.value;
-  if (rendering.has(linkId)) return fail("unavailable", UNAVAILABLE);
+  if (rendering.has(linkId)) return fail("conflict", ALREADY_OPENING);
   rendering.add(linkId);
   try {
-    return await render(linkId, tenantId, now, deps);
+    return await render(linkId, tenantId, deps);
   } finally {
     rendering.delete(linkId);
   }
@@ -65,8 +67,7 @@ export async function openSharedPrescription(
 async function render(
   linkId: string,
   tenantId: string,
-  now: Date,
-  deps: { engine?: PdfEngine; limiter?: Limiter; signal?: AbortSignal },
+  deps: { engine?: PdfEngine; limiter?: Limiter; signal?: AbortSignal; now?: Date },
 ): Promise<Result<{ pdf: ArrayBuffer; fileName: string }>> {
   const loaded = await withTenant(tenantId, async (tx) => {
     const [link] = await tx
@@ -87,6 +88,11 @@ async function render(
   if (run.busy || run.aborted === true) return fail("unavailable", UNAVAILABLE);
   const outcome = run.value;
   if (!outcome.ok) {
+    // A client that went away makes the engine's fetch fail like a timeout; do not log that as an engine problem.
+    if (deps.signal?.aborted) {
+      console.warn("[share] shared PDF aborted: the client went away");
+      return fail("unavailable", UNAVAILABLE);
+    }
     console.warn(`[share] shared PDF failed: ${outcome.code}`);
     return fail(outcome.code === "pdf_timeout" ? "timeout" : "unavailable", UNAVAILABLE);
   }
@@ -97,6 +103,20 @@ async function render(
     if (deps.signal?.aborted) return "cancelled";
     const clinic = await primaryClinic(tx, tenantId);
     if (!clinic?.sharingEnabled) return "gone";
+    // The clock is read now, after the render (the request's start time may be seconds old); a test may pin it.
+    const now = deps.now ?? new Date();
+    // The patient may have been archived or have withdrawn consent meanwhile (those revoke the links too, but a
+    // second server instance could be between the two steps). FOR SHARE orders this against their FOR UPDATE.
+    const [patient] = await tx
+      .select({ id: patients.id })
+      .from(prescriptions)
+      .innerJoin(visits, eq(visits.id, prescriptions.visitId))
+      .innerJoin(patients, eq(patients.id, visits.patientId))
+      .where(and(eq(prescriptions.tenantId, tenantId), eq(prescriptions.id, bundle.prescriptionId), isNull(patients.deletedAt)))
+      .limit(1)
+      .for("share", { of: patients });
+    if (!patient) return "gone";
+    if (!(await currentSharingConsentIn(tx, tenantId, patient.id))?.granted) return "gone";
     const [updated] = await tx
       .update(shareLinks)
       .set({ openCount: sql`${shareLinks.openCount} + 1`, lastOpenedAt: now })

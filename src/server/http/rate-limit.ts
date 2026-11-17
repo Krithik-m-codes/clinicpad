@@ -33,13 +33,44 @@ export function createRateLimiter({ windowMs, max, maxKeys = 10_000 }: { windowM
   };
 }
 
+type KeyEnv = { NODE_ENV?: string; SHARE_CLIENT_IP_HEADER?: string };
+
+let warnedMissingHeader = false;
+/** For tests: lets the once-only "no address header" warning fire again. */
+export function resetMissingHeaderWarning(): void {
+  warnedMissingHeader = false;
+}
+
+/** IPv6 addresses are grouped by their /64 (one subscriber owns a whole /64, so per-address keys are free to rotate); IPv4 stays as is. */
+function groupAddress(raw: string): string {
+  const address = raw.split("%")[0].toLowerCase();
+  if (!address.includes(":")) return address;
+  const [head, tail] = address.split("::");
+  const front = head === "" ? [] : head.split(":");
+  const back = tail === undefined || tail === "" ? [] : tail.split(":");
+  const groups = tail === undefined ? front : [...front, ...Array<string>(Math.max(0, 8 - front.length - back.length)).fill("0"), ...back];
+  const first = groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "") || "0");
+  while (first.length < 4) first.push("0");
+  return `${first.join(":")}::/64`;
+}
+
 /**
- * The client address as the hosting platform reports it: X-Vercel-Forwarded-For, then X-Real-IP. The first
- * X-Forwarded-For entry is supplied by the client and is never used (it would let one client pick any bucket).
- * With no platform header the key is "unknown": every such caller shares one bucket, which fails closed.
+ * The client address as the hosting platform reports it. SHARE_CLIENT_IP_HEADER names the header a self-hosted proxy
+ * sets (and only that one is read then); otherwise X-Vercel-Forwarded-For, then X-Real-IP. The first X-Forwarded-For
+ * entry is supplied by the client and is never used (it would let one client pick any bucket). With no such header
+ * the key is "unknown": every such caller shares one bucket, which fails closed, and production logs it once because
+ * it means the proxy is not configured.
  */
-export function clientKey(request: Request): string {
-  const platform = request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim();
-  const real = request.headers.get("x-real-ip")?.trim();
-  return (platform || real || "unknown").slice(0, 64);
+export function clientKey(request: Request, env: KeyEnv = process.env): string {
+  const configured = env.SHARE_CLIENT_IP_HEADER?.trim();
+  const names = configured ? [configured] : ["x-vercel-forwarded-for", "x-real-ip"];
+  for (const name of names) {
+    const value = request.headers.get(name)?.split(",")[0]?.trim();
+    if (value) return groupAddress(value).slice(0, 64);
+  }
+  if (env.NODE_ENV === "production" && !warnedMissingHeader) {
+    warnedMissingHeader = true;
+    console.warn("[share] no client address header on a public request: all such callers share one rate-limit bucket (set SHARE_CLIENT_IP_HEADER)");
+  }
+  return "unknown";
 }

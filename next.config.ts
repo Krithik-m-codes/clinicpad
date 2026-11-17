@@ -1,5 +1,11 @@
 import type { NextConfig } from "next";
 
+const PRESCRIPTION_FONTS = [
+  "./node_modules/@fontsource/noto-sans-devanagari/400.css",
+  "./node_modules/@fontsource/noto-sans-devanagari/700.css",
+  "./node_modules/@fontsource/noto-sans-devanagari/files/noto-sans-devanagari-*-{400,700}-normal.woff2",
+];
+
 const isDesktop = process.env.NEXT_BUILD_TARGET === "desktop";
 
 const nextConfig: NextConfig = {
@@ -11,13 +17,10 @@ const nextConfig: NextConfig = {
         images: { unoptimized: true },
       }
     : {
-        // Route handlers read the embedded prescription fonts from node_modules at runtime.
+        // Route handlers read the embedded prescription fonts from node_modules at runtime (the public share route renders PDFs too).
         outputFileTracingIncludes: {
-          "/prescriptions/**": [
-            "./node_modules/@fontsource/noto-sans-devanagari/400.css",
-            "./node_modules/@fontsource/noto-sans-devanagari/700.css",
-            "./node_modules/@fontsource/noto-sans-devanagari/files/noto-sans-devanagari-*-{400,700}-normal.woff2",
-          ],
+          "/prescriptions/**": PRESCRIPTION_FONTS,
+          "/s/**": PRESCRIPTION_FONTS,
         },
       }),
   typescript: { ignoreBuildErrors: false },

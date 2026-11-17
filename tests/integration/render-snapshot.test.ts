@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
 import { pgErrorInfo } from "@/server/db/errors";
 import { withTenant } from "@/server/db/tenant";
-import { clinicAssets, clinics, doctors, prescriptionItems, prescriptions, tenantCounters, users, visits } from "@/server/db/schema";
+import { clinicAssets, clinics, doctors, prescriptions, tenantCounters, users } from "@/server/db/schema";
 import { createPatient, updatePatient } from "@/server/services/patients";
 import { amendPrescription, finalizePrescription, repeatPrescription, saveDraft, startPrescription } from "@/server/services/prescriptions";
 import { buildFinalSnapshot, buildRenderSnapshot } from "@/server/services/render-snapshot";
@@ -15,6 +15,7 @@ import { renderPrescription } from "@/lib/rx-render/render";
 import { parseRenderSnapshot } from "@/lib/rx-render/snapshot";
 import { newId } from "@/lib/domain/ids";
 import { makePng } from "../helpers/images";
+import { legacyFinalized } from "../helpers/legacy-rx";
 import { finalizeNow } from "../helpers/rx";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
@@ -23,7 +24,6 @@ let B: TestTenant;
 let firstLogoId = "";
 let secondLogoId = "";
 let secondDoctorUserId = "";
-let legacyRxNo = 9500;
 const doctor = () => A.as("doctor");
 /** Another doctor of clinic A, with a profile of their own. */
 const secondDoctor = (): ServiceContext => ({ tenantId: A.tenantId, userId: secondDoctorUserId, role: "doctor" });
@@ -84,25 +84,6 @@ async function load(id: string, who: string | ServiceContext = "nurse") {
   const result = await loadRxDocument(typeof who === "string" ? A.as(who) : who, id);
   if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
   return result.value;
-}
-
-/** A finalized prescription written the way rows were written before this plan: no snapshot, no finalized_by. */
-async function legacyFinalized(patientId: string, finalizedAt: Date, snapshot: unknown = null): Promise<string> {
-  const [doc] = await adminDb.select({ id: doctors.id }).from(doctors).where(eq(doctors.userId, doctor().userId)).limit(1);
-  const [visit] = await adminDb
-    .insert(visits)
-    .values({ tenantId: A.tenantId, patientId, doctorId: doc.id, status: "draft", diagnosis: ["Legacy"] })
-    .returning();
-  const [rx] = await adminDb
-    .insert(prescriptions)
-    .values({ tenantId: A.tenantId, visitId: visit.id, status: "draft", renderSnapshot: snapshot })
-    .returning();
-  await adminDb.insert(prescriptionItems).values({ tenantId: A.tenantId, prescriptionId: rx.id, drugName: "Legacy drug" });
-  legacyRxNo += 1;
-  await adminDb.update(prescriptions).set({ status: "finalized", rxNo: legacyRxNo, finalizedAt }).where(eq(prescriptions.id, rx.id));
-  // The draft-visit guard (0008) accepts only the plain flip once the prescription is finalized.
-  await adminDb.update(visits).set({ status: "finalized", finalizedAt }).where(eq(visits.id, visit.id));
-  return rx.id;
 }
 
 beforeAll(async () => {
@@ -531,7 +512,7 @@ describe("documents without a snapshot", () => {
 
   it("renders a pre-1C finalized prescription from live data, aged on its own date, and says so", async () => {
     const patientId = await patient("Legacy Person", "2020-03-15");
-    const id = await legacyFinalized(patientId, new Date("2026-11-12T10:00:00.000Z"));
+    const id = await legacyFinalized(A, patientId, new Date("2026-11-12T10:00:00.000Z"));
     const bundle = await load(id);
     expect(bundle.document).toMatchObject({ status: "finalized", snapshotSource: "live", issuedAt: "2026-11-12T10:00:00.000Z" });
     expect(bundle.document.snapshot.patient.ageLabel).toBe("6 y");
@@ -541,7 +522,7 @@ describe("documents without a snapshot", () => {
 
   it("refuses to print a damaged snapshot instead of guessing", async () => {
     const patientId = await patient("Damaged Person");
-    const id = await legacyFinalized(patientId, new Date(), { v: 99 });
+    const id = await legacyFinalized(A, patientId, new Date(), { v: 99 });
     expect(await loadRxDocument(A.as("doctor"), id)).toMatchObject({ ok: false, code: "invalid" });
   });
 });
