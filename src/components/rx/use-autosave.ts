@@ -16,17 +16,20 @@ export function isUnknownOutcome(code: string): boolean {
   return code === "internal" || code === "unreachable";
 }
 
-/** Rejects with `undefined` when the call does not settle in time; the late answer is ignored. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+/** Rejects with `Error("timeout")` when the call does not settle in time; a late answer is ignored. */
+function withTimeout<T>(promise: Promise<T>, ms: number, timers: Set<ReturnType<typeof setTimeout>>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("timeout")), ms);
+    timers.add(timer);
     promise.then(
       (value) => {
         clearTimeout(timer);
+        timers.delete(timer);
         resolve(value);
       },
       (error: unknown) => {
         clearTimeout(timer);
+        timers.delete(timer);
         reject(error);
       },
     );
@@ -45,6 +48,8 @@ export function useAutosave(prescriptionId: string, initial: EditorState, initia
   const [ready, setReady] = useState(false);
   const saverRef = useRef<Autosaver<EditorState> | null>(null);
   const seed = useRef({ initial, initialRevision });
+  // Pending finalize timers; cleared on unmount so none fires after the editor is gone.
+  const finalizeTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
 
   useEffect(() => {
     const saver = createAutosaver<EditorState>({
@@ -66,6 +71,8 @@ export function useAutosave(prescriptionId: string, initial: EditorState, initia
     window.addEventListener("online", onOnline);
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
+      for (const timer of finalizeTimers.current) clearTimeout(timer);
+      finalizeTimers.current.clear();
       window.removeEventListener("online", onOnline);
       window.removeEventListener("beforeunload", onBeforeUnload);
       // Keep-safe teardown: one last best-effort save when edits are unsaved.
@@ -94,7 +101,7 @@ export function useAutosave(prescriptionId: string, initial: EditorState, initia
       return await saver.exclusive<FinalizeResponse>(async (snapshot, baseRevision) => {
         let res: FinalizeResponse;
         try {
-          res = await withTimeout(finalizeDraftAction(prescriptionId, toDraftPayload(snapshot), baseRevision), FINALIZE_TIMEOUT_MS);
+          res = await withTimeout(finalizeDraftAction(prescriptionId, toDraftPayload(snapshot), baseRevision), FINALIZE_TIMEOUT_MS, finalizeTimers.current);
         } catch {
           res = { ok: false, code: "unreachable", message: COULD_NOT_CONFIRM_MESSAGE };
         }

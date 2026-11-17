@@ -19,7 +19,6 @@ import {
 import type { FavouriteView } from "@/server/services/catalogue";
 import type { ClinicalVisitView, ItemView } from "@/server/services/rx-mapping";
 import { AdviceSection } from "./advice-section";
-import type { AutosaveStatus } from "@/lib/rx/autosave";
 import { AutosaveStatusBar } from "./autosave-status";
 import { ClinicalNotesSection } from "./clinical-notes-section";
 import { InvestigationsSection } from "./investigations-section";
@@ -69,17 +68,14 @@ export function ClinicalEditor({
     }
   }, [state, update]);
 
-  // A later successful save also clears it. The status that came with the failure itself is ignored.
-  const errorStatus = useRef<AutosaveStatus | null>(null);
+  // The message about a failed finalize stays until the doctor edits (a later save does not make it stale).
+  const mounted = useRef(true);
   useEffect(() => {
-    if (finalizeError === null) {
-      errorStatus.current = null;
-    } else if (errorStatus.current === null) {
-      errorStatus.current = autosave.status;
-    } else if (autosave.status !== errorStatus.current && autosave.status.state === "saved") {
-      setFinalizeError(null);
-    }
-  }, [autosave.status, finalizeError]);
+    mounted.current = true; // Strict Mode runs the cleanup once before the real mount
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const set = <K extends keyof EditorState>(key: K, value: EditorState[K]) =>
     setState((s) => ({ ...s, [key]: value }));
@@ -117,14 +113,15 @@ export function ClinicalEditor({
     setFinalizeError(null);
     try {
       const res = await autosave.finalize();
+      if (!mounted.current) return; // the page moved on; nothing left to update
       if (res.ok) {
         autosave.stop(); // finalized: nothing left to save
         setFinalized(true); // stay locked until the refreshed page replaces this editor
         router.refresh(); // the page re-renders as the read-only finalized view
         return;
       }
-      // A failure without a revision leaves autosave held; let it carry on.
-      if (typeof res.revision !== "number") autosave.retryNow();
+      // A failure without a revision leaves autosave held; flush releases the hold even if the engine halted meanwhile.
+      if (typeof res.revision !== "number") void autosave.flush();
       if (isUnknownOutcome(res.code)) {
         // The server may have finalized before the answer was lost: re-read it. If the draft is gone
         // the page swaps this editor for the finalized view; otherwise the message stays.
@@ -138,7 +135,7 @@ export function ClinicalEditor({
         router.refresh();
       }
     } finally {
-      setFinalizing(false);
+      if (mounted.current) setFinalizing(false);
     }
   }
 

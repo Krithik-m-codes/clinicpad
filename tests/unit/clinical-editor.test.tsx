@@ -107,6 +107,52 @@ describe("ClinicalEditor finalize", () => {
     expect(lastAutosavePayload().advice).toBe("third");
   });
 
+  it("resumes autosave even when the engine halted just before the failed finalize", async () => {
+    const inFlight = deferred<unknown>();
+    mocks.autosave.mockReturnValueOnce(inFlight.promise).mockResolvedValue(SAVED);
+    mocks.finalize.mockResolvedValue({ ok: false, code: "internal", message: "Something went wrong." });
+    renderEditor();
+    type("bad");
+    await advance(1000); // the save is in flight
+    // The server's "invalid" answer and the Finalize click land before React renders the disabled button.
+    await act(async () => {
+      inFlight.resolve({ ok: false, code: "invalid", message: "Pulse must be at most 250", field: "vitals" });
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      clickFinalize();
+    });
+    await advance(0);
+    expect(mocks.finalize).toHaveBeenCalled();
+
+    type("fixed");
+    await advance(1000);
+    expect(lastAutosavePayload().advice).toBe("fixed");
+  });
+
+  it("keeps the could-not-confirm message while autosave resumes, until the doctor edits", async () => {
+    mocks.finalize.mockResolvedValue({ ok: false, code: "internal", message: "Something went wrong." });
+    renderEditor();
+    type("one");
+    clickFinalize();
+    await advance(0);
+    await advance(1000);
+    await advance(5000);
+    expect(screen.getByText(/could not confirm that the prescription was finalized/i)).toBeInTheDocument();
+
+    type("two");
+    await advance(0);
+    expect(screen.queryByText(/could not confirm that the prescription was finalized/i)).not.toBeInTheDocument();
+  });
+
+  it("does not refresh the page or fire its timer after the editor is gone", async () => {
+    mocks.finalize.mockReturnValue(new Promise(() => undefined));
+    const view = renderEditor();
+    clickFinalize();
+    await advance(0);
+    view.unmount();
+    await advance(FINALIZE_TIMEOUT_MS + 1000);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
   it("locks the editor while finalizing and after success", async () => {
     const pending = deferred<unknown>();
     mocks.finalize.mockReturnValue(pending.promise);
