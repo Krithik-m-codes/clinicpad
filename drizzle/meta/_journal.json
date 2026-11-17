@@ -127,6 +127,13 @@
       "when": 1794920906583,
       "tag": "0017_phase1d_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794921766217,
+      "tag": "0018_phase1d_schema_checks",
+      "breakpoints": true
     }
   ]
 }

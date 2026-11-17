@@ -543,7 +543,15 @@ describe("the foreign keys in the catalog", () => {
   it("has no single-column key into a tenant-owned table", async () => {
     const rows = await foreignKeysIntoTenantOwnedTables();
     const singleColumn = rows
-      .filter((r) => !(r.child_cols.length === 2 && r.child_cols[0] === "tenant_id" && r.parent_cols.join() === "tenant_id,id"))
+      // Composite same-tenant keys: (tenant_id, x) -> parent (tenant_id, id), or (tenant_id, user_id) for memberships only.
+      .filter(
+        (r) =>
+          !(
+            r.child_cols.length === 2 &&
+            r.child_cols[0] === "tenant_id" &&
+            (r.parent_cols.join() === "tenant_id,id" || r.parent_cols.join() === "tenant_id,user_id")
+          ),
+      )
       .map((r) => r.conname)
       .sort();
     expect(singleColumn).toEqual([...knownSingleColumn].sort());
@@ -560,7 +568,18 @@ describe("the foreign keys in the catalog", () => {
       branches_clinic_fk: "CASCADE",
       template_versions_template_fk: "CASCADE",
       doctors_primary_branch_fk: "SET NULL",
+      tenant_medicines_created_by_fk: "SET NULL",
     });
+  });
+
+  it("nulls only created_by (not tenant_id) when a member leaves", async () => {
+    const [row] = await adminDb.execute<{ set_cols: string[] | null }>(sql`
+      select (select array_agg(a.attname::text order by k.ord)
+                from unnest(c.confdelsetcols) with ordinality k(attnum, ord)
+                join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum) as set_cols
+        from pg_constraint c
+       where c.conname = 'tenant_medicines_created_by_fk' and c.connamespace = 'public'::regnamespace`);
+    expect(row?.set_cols).toEqual(["created_by"]);
   });
 
   it("nulls only primary_branch_id (not tenant_id) when a branch is deleted", async () => {

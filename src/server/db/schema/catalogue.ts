@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   foreignKey,
   index,
   integer,
@@ -10,8 +11,9 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
-import { doctors, tenants } from "./tenancy";
+import { doctors, memberships, tenants } from "./tenancy";
 
 const pk = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
@@ -44,7 +46,10 @@ export const globalClinicalTerms = pgTable(
     icd10Code: text("icd10_code"),
     createdAt: createdAt(),
   },
-  (t) => [unique("global_terms_kind_key_unique").on(t.kind, t.nameKey)],
+  (t) => [
+    unique("global_terms_kind_key_unique").on(t.kind, t.nameKey),
+    check("global_terms_kind_check", sql`kind in ('complaint', 'diagnosis', 'history', 'test')`),
+  ],
 );
 
 /** Medicines a clinic added itself. Visible only inside that clinic (RLS). */
@@ -61,7 +66,16 @@ export const tenantMedicines = pgTable(
     createdBy: uuid("created_by"),
     createdAt: createdAt(),
   },
-  (t) => [unique("tenant_medicines_tenant_key_unique").on(t.tenantId, t.nameKey)],
+  (t) => [
+    unique("tenant_medicines_tenant_key_unique").on(t.tenantId, t.nameKey),
+    // Same-tenant reference to the member who added it (ADR-0025 pattern on memberships' (tenant_id, user_id) key).
+    // The delete rule is ON DELETE SET NULL (created_by), hand-written in 0018: a plain composite SET NULL would null tenant_id.
+    foreignKey({
+      name: "tenant_medicines_created_by_fk",
+      columns: [t.tenantId, t.createdBy],
+      foreignColumns: [memberships.tenantId, memberships.userId],
+    }).onDelete("set null"),
+  ],
 );
 
 /**
@@ -110,5 +124,12 @@ export const medicineFavourites = pgTable(
       columns: [t.tenantId, t.doctorId],
       foreignColumns: [doctors.tenantId, doctors.id],
     }).onDelete("cascade"),
+    check("favourites_duration_unit_check", sql`duration_unit is null or duration_unit in ('days', 'weeks', 'months')`),
+    check("favourites_periodicity_check", sql`periodicity is null or periodicity in ('daily', 'alternate_day', 'twice_weekly', 'weekly', 'every_5th_day', 'fortnightly', 'monthly', 'as_needed')`),
+    check(
+      "favourites_dose_slots_check",
+      sql`(dose_morning is null or (dose_morning between 0 and 99 and dose_morning * 4 = trunc(dose_morning * 4))) and (dose_afternoon is null or (dose_afternoon between 0 and 99 and dose_afternoon * 4 = trunc(dose_afternoon * 4))) and (dose_evening is null or (dose_evening between 0 and 99 and dose_evening * 4 = trunc(dose_evening * 4))) and (dose_night is null or (dose_night between 0 and 99 and dose_night * 4 = trunc(dose_night * 4)))`,
+    ),
+    check("favourites_duration_value_check", sql`duration_value is null or duration_value between 1 and 365`),
   ],
 );

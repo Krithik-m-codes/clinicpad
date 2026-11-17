@@ -65,11 +65,15 @@ describe("tenant_counters", () => {
     expect(second).toBe(first + 1);
   });
 
-  it("refuses DELETE and TRUNCATE for the application role (42501)", async () => {
+  it("refuses DELETE for the application role (42501) and holds no TRUNCATE privilege", async () => {
     await expectCode(withTenant(T, (tx) => tx.delete(tenantCounters)), "42501");
-    await expectCode(withTenant(T, (tx) => tx.execute(sql`truncate tenant_counters`)), "42501");
-    const [row] = await adminDb.select().from(tenantCounters).where(eq(tenantCounters.tenantId, T));
-    expect(row.lastNo).toBeGreaterThan(0);
+    // Never run a TRUNCATE on a connection that could commit it: ask the catalogue instead.
+    const [row] = await adminDb.execute<{ del: boolean; trunc: boolean }>(sql`
+      select has_table_privilege('clinicpad_app', 'public.tenant_counters', 'DELETE') as del,
+             has_table_privilege('clinicpad_app', 'public.tenant_counters', 'TRUNCATE') as trunc`);
+    expect(row).toEqual({ del: false, trunc: false });
+    const [counter] = await adminDb.select().from(tenantCounters).where(eq(tenantCounters.tenantId, T));
+    expect(counter.lastNo).toBeGreaterThan(0);
   });
 });
 
@@ -138,5 +142,47 @@ describe("a version is superseded only by a finalized successor", () => {
     const lonely = await draftRecords(nextRxNo);
     await finalize(lonely.rx.id, lonely.visit.id);
     await expectCode(adminDb.update(prescriptions).set({ status: "amended" }).where(eq(prescriptions.id, lonely.rx.id)), "23000");
+  });
+});
+
+describe("a draft is never flipped to amended, and a version never supersedes itself", () => {
+  it("refuses draft -> amended on every connection (23000)", async () => {
+    const { rx } = await draftRecords();
+    await expectCode(adminDb.update(prescriptions).set({ status: "amended" }).where(eq(prescriptions.id, rx.id)), "23000");
+    await expectCode(withTenant(T, (tx) => tx.update(prescriptions).set({ status: "amended" }).where(eq(prescriptions.id, rx.id))), "23000");
+    const [row] = await adminDb.select().from(prescriptions).where(eq(prescriptions.id, rx.id));
+    expect(row.status).toBe("draft");
+  });
+
+  it("refuses draft -> amended through INSERT ... ON CONFLICT DO UPDATE (23000)", async () => {
+    const { rx, visit } = await draftRecords();
+    await expectCode(
+      adminDb
+        .insert(prescriptions)
+        .values({ id: rx.id, tenantId: T, visitId: visit.id, status: "draft" })
+        .onConflictDoUpdate({ target: prescriptions.id, set: { status: "amended" } }),
+      "23000",
+    );
+  });
+
+  it("still lets a draft become finalized", async () => {
+    const { rx, visit } = await draftRecords();
+    await finalize(rx.id, visit.id);
+    const [row] = await adminDb.select().from(prescriptions).where(eq(prescriptions.id, rx.id));
+    expect(row.status).toBe("finalized");
+  });
+
+  it("does not accept a version as its own successor (23000)", async () => {
+    nextRxNo += 1;
+    const { rx, visit } = await draftRecords(nextRxNo);
+    await finalize(rx.id, visit.id);
+    // The row itself would be a finalized row whose parent is itself; the CHECK stops it being written at all.
+    await expectCode(adminDb.execute(sql`update prescriptions set parent_prescription_id = id where id = ${rx.id}`), "23000");
+    await expectCode(adminDb.update(prescriptions).set({ status: "amended" }).where(eq(prescriptions.id, rx.id)), "23000");
+  });
+
+  it("refuses a draft that names itself as its parent (23514)", async () => {
+    const { rx } = await draftRecords();
+    await expectCode(adminDb.execute(sql`update prescriptions set parent_prescription_id = id where id = ${rx.id}`), "23514");
   });
 });

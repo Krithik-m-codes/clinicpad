@@ -70,15 +70,26 @@ export async function setRole(email: string, role: string): Promise<void> {
   });
 }
 
-/** Inserts `count` patients straight into the clinic (newest = highest number) for paging tests. */
+/**
+ * Inserts `count` patients straight into the clinic (newest = highest number) for paging tests. The numbers are
+ * reserved through tenant_counters, exactly like allocateNumbers, so a patient registered afterwards continues the sequence.
+ */
 export async function seedPatients(email: string, count: number): Promise<void> {
   await withAdminSql(async (sql) => {
-    await sql`insert into patients (id, tenant_id, patient_no, name, created_at)
-      select gen_random_uuid(), m.tenant_id, g, 'Seed Patient ' || lpad(g::text, 3, '0'), now() - ((${count}::int - g) * interval '1 minute')
-      from memberships m
-      join users u on u.id = m.user_id
-      cross join generate_series(1, ${count}::int) as g
-      where u.email = ${email}`;
+    await sql.begin(async (tx) => {
+      const [member] = await tx<{ tenant_id: string }[]>`
+        select m.tenant_id from memberships m join users u on u.id = m.user_id where u.email = ${email} limit 1`;
+      if (!member) throw new Error("seedPatients: no clinic for that email");
+      const [counter] = await tx<{ last_no: number }[]>`
+        insert into tenant_counters (tenant_id, name, last_no) values (${member.tenant_id}, 'patient', ${count})
+        on conflict (tenant_id, name) do update set last_no = tenant_counters.last_no + ${count}
+        returning last_no`;
+      const first = counter.last_no - count + 1;
+      await tx`insert into patients (id, tenant_id, patient_no, name, created_at)
+        select gen_random_uuid(), ${member.tenant_id}, ${first}::int - 1 + g, 'Seed Patient ' || lpad(g::text, 3, '0'),
+               now() - ((${count}::int - g) * interval '1 minute')
+          from generate_series(1, ${count}::int) as g`;
+    });
   });
 }
 

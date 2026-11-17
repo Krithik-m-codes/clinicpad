@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   customType,
   foreignKey,
   index,
@@ -10,6 +11,7 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
 import { memberRole, memberStatus, tenantPlan } from "./enums";
 
@@ -76,6 +78,13 @@ export const clinicAssets = pgTable(
     // Target of the composite same-tenant foreign keys from clinics and doctors (ADR-0025 pattern).
     unique("clinic_assets_tenant_id_uq").on(t.tenantId, t.id),
     unique("clinic_assets_dedupe_key").on(t.tenantId, t.kind, t.sha256),
+    // Declared here as well as in SQL (0014, 0015) so drizzle-kit knows them; tests/integration/schema-checks.test.ts pins the list.
+    check("clinic_assets_kind_check", sql`kind in ('logo', 'signature')`),
+    check("clinic_assets_mime_check", sql`mime in ('image/png', 'image/jpeg')`),
+    check("clinic_assets_size_check", sql`byte_size between 1 and 524288 and octet_length(bytes) = byte_size`),
+    check("clinic_assets_dimensions_check", sql`width between 16 and 2000 and height between 16 and 2000`),
+    check("clinic_assets_sha256_check", sql`sha256 ~ '^[0-9a-f]{64}$'`),
+    check("clinic_assets_hash_matches_check", sql`sha256 = encode(sha256(bytes), 'hex')`),
   ],
 );
 
@@ -115,6 +124,9 @@ export const clinics = pgTable(
       columns: [t.tenantId, t.logoAssetId],
       foreignColumns: [clinicAssets.tenantId, clinicAssets.id],
     }),
+    check("clinics_rx_template_check", sql`rx_template in ('general', 'paediatric', 'derma')`),
+    check("clinics_rx_paper_size_check", sql`rx_paper_size in ('A4', 'A5')`),
+    check("clinics_rx_labels_check", sql`rx_labels in ('en', 'hi', 'bilingual')`),
   ],
 );
 

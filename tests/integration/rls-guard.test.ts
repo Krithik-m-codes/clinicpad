@@ -26,7 +26,10 @@ async function policies(): Promise<PolicyRow[]> {
       from pg_policies where schemaname = 'public' order by 1, 2`);
 }
 
-const scoped = (p: PolicyRow) => `${p.qual ?? ""} ${p.with_check ?? ""}`.includes("app.tenant_id");
+/** Every expression the policy has (USING and WITH CHECK, each separately) must name the session tenant. */
+const scoped = (p: PolicyRow) =>
+  [p.qual, p.with_check].filter((e): e is string => e !== null).every((e) => e.includes("app.tenant_id")) &&
+  (p.qual !== null || p.with_check !== null);
 
 describe("row-level security across the whole schema", () => {
   it("sees the known tenant tables, so it cannot pass vacuously", async () => {

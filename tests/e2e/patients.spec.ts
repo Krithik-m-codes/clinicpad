@@ -180,3 +180,13 @@ test("the list pages through more than 25 patients and tolerates bad params", as
   await expect(page.getByText("Showing 1-25")).toBeVisible();
   await expect(page.getByRole("link", { name: "Next" })).toHaveAttribute("href", /q=Seed.*offset=25/);
 });
+
+test("a patient registered after seeded ones continues the number sequence", async ({ page }) => {
+  const clinic = await newClinic(page, "seqno");
+  await seedPatients(clinic.email, 3);
+  await page.goto("/patients/new");
+  await page.getByLabel("Name").fill("Sequence Check");
+  await page.getByRole("button", { name: /register patient/i }).click();
+  await expect(page.getByRole("heading", { name: "Sequence Check" })).toBeVisible();
+  await expect(page.getByText(/Patient #4(?!\d)/)).toBeVisible();
+});

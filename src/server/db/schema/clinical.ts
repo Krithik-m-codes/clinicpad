@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   date,
   foreignKey,
   index,
@@ -89,6 +90,10 @@ export const visits = pgTable(
   },
   (t) => [
     index("visits_tenant_patient_idx").on(t.tenantId, t.patientId),
+    // Offboarding and history scans by doctor or branch (Plan 1D).
+    index("visits_tenant_doctor_idx").on(t.tenantId, t.doctorId),
+    index("visits_tenant_branch_idx").on(t.tenantId, t.branchId),
+    check("visits_status_check", sql`status in ('draft', 'finalized')`),
     unique("visits_tenant_id_uq").on(t.tenantId, t.id),
     // Same-tenant reference: a visit can only belong to a patient of its own tenant.
     foreignKey({
@@ -139,6 +144,10 @@ export const prescriptions = pgTable(
   (t) => [
     unique("prescriptions_tenant_rx_version_unique").on(t.tenantId, t.rxNo, t.version),
     index("prescriptions_visit_idx").on(t.visitId),
+    index("prescriptions_tenant_template_version_idx").on(t.tenantId, t.templateVersionId),
+    index("prescriptions_tenant_parent_idx").on(t.tenantId, t.parentPrescriptionId),
+    check("prescriptions_status_check", sql`status in ('draft', 'finalized', 'amended')`),
+    check("prescriptions_not_own_parent_check", sql`parent_prescription_id is distinct from id`),
     uniqueIndex("prescriptions_one_open_amendment")
       .on(t.parentPrescriptionId)
       .where(sql`${t.status} = 'draft' and ${t.parentPrescriptionId} is not null`),
@@ -201,6 +210,15 @@ export const prescriptionItems = pgTable(
       columns: [t.tenantId, t.prescriptionId],
       foreignColumns: [prescriptions.tenantId, prescriptions.id],
     }).onDelete("cascade"),
+    // The database refuses what Zod refuses (src/server/validation/prescription.ts); 0012 and 0018.
+    check("rx_items_duration_unit_check", sql`duration_unit is null or duration_unit in ('days', 'weeks', 'months')`),
+    check("rx_items_periodicity_check", sql`periodicity is null or periodicity in ('daily', 'alternate_day', 'twice_weekly', 'weekly', 'every_5th_day', 'fortnightly', 'monthly', 'as_needed')`),
+    check(
+      "rx_items_dose_slots_check",
+      sql`(dose_morning is null or (dose_morning between 0 and 99 and dose_morning * 4 = trunc(dose_morning * 4))) and (dose_afternoon is null or (dose_afternoon between 0 and 99 and dose_afternoon * 4 = trunc(dose_afternoon * 4))) and (dose_evening is null or (dose_evening between 0 and 99 and dose_evening * 4 = trunc(dose_evening * 4))) and (dose_night is null or (dose_night between 0 and 99 and dose_night * 4 = trunc(dose_night * 4)))`,
+    ),
+    check("rx_items_duration_value_check", sql`duration_value is null or duration_value between 1 and 365`),
+    check("rx_items_duration_days_check", sql`duration_days is null or duration_days between 1 and 365`),
   ],
 );
 
@@ -314,5 +332,11 @@ export const prescriptionOutputs = pgTable(
       foreignColumns: [prescriptions.tenantId, prescriptions.id],
     }).onDelete("cascade"),
     index("rx_outputs_prescription_idx").on(t.tenantId, t.prescriptionId, t.createdAt),
+    check("rx_outputs_kind_check", sql`kind in ('pdf_download', 'browser_print')`),
+    check("rx_outputs_paper_size_check", sql`paper_size in ('A4', 'A5')`),
+    check("rx_outputs_page_count_check", sql`page_count is null or page_count between 1 and 50`),
+    check("rx_outputs_byte_size_check", sql`byte_size is null or byte_size >= 0`),
+    check("rx_outputs_sha256_check", sql`html_sha256 ~ '^[0-9a-f]{64}$'`),
+    check("rx_outputs_template_key_check", sql`template_key in ('general', 'paediatric', 'derma')`),
   ],
 );
