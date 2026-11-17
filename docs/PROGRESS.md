@@ -232,7 +232,7 @@ A box is ticked only for evidence seen on 2026-11-17 at commit `4c3aa62` (code) 
 - The patient archive UI and unarchive remain open (ruled out of Plan 1B; Plan 1D).
 - Smaller deferred items: `cleanText` applies NFC before the invisible-character strip; `expectedRevision` is not validated like `baseRevision`; no column-classification guard test for amend/repeat copying (a new visit column could be copied or dropped silently); `getSessionContext` and `requireSession` duplicate logic; an unreviewed seed gap (a wrong-schema CSV header skips every row and exits 0).
 - Not built, with their owners: nurse vitals entry (Phase 3, ADR-0030), Hindi labels for the new option codes (Plan 1D), the offline outbox (Phase 4), advice templates and medicine bundles, clinic-learned complaint and diagnosis suggestions, and an undo for discarded drafts (unscheduled; ADR-0031).
-- Uploaded logos and signatures keep their EXIF/GPS metadata in the stored bytes (the image is validated, not re-encoded). Strip it before any image leaves the system, for example WhatsApp sharing (Plan 1D). Assets are capped at 20 logos and 50 signatures per clinic (Plan 1C Task 6 fix round); the cap is checked inside the upload transaction without a lock, so two simultaneous uploads can overshoot by one.
+- Uploaded logos and signatures are stripped of EXIF/GPS and other metadata at upload (Plan 1C final fix, ADR-0035); assets stored before that are dev data and may still carry it. Assets are capped at 20 logos and 50 signatures per clinic (Plan 1C Task 6 fix round); the cap is checked inside the upload transaction without a lock, so two simultaneous uploads can overshoot by one.
 
 ### 4.10 Phase 1C checklist (pad renderer, PDF, print)
 
@@ -262,9 +262,20 @@ A box is ticked only for evidence seen on 2026-11-17 at commit `38fdb5d` (the co
 - A draft preview is not re-checked against a concurrent save (it may mix two saves for a moment; finalized copies are frozen).
 - Every `rx.read` role (reception, nurse, pharmacist) can print and download the full clinical content: part of the data-minimisation decision in 4.9 (Plan 1D).
 - The PDF concurrency limiter is per process and has no fairness or abort plumbing (Plan 1D, with sharing). A print counts when its HTML is served, not when the dialog is confirmed (ADR-0033).
-- The asset cap (20 logos, 50 signatures per clinic) can overshoot by one under two simultaneous uploads; no malware scan or EXIF stripping of uploaded images (Phase 2.1; strip before sharing, Plan 1D); no PDF cache (ADR-0033).
+- The asset cap (20 logos, 50 signatures per clinic) can overshoot by one under two simultaneous uploads; no malware scan of uploaded images (Phase 2.1); no PDF cache (ADR-0033).
 - A Next dev-server `TypeError: controller[kState].transformAlgorithm is not a function` is logged once during the `pad-settings` role e2e test; the test passes and the cause is not investigated (Plan 1D).
 - "Page x of y" in the PDF footer is English only (no Devanagari font in the footer template; Plan 1D).
+
+**Plan 1C pilot follow-ups (added in the final fix wave)**
+
+- HUMAN DECISION: an owner without a doctor profile can finalize (the pad then prints no doctor block); decide whether finalize must require a doctor profile with a name and registration number before any pilot.
+- HUMAN DECISION: data minimisation for reception and pharmacist, who can print and download full clinical content (part of 4.9).
+- Ops: production Gotenberg on a private network with no egress and `GOTENBERG_URL` set; run the CI Gotenberg job on GitHub; verify `outputFileTracingIncludes` (fonts) at the first deployment.
+- Bug (Plan 1D): a date of birth is read as UTC midnight and shown or aged in IST in places; fix the UTC/IST handling.
+- HUMAN: Hindi label review, an actual Safari print check, and clinical review of the sample medicine list.
+- Plan 1D: reproduce the dev-server `TransformStream` TypeError under `next start` to see whether it is dev-only.
+- Optional: run a corpus of hostile payloads against `checkSelfContained()` in a real browser.
+- Presentation is not frozen (templates, labels, CSS, fonts); each output records `renderer_version` (ADR-0032), so bump `RENDERER_VERSION` when printed output changes.
 
 ---
 
