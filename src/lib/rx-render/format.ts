@@ -128,9 +128,9 @@ export function scheduleText(item: Slots & Pick<RxItem, "timing">): string {
 
 /**
  * Download name. Never contains patient data. A draft never carries a number, even though an
- * amendment draft inherits its parent's `rxNo`: pass `status` and the name stays "Rx-draft-v<n>.pdf".
+ * amendment draft inherits its parent's `rxNo`: `status` is required, and the name stays "Rx-draft-v<n>.pdf".
  */
-export function pdfFileName(rx: { rxNo: number | null; version: number; status?: string }): string {
+export function pdfFileName(rx: { rxNo: number | null; version: number; status: string }): string {
   const numbered = rx.status !== "draft" && rx.rxNo !== null && Number.isSafeInteger(rx.rxNo) && rx.rxNo > 0;
   const no = numbered ? String(rx.rxNo) : "draft";
   const version = Number.isSafeInteger(rx.version) && rx.version > 0 ? rx.version : 1;

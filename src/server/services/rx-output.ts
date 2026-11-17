@@ -79,13 +79,28 @@ async function recordOutput(
   });
 }
 
+/**
+ * Previewing a non-draft prescription shows a signed record, so it is audited (ids only: no output
+ * row, so the "printed N times" count is unaffected). Draft previews are working copies and unlogged.
+ */
+async function recordPreview(ctx: ServiceContext, bundle: RxDocumentBundle): Promise<void> {
+  await withTenant(ctx.tenantId, async (tx) => {
+    await recordAudit(tx, ctx, {
+      action: "prescription.previewed",
+      entityType: "prescription",
+      entityId: bundle.prescriptionId,
+      after: { prescriptionId: bundle.prescriptionId, version: bundle.document.version },
+    });
+  });
+}
+
 function fileNameOf(bundle: RxDocumentBundle, extension: "pdf" | "html"): string {
   const { rxNo, version, status } = bundle.document;
   return pdfFileName({ rxNo, version, status }).replace(/\.pdf$/, `.${extension}`);
 }
 
 /**
- * The pad as HTML: a preview (any status, never logged) or a print (finalized only, logged and
+ * The pad as HTML: a preview (any status; audited unless it is a draft) or a print (finalized only, logged and
  * audited). Browser print cannot be observed from the server, so a print is logged when the print
  * document is served (`purpose=print`): the log means "this document was handed to a print dialog".
  */
@@ -99,6 +114,7 @@ export async function renderPrescriptionHtml(
   if (purpose === "print" && loaded.value.document.status === "draft") return fail("conflict", DRAFT_OUTPUT_MESSAGE);
   const rendered = render(loaded.value);
   if (purpose === "print") await recordOutput(ctx, loaded.value, rendered, "browser_print", null);
+  else if (loaded.value.document.status !== "draft") await recordPreview(ctx, loaded.value);
   return ok({ html: rendered.html, title: rendered.title, fileName: fileNameOf(loaded.value, "html") });
 }
 

@@ -261,11 +261,11 @@ describe("format", () => {
   });
 
   it("names PDFs without patient data", () => {
-    expect(pdfFileName({ rxNo: 12, version: 2 })).toBe("Rx-12-v2.pdf");
-    expect(pdfFileName({ rxNo: null, version: 1 })).toBe("Rx-draft-v1.pdf");
-    expect(pdfFileName({ rxNo: Number.NaN, version: Number.NaN })).toBe("Rx-draft-v1.pdf");
-    expect(pdfFileName({ rxNo: -4, version: 0 })).toBe("Rx-draft-v1.pdf");
-    expect(pdfFileName({ rxNo: 1e21, version: 1.5 })).toBe("Rx-draft-v1.pdf");
+    expect(pdfFileName({ rxNo: 12, version: 2, status: "finalized" })).toBe("Rx-12-v2.pdf");
+    expect(pdfFileName({ rxNo: null, version: 1, status: "finalized" })).toBe("Rx-draft-v1.pdf");
+    expect(pdfFileName({ rxNo: Number.NaN, version: Number.NaN, status: "finalized" })).toBe("Rx-draft-v1.pdf");
+    expect(pdfFileName({ rxNo: -4, version: 0, status: "finalized" })).toBe("Rx-draft-v1.pdf");
+    expect(pdfFileName({ rxNo: 1e21, version: 1.5, status: "finalized" })).toBe("Rx-draft-v1.pdf");
   });
 
   it("never numbers a draft, even an amendment draft that carries its parent's number", () => {

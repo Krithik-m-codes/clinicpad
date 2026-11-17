@@ -16,15 +16,42 @@ import { auditEvents, clinics, doctors, prescriptionOutputs } from "@/server/db/
 import { createPatient } from "@/server/services/patients";
 import { amendPrescription, finalizePrescription, saveDraft, startPrescription } from "@/server/services/prescriptions";
 import { listPrescriptionOutputs, renderPrescriptionPdf } from "@/server/services/rx-output";
-import { GET as getDocument } from "@/app/(app)/prescriptions/[id]/document/route";
-import { GET as getPdf } from "@/app/(app)/prescriptions/[id]/pdf/route";
+import { GET as getDocument, HEAD as headDocument } from "@/app/(app)/prescriptions/[id]/document/route";
+import { GET as getPdf, HEAD as headPdf } from "@/app/(app)/prescriptions/[id]/pdf/route";
 import { GET as getPdfHealth } from "@/app/api/health/pdf/route";
+import * as selfContained from "@/lib/rx-render/self-contained";
 import { checkSelfContained } from "@/lib/rx-render/self-contained";
+import { resetPdfHealthCache } from "@/server/pdf/health-cache";
 import { createLimiter } from "@/server/pdf/limiter";
 import type { PdfEngine } from "@/server/pdf/engine";
 import { newId } from "@/lib/domain/ids";
 import { fakePdfBytes, resetFakeEngine, sharedFakeEngine } from "../helpers/fake-pdf-engine";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
+
+// Lets one test make the output-log insert fail while every read still works.
+const dbFault = vi.hoisted(() => ({ failInsert: false }));
+vi.mock("@/server/db/tenant", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/db/tenant")>();
+  return {
+    ...actual,
+    withTenant: ((tenantId: string, fn: (tx: never) => Promise<unknown>) =>
+      actual.withTenant(tenantId, (tx) =>
+        fn(
+          new Proxy(tx, {
+            get(target, prop) {
+              const value = Reflect.get(target, prop, target);
+              if (prop === "insert" && dbFault.failInsert) {
+                return () => {
+                  throw new Error("log write failed");
+                };
+              }
+              return typeof value === "function" ? value.bind(target) : value;
+            },
+          }) as never,
+        ),
+      )) as typeof actual.withTenant,
+  };
+});
 
 const session = vi.mocked(getSessionContext);
 const PATIENT = "Route <b>Patient</b> आशा";
@@ -86,6 +113,8 @@ beforeEach(() => {
   session.mockReset();
   session.mockResolvedValue(A.as("doctor"));
   resetFakeEngine(sharedFakeEngine);
+  dbFault.failInsert = false;
+  resetPdfHealthCache();
 });
 
 describe("GET /prescriptions/[id]/pdf", () => {
@@ -96,6 +125,7 @@ describe("GET /prescriptions/[id]/pdf", () => {
     expect(res.headers.get("content-disposition")).toMatch(/^attachment; filename="Rx-\d+-v1\.pdf"$/);
     expect(res.headers.get("cache-control")).toBe("private, no-store");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("cross-origin-resource-policy")).toBe("same-origin");
     expect(new TextDecoder().decode((await res.arrayBuffer()).slice(0, 5))).toBe("%PDF-");
 
     expect(sharedFakeEngine.calls).toHaveLength(1);
@@ -158,7 +188,14 @@ describe("GET /prescriptions/[id]/pdf", () => {
   });
 
   it("refuses drafts and amendment drafts with 409, never calls the engine, and logs nothing", async () => {
-    for (const id of [draftId]) {
+    const patient = await createPatient(A.as("reception"), { name: "Loop Patient" });
+    if (!patient.ok) throw new Error(patient.message);
+    const source = await finalized(patient.value.id);
+    const amendment = await amendPrescription(A.as("doctor"), { prescriptionId: source, reason: "Loop check" });
+    if (!amendment.ok) throw new Error(amendment.message);
+    const openAmendmentId = amendment.value.prescriptionId;
+    expect(openAmendmentId).not.toBe(draftId);
+    for (const id of [draftId, openAmendmentId]) {
       const res = await pdf(id);
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: "conflict", message: "Finalize this prescription before printing or downloading it." });
@@ -172,7 +209,7 @@ describe("GET /prescriptions/[id]/pdf", () => {
     sharedFakeEngine.failWith = "pdf_unavailable";
     const res = await pdf(finalizedId);
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: "unavailable", message: expect.stringMatching(/not reachable/) });
+    expect(await res.json()).toEqual({ error: "unavailable", message: "The PDF service is not available right now. Try again, or use Print." });
     expect(await outputsFor(finalizedId)).toHaveLength(before);
   });
 
@@ -198,7 +235,60 @@ describe("GET /prescriptions/[id]/pdf", () => {
     const res = await pdf(finalizedId);
     expect(res.status).toBe(503);
     const text = JSON.stringify(await res.json());
-    expect(text).not.toMatch(/http|localhost|gotenberg|\\|stack/i);
+    expect(text).not.toMatch(/http|localhost|gotenberg|configured|reachable|\\|stack/i);
+  });
+
+  it("answers 405 to HEAD without rendering, and 403 to a cross-site request", async () => {
+    const before = (await outputsFor(finalizedId)).length;
+    expect(headPdf().status).toBe(405);
+    const cross = await getPdf(
+      new Request(`http://localhost/prescriptions/${finalizedId}/pdf`, { headers: { "sec-fetch-site": "cross-site" } }),
+      params(finalizedId),
+    );
+    expect(cross.status).toBe(403);
+    expect(sharedFakeEngine.calls).toHaveLength(0);
+    expect(await outputsFor(finalizedId)).toHaveLength(before);
+    const same = await getPdf(
+      new Request(`http://localhost/prescriptions/${finalizedId}/pdf`, { headers: { "sec-fetch-site": "same-origin" } }),
+      params(finalizedId),
+    );
+    expect(same.status).toBe(200);
+    expect(await outputsFor(finalizedId)).toHaveLength(before + 1);
+  });
+
+  it("answers 500 with no PDF bytes when the output log cannot be written", async () => {
+    const before = (await outputsFor(finalizedId)).length;
+    dbFault.failInsert = true;
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const res = await pdf(finalizedId);
+      expect(res.status).toBe(500);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const body = await res.text();
+      expect(body).not.toContain("%PDF");
+      expect(JSON.parse(body)).toEqual({ error: "internal", message: "The PDF could not be generated. Try again, or use Print." });
+    } finally {
+      dbFault.failInsert = false;
+      logged.mockRestore();
+    }
+    expect(await outputsFor(finalizedId)).toHaveLength(before);
+  });
+
+  it("answers a typed 500 and never calls the engine when the self-contained check fails", async () => {
+    const before = (await outputsFor(finalizedId)).length;
+    const check = vi.spyOn(selfContained, "checkSelfContained").mockReturnValue({ ok: false, reason: "external url for Route Patient" });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const res = await pdf(finalizedId);
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: "internal", message: "The PDF could not be generated. Try again, or use Print." });
+      expect(JSON.stringify(logged.mock.calls)).not.toContain("Route Patient");
+    } finally {
+      check.mockRestore();
+      logged.mockRestore();
+    }
+    expect(sharedFakeEngine.calls).toHaveLength(0);
+    expect(await outputsFor(finalizedId)).toHaveLength(before);
   });
 
   it("answers a typed 500 that leaks nothing when something unexpected throws, and logs no output", async () => {
@@ -262,6 +352,31 @@ describe("renderPrescriptionPdf concurrency limit", () => {
     expect(started).toBe(7);
     expect(await outputsFor(finalizedId)).toHaveLength(before + 7);
   });
+
+  it("tells the route client to retry after 2 seconds when the service is busy", async () => {
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const render = vi.spyOn(sharedFakeEngine, "render").mockImplementation(async () => {
+      started += 1;
+      await gate;
+      return { ok: true, pdf: fakePdfBytes(1), pageCount: 1 };
+    });
+    try {
+      const calls = Array.from({ length: 7 }, () => pdf(finalizedId));
+      const deadline = Date.now() + 10_000;
+      while (started < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+      const busy = await pdf(finalizedId);
+      expect(busy.status).toBe(503);
+      expect(busy.headers.get("retry-after")).toBe("2");
+      expect(await busy.json()).toEqual({ error: "unavailable", message: expect.stringMatching(/busy/) });
+      release();
+      expect((await Promise.all(calls)).every((r) => r.status === 200)).toBe(true);
+    } finally {
+      release();
+      render.mockRestore();
+    }
+  });
 });
 
 describe("GET /prescriptions/[id]/document", () => {
@@ -273,12 +388,60 @@ describe("GET /prescriptions/[id]/document", () => {
     expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'self'");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(res.headers.get("cross-origin-resource-policy")).toBe("same-origin");
     expect(res.headers.get("content-disposition")).toBe('inline; filename="Rx-draft-v1.html"');
     const markup = await res.text();
     expect(markup).toContain("DRAFT · NOT VALID FOR DISPENSING");
     expect(markup).toContain('data-rx="ready"');
     expect(checkSelfContained(markup)).toEqual({ ok: true });
     expect(await outputsFor(draftId)).toHaveLength(0);
+    expect(await auditFor(draftId, "prescription.previewed")).toHaveLength(0);
+  });
+
+  it("audits a preview of a finalized prescription with ids only, without an output row", async () => {
+    const outputsBefore = (await outputsFor(finalizedId)).length;
+    const eventsBefore = (await auditFor(finalizedId, "prescription.previewed")).length;
+    expect((await documentFor(finalizedId)).status).toBe(200);
+    const events = await auditFor(finalizedId, "prescription.previewed");
+    expect(events).toHaveLength(eventsBefore + 1);
+    expect(events[events.length - 1].after).toEqual({ prescriptionId: finalizedId, version: 1 });
+    expect(JSON.stringify(events)).not.toContain("Route");
+    expect(await outputsFor(finalizedId)).toHaveLength(outputsBefore);
+    const summary = await listPrescriptionOutputs(A.as("reception"), finalizedId);
+    expect(summary.ok && summary.value.count).toBe(outputsBefore);
+  });
+
+  it("answers 405 to HEAD, and refuses a cross-site print without logging", async () => {
+    expect(headDocument().status).toBe(405);
+    const before = (await outputsFor(finalizedId)).length;
+    const cross = await getDocument(
+      new Request(`http://localhost/prescriptions/${finalizedId}/document?purpose=print`, { headers: { "sec-fetch-site": "cross-site" } }),
+      params(finalizedId),
+    );
+    expect(cross.status).toBe(403);
+    expect(await outputsFor(finalizedId)).toHaveLength(before);
+    const same = await getDocument(
+      new Request(`http://localhost/prescriptions/${finalizedId}/document?purpose=print`, { headers: { "sec-fetch-site": "same-origin" } }),
+      params(finalizedId),
+    );
+    expect(same.status).toBe(200);
+    expect(await outputsFor(finalizedId)).toHaveLength(before + 1);
+  });
+
+  it("answers a typed 500 when the self-contained check fails, and logs nothing", async () => {
+    const before = (await outputsFor(finalizedId)).length;
+    const check = vi.spyOn(selfContained, "checkSelfContained").mockReturnValue({ ok: false, reason: "x" });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const res = await documentFor(finalizedId, "print");
+      expect(res.status).toBe(500);
+      expect(await res.text()).toContain('data-rx="error"');
+    } finally {
+      check.mockRestore();
+      logged.mockRestore();
+    }
+    expect(await outputsFor(finalizedId)).toHaveLength(before);
   });
 
   it("names an amendment draft without its parent's number", async () => {
@@ -299,14 +462,16 @@ describe("GET /prescriptions/[id]/document", () => {
   });
 
   it("logs and audits a print, and prints byte-identical HTML every time", async () => {
+    const printsBefore = (await outputsFor(finalizedId)).filter((o) => o.kind === "browser_print").length;
+    const auditBefore = (await auditFor(finalizedId, "prescription.printed")).length;
     const first = await (await documentFor(finalizedId, "print")).text();
     const second = await (await documentFor(finalizedId, "print")).text();
     expect(second).toBe(first);
     const prints = (await outputsFor(finalizedId)).filter((o) => o.kind === "browser_print");
-    expect(prints).toHaveLength(2);
-    expect(prints[0].htmlSha256).toBe(prints[1].htmlSha256);
+    expect(prints).toHaveLength(printsBefore + 2);
+    expect(prints[0].htmlSha256).toBe(prints[prints.length - 1].htmlSha256);
     expect(prints[0].pageCount).toBeNull();
-    expect(await auditFor(finalizedId, "prescription.printed")).toHaveLength(2);
+    expect(await auditFor(finalizedId, "prescription.printed")).toHaveLength(auditBefore + 2);
 
     const summary = await listPrescriptionOutputs(A.as("reception"), finalizedId);
     expect(summary.ok && summary.value.count).toBeGreaterThanOrEqual(2);
@@ -315,7 +480,7 @@ describe("GET /prescriptions/[id]/document", () => {
 
   it("marks a superseded version", async () => {
     expect(await (await documentFor(supersededId, "print")).text()).toContain("SUPERSEDED by version 2");
-    expect(amendDraftId).not.toBe("");
+    expect(await (await documentFor(amendDraftId, "print")).text()).not.toContain("SUPERSEDED");
   });
 
   it("sends a signed-out user to the login page and hides other clinics' prescriptions", async () => {
@@ -344,10 +509,28 @@ describe("GET /api/health/pdf", () => {
   it("reports the PDF service state without detail", async () => {
     const up = await getPdfHealth();
     expect(up.status).toBe(200);
+    expect(up.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await up.json()).toEqual({ status: "up", service: "pdf" });
     sharedFakeEngine.up = false;
+    expect((await getPdfHealth()).status).toBe(200); // cached for a few seconds
+    resetPdfHealthCache();
     const down = await getPdfHealth();
     expect(down.status).toBe(503);
     expect(await down.json()).toEqual({ status: "down", service: "pdf" });
+  });
+
+  it("expires the cached result after about three seconds", async () => {
+    const now = vi.spyOn(Date, "now");
+    try {
+      now.mockReturnValue(1_000_000);
+      expect((await getPdfHealth()).status).toBe(200);
+      sharedFakeEngine.up = false;
+      now.mockReturnValue(1_002_000);
+      expect((await getPdfHealth()).status).toBe(200);
+      now.mockReturnValue(1_003_500);
+      expect((await getPdfHealth()).status).toBe(503);
+    } finally {
+      now.mockRestore();
+    }
   });
 });

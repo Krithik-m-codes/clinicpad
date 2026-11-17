@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { contentDisposition, publicCode, publicMessage, statusForError } from "@/server/http/response";
+import { contentDisposition, crossSiteRefusal, headNotAllowed, publicCode, publicMessage, statusForError } from "@/server/http/response";
 import { createLimiter } from "@/server/pdf/limiter";
 
 vi.mock("next-auth", () => ({ default: () => ({ auth: () => undefined }) }));
@@ -26,6 +26,17 @@ describe("contentDisposition", () => {
     expect(contentDisposition("attachment", "100%.pdf")).toBe('attachment; filename="100_.pdf"; filename*=UTF-8\'\'100%25.pdf');
   });
 
+  it("drops lone surrogates and Unicode format characters, and never throws", () => {
+    // U+D800 lone high, U+DC00 lone low, U+202E right-to-left override, U+200B zero-width space, U+FEFF BOM
+    const hostile = ["a", "\ud800", "b", "\udc00", "\u202e", "\u200b", "\ufeff", "c.pdf"].join("");
+    expect(hostile.length).toBe(12);
+    expect(() => contentDisposition("attachment", hostile)).not.toThrow();
+    expect(contentDisposition("attachment", hostile)).toBe('attachment; filename="abc.pdf"');
+    expect(contentDisposition("attachment", "\u202e\ud800")).toBe('attachment; filename="document"');
+    // a valid surrogate pair (an emoji) is kept, as UTF-8 percent-encoding
+    expect(contentDisposition("attachment", "\ud83d\ude00.pdf")).toContain("filename*=UTF-8''%F0%9F%98%80.pdf");
+  });
+
   it("falls back to a fixed name for an empty one", () => {
     expect(contentDisposition("attachment", '\r\n"')).toBe('attachment; filename="document"');
   });
@@ -42,6 +53,28 @@ describe("error mapping", () => {
     expect(publicCode("forbidden")).toBe("not_found");
     expect(publicMessage("forbidden", "You cannot view prescriptions.")).toBe("Prescription not found.");
     expect(publicMessage("conflict", "x")).toBe("x");
+    expect(publicMessage("not_found", "Row 7 of table x is missing")).toBe("Prescription not found.");
+  });
+});
+
+describe("crossSiteRefusal and headNotAllowed", () => {
+  const req = (site?: string) => new Request("http://localhost/x", { headers: site ? { "sec-fetch-site": site } : {} });
+
+  it("allows same-origin, direct navigation, and a missing header; refuses everything else with 403", async () => {
+    expect(crossSiteRefusal(req())).toBeNull();
+    expect(crossSiteRefusal(req("same-origin"))).toBeNull();
+    expect(crossSiteRefusal(req("none"))).toBeNull();
+    for (const site of ["cross-site", "same-site", "bogus"]) {
+      const res = crossSiteRefusal(req(site));
+      expect(res?.status).toBe(403);
+      expect(await res?.json()).toEqual({ error: "forbidden", message: "This action must be started from ClinicPad." });
+    }
+  });
+
+  it("answers HEAD with 405 and an Allow header", () => {
+    const res = headNotAllowed();
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET");
   });
 });
 
