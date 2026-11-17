@@ -7,13 +7,23 @@ export const ALLOWED_TAGS = new Set([
   "table", "colgroup", "col", "thead", "tbody", "tfoot", "tr", "th", "td", "ol", "ul", "li", "img",
 ]);
 
-/** Longest document (in characters) that is scanned; a prescription is far smaller. Bounds the scan time. */
+/** Longest document (in characters) that is scanned; a prescription is far smaller. A memory guard: the scan itself is linear. */
 export const MAX_DOCUMENT_CHARS = 4 * 1024 * 1024;
 
-// For Task 4: this check cannot see CSS semantics. Document CSS must give user text spans
-// (`.v`) `unicode-bidi: isolate`, so right-to-left text cannot reorder the text around it.
+/** Most "<" characters a document may hold; each one is checked as a tag start. */
+export const MAX_TAG_STARTS = 200_000;
 
-const URL_ATTRIBUTES =new Set([
+// Contract for template authors (Tasks 4 and 8):
+// - The renderer emits NO CSS comments. Any "/*" in a style block or style attribute is refused,
+//   because a "/*" inside a url token or a string is not a comment to the browser, so comment
+//   stripping would let the checker and the browser disagree. The font inliner (Task 8) must
+//   strip comments from the font CSS it embeds.
+// - The renderer uses no url() other than embedded data: images and WOFF2 fonts, and no fragment
+//   references (url(#id)); those are refused too.
+// - This check cannot see CSS semantics. Document CSS must give user text spans (`.v`)
+//   `unicode-bidi: isolate`, so right-to-left text cannot reorder the text around it.
+
+const URL_ATTRIBUTES = new Set([
   "href", "srcset", "poster", "action", "formaction", "data", "xlink:href", "background",
   "ping", "cite", "longdesc", "manifest", "codebase", "lowsrc", "dynsrc",
 ]);
@@ -21,12 +31,14 @@ const URL_ATTRIBUTES =new Set([
 const DATA_IMAGE = /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/;
 const DATA_FONT = /^data:font\/woff2;base64,[A-Za-z0-9+/]+={0,2}$/;
 
-// Tags only: user text is escaped, so a literal "<" never comes from user data.
-const TAG_SOURCE = /<(\/?)([A-Za-z][A-Za-z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/.source;
-const TAG = new RegExp(TAG_SOURCE, "g");
-const TAG_AT = new RegExp(TAG_SOURCE, "y");
+// A tag as a browser reads it: quoted values may hold ">" and "<", everything else may not hold
+// "<" (so one failed start cannot rescan a long stretch). Every "<" in the document must start
+// one: user text is escaped, so a literal "<" never comes from user data.
+const TAG = /<(\/?)([A-Za-z][A-Za-z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'<])*)>/y;
 const DOCTYPE = /^<!doctype html>/i;
-const ATTRIBUTE = /([^\s=/"'>]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
+// An unquoted value runs to whitespace or ">" (not to "=" or a quote), as in HTML.
+const ATTRIBUTE = /([^\s=/"'>]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s>]+))?/g;
+const STYLE_CLOSE = /<\/style[\s/>]/gi;
 
 const failure = (reason: string): SelfContainedResult => ({ ok: false, reason });
 
@@ -41,22 +53,48 @@ function unquote(value: string): string {
 const DENIED_CSS_FUNCTION =
   /(?:^|[^A-Za-z0-9_])(?:-[a-z]+-)?(image-set|src|image|cross-fade|element|paint|attr)\s*\(/i;
 
-function checkCss(source: string): SelfContainedResult {
-  // Comments are removed first (an unterminated one to the end), so "image-set /**/ (" and
-  // "image/**/-set(" are judged as the function they could become.
-  const css = source.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, "");
+const URL_START = /url[ \t\n\r\f]*\(/gi;
+const CSS_SPACE = " \t\n\r\f";
+const URL_REFUSED = "CSS url() must be an embedded WOFF2 font or PNG/JPEG image";
+
+/** Every url( must hold exactly one embedded image or font and be closed; linear in the text. */
+function checkUrls(css: string): SelfContainedResult {
+  URL_START.lastIndex = 0;
+  for (let match = URL_START.exec(css); match; match = URL_START.exec(css)) {
+    let i = match.index + match[0].length;
+    while (i < css.length && CSS_SPACE.includes(css[i])) i += 1;
+    let argument: string;
+    let close: number;
+    const quote = css[i];
+    if (quote === '"' || quote === "'") {
+      const end = css.indexOf(quote, i + 1);
+      if (end === -1) return failure(URL_REFUSED);
+      argument = css.slice(i + 1, end);
+      close = end + 1;
+      while (close < css.length && CSS_SPACE.includes(css[close])) close += 1;
+      if (css[close] !== ")") return failure(URL_REFUSED);
+    } else {
+      close = css.indexOf(")", i);
+      if (close === -1) return failure(URL_REFUSED);
+      let end = close;
+      while (end > i && CSS_SPACE.includes(css[end - 1])) end -= 1;
+      argument = css.slice(i, end);
+    }
+    if (!DATA_FONT.test(argument) && !DATA_IMAGE.test(argument)) return failure(URL_REFUSED);
+    URL_START.lastIndex = close + 1;
+  }
+  return { ok: true };
+}
+
+function checkCss(css: string): SelfContainedResult {
+  if (css.includes("/*")) return failure("CSS comments are not allowed");
   if (/@import/i.test(css)) return failure("CSS @import is not allowed");
   if (css.includes("\\")) return failure("CSS escapes are not allowed");
   const denied = DENIED_CSS_FUNCTION.exec(css);
   if (denied) return failure(`CSS function ${denied[1].toLowerCase()}() is not allowed`);
   if (/expression\s*\(/i.test(css)) return failure("CSS expressions are not allowed");
   if (/\blocal\s*\(/i.test(css)) return failure("local() fonts are not allowed");
-  for (const match of css.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)) {
-    if (!DATA_FONT.test(match[2]) && !DATA_IMAGE.test(match[2])) {
-      return failure("CSS url() must be an embedded WOFF2 font or PNG/JPEG image");
-    }
-  }
-  return { ok: true };
+  return checkUrls(css);
 }
 
 /**
@@ -66,13 +104,18 @@ function checkCss(source: string): SelfContainedResult {
  */
 export function checkSelfContained(document: string): SelfContainedResult {
   if (document.length > MAX_DOCUMENT_CHARS) return failure("document is too large");
-  // Every "<" must start a well-formed tag (or the doctype). User text is escaped, so a stray
-  // "<" (comment, unterminated tag, a ">" hidden in a quoted value) means the markup is not ours.
+  let starts = 0;
+  let styleEnd = -1; // CSS up to here was already checked
+  // Every "<" is a tag start, including one inside a quoted value (a browser may read it differently).
   for (let at = document.indexOf("<"); at !== -1; at = document.indexOf("<", at + 1)) {
-    TAG_AT.lastIndex = at;
-    if (!TAG_AT.test(document) && !DOCTYPE.test(document.slice(at, at + 16))) return failure("malformed markup");
-  }
-  for (const tag of document.matchAll(TAG)) {
+    starts += 1;
+    if (starts > MAX_TAG_STARTS) return failure("document has too many tags");
+    TAG.lastIndex = at;
+    const tag = TAG.exec(document);
+    if (!tag) {
+      if (DOCTYPE.test(document.slice(at, at + 16))) continue;
+      return failure("malformed markup");
+    }
     const name = tag[2].toLowerCase();
     if (!ALLOWED_TAGS.has(name)) return failure(`tag <${name}> is not allowed`);
     if (tag[1] === "/") continue;
@@ -95,10 +138,15 @@ export function checkSelfContained(document: string): SelfContainedResult {
         return failure("only a Content-Security-Policy meta tag is allowed");
       }
     }
-  }
-  for (const block of document.matchAll(/<style(?:\s[^>]*)?>([\s\S]*?)<\/style\s*>/gi)) {
-    const css = checkCss(block[1]);
-    if (!css.ok) return css;
+    if (name === "style" && at >= styleEnd) {
+      // A style element runs to its closing tag; without one a browser reads to the end of the document.
+      STYLE_CLOSE.lastIndex = at + tag[0].length;
+      const close = STYLE_CLOSE.exec(document);
+      if (!close) return failure("style element is not closed");
+      const css = checkCss(document.slice(at + tag[0].length, close.index));
+      if (!css.ok) return css;
+      styleEnd = close.index;
+    }
   }
   return { ok: true };
 }

@@ -152,6 +152,29 @@ describe("inspectImage", () => {
       refused(jpeg.subarray(0, jpeg.length - 4), /incomplete/);
     });
 
+    it("refuses entropy-only markers (FF00, SOI, RSTn) between segments, even when a length follows", () => {
+      const valid = makeJpegHeader(100, 100);
+      for (const marker of [0x00, 0xd8, 0xd0, 0xd7]) {
+        // A plausible two-byte length after the marker would let a lenient parser skip it as a segment.
+        const jpeg = Buffer.concat([valid.subarray(0, 20), Buffer.from([0xff, marker, 0x00, 0x02]), valid.subarray(20)]);
+        refused(jpeg, /damaged/);
+      }
+    });
+
+    it("refuses a scan that starts before the frame header, even when a second scan follows it", () => {
+      const valid = makeJpegHeader(100, 100);
+      const sof = valid.subarray(20, 39);
+      expect(sof[1]).toBe(0xc0);
+      const scanFirst = Buffer.concat([Buffer.from([0xff, 0xd8]), JPEG_SOS, Buffer.from([0x12]), sof, JPEG_SOS, Buffer.from([0x34]), EOI]);
+      refused(scanFirst, /damaged/);
+    });
+
+    it("tells the user how to fix extra data without internals", () => {
+      const message = "The image has extra data after its end. Save the image as a plain JPEG or PNG and try again.";
+      expect(inspectImage(bytes(Buffer.concat([makeJpegHeader(100, 100), EOI])))).toEqual({ ok: false, message });
+      expect(inspectImage(bytes(Buffer.concat([makePng(64, 32), Buffer.from("x")])))).toEqual({ ok: false, message });
+    });
+
     it("refuses a second frame header, a missing scan, and a bogus marker inside scan data", () => {
       const sof0 = makeJpegHeader(100, 100).subarray(20, 39);
       expect(sof0[1]).toBe(0xc0);

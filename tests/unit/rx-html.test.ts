@@ -55,6 +55,20 @@ describe("html tagged template", () => {
       expect(build).toThrow(/html template/);
     });
 
+    it.each([
+      ["a quote with no attribute name before it", () => html`<div "${"x"}">x</div>`],
+      ["a quote inside an unquoted value", () => html`<p title=a'${"x"}'>x</p>`],
+      ["a quote after a bare attribute name", () => html`<p hidden "${"x"}">x</p>`],
+      ["a quote without any interpolation", () => html`<div "a">x</div>`],
+      ["a quote right after a closed value", () => html`<div a="1" "${"x"}">x</div>`],
+    ])("refuses %s", (_label, build) => {
+      expect(build).toThrow(/html template/);
+    });
+
+    it("allows a space between = and the opening quote", () => {
+      expect(html`<p class = "${"a"}" id = '${"b"}'>x</p>`.value).toBe(`<p class = "a" id = 'b'>x</p>`);
+    });
+
     it("refuses a template that ends inside a tag", () => {
       expect(() => html`<div class="a"`).toThrow(/ends inside a tag/);
       expect(() => html`<div title="open`).toThrow(/ends inside a tag/);

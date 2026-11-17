@@ -33,22 +33,37 @@ function serialize(value: HtmlValue, inAttribute: boolean, index: number): strin
 }
 
 type Mode = "text" | "tag" | "quote";
+type State = { mode: Mode; quote: string; last: string };
 
-/** Follows the static parts of the template through text, an open tag, and a quoted attribute value. */
-function advance(mode: Mode, quote: string, chunk: string): { mode: Mode; quote: string } {
+/**
+ * Follows the static parts of the template through text, an open tag, and a quoted attribute
+ * value. `last` is the last non-space character seen inside the open tag: a quote is only an
+ * attribute value delimiter right after "=", anywhere else it throws (a browser would read it
+ * differently from this scanner).
+ */
+function advance(state: State, chunk: string): State {
+  let { mode, quote, last } = state;
   for (let i = 0; i < chunk.length; i += 1) {
     const c = chunk[i];
     if (mode === "text") {
       // "<" opens a tag unless it is plain text ("1 < 2"); a "<" ending the chunk is a tag-name position.
-      if (c === "<" && (i + 1 === chunk.length || /[A-Za-z/!?]/.test(chunk[i + 1]))) mode = "tag";
+      if (c === "<" && (i + 1 === chunk.length || /[A-Za-z/!?]/.test(chunk[i + 1]))) {
+        mode = "tag";
+        last = "<";
+      }
     } else if (mode === "tag") {
       if (c === '"' || c === "'") {
+        if (last !== "=") throw new Error("html template: a quote character outside an attribute value inside a tag");
         mode = "quote";
         quote = c;
       } else if (c === ">") mode = "text";
-    } else if (c === quote) mode = "tag";
+      else if (!/\s/.test(c)) last = c;
+    } else if (c === quote) {
+      mode = "tag";
+      last = c;
+    }
   }
-  return { mode, quote };
+  return { mode, quote, last };
 }
 
 /**
@@ -62,19 +77,28 @@ function advance(mode: Mode, quote: string, chunk: string): { mode: Mode; quote:
  * SafeHtml must be a complete element or text, because the template tracks tags only through
  * its own static parts.
  *
+ * Warnings for template authors (Task 4):
+ * - Never put raw() or a SafeHtml inside an attribute value. Attribute values take PLAIN
+ *   strings: `content="${DOCUMENT_CSP}"` and `src="${dataUrl}"` are fine (a `'` becomes `&#39;`,
+ *   base64 has nothing to escape).
+ * - Never interpolate user values into `<style>` or a `style="..."` attribute. This function
+ *   escapes for HTML, not for CSS, so `red;background:url(...)` would pass through intact.
+ *   Build CSS from fixed text or checked numbers only.
+ * - A quote character inside a tag, other than right after `=`, throws.
+ *
  * For Task 4: user text spans (`<span class="v">`) need `.v { unicode-bidi: isolate; }` in
  * the document CSS so right-to-left text cannot reorder what surrounds it.
  */
 export function html(strings: TemplateStringsArray, ...values: HtmlValue[]): SafeHtml {
   let out = strings[0];
-  let state = advance("text", "", strings[0]);
+  let state = advance({ mode: "text", quote: "", last: "" }, strings[0]);
   for (let i = 0; i < values.length; i += 1) {
     if (state.mode === "tag") {
       const tagName = /<\/?$/.test(strings[i]);
       throw misuse(i, tagName ? "in a tag name" : "in an attribute name or unquoted attribute value");
     }
     out += serialize(values[i], state.mode === "quote", i) + strings[i + 1];
-    state = advance(state.mode, state.quote, strings[i + 1]);
+    state = advance(state, strings[i + 1]);
   }
   if (state.mode !== "text") throw new Error("html template: the template ends inside a tag");
   return new SafeHtml(out);

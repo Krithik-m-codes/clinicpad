@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { MAX_DOCUMENT_CHARS, checkSelfContained } from "@/lib/rx-render/self-contained";
+import { MAX_DOCUMENT_CHARS, MAX_TAG_STARTS, checkSelfContained } from "@/lib/rx-render/self-contained";
 
 const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const FONT = "data:font/woff2;base64,d09GMgABAAAAAAA=";
+
+// Built with fromCharCode so the test source holds no invisible characters.
+const LS = String.fromCharCode(0x2028);
+const PS = String.fromCharCode(0x2029);
+const NBSP = String.fromCharCode(0xa0);
+const EVIL = "http://evil.example/x";
 
 const page = (head: string, body: string) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'"><title>x</title>${head}</head><body>${body}</body></html>`;
@@ -104,6 +110,31 @@ describe("checkSelfContained", () => {
     ["a CSS function in a style attribute with capitals", page("", '<div style="background:Cross-Fade(red, blue)">x</div>')],
     ["an HTML entity hiding CSS in a style attribute", page("", '<div style="background:&#117;rl(http://evil.example/x)">x</div>')],
     ["an unterminated CSS comment hiding a function", page("<style>.a{background:image-set(/*</style>", "")],
+    // Comment tricks: a "/*" inside a url token or string is not a comment to the browser.
+    ["a comment opener inside a url token (style attribute)", page("", `<div style="a:url(${PIXEL}/*);background:url(${EVIL});b:url(*/)">x</div>`)],
+    ["a comment opener inside a url token (style block)", page(`<style>.a{a:url(${PIXEL}/*);background:url(${EVIL});b:url(*/)}</style>`, "")],
+    ["a comment opener inside a string", page(`<style>.a::before{content:"/*"}.b{background:url(${EVIL})}.c::before{content:"*/"}</style>`, "")],
+    ["a harmless-looking comment", page("<style>/* note */.a{color:red}</style>", "")],
+    ["a comment in a style attribute", page("", '<div style="color:red/**/">x</div>')],
+    // url() scanner gaps
+    ["U+2028 inside a quoted url", page(`<style>.a{background:url("${EVIL}${LS}b")}</style>`, "")],
+    ["U+2028 inside an unquoted url", page("", `<div style="background:url(${EVIL}${LS}b)">x</div>`)],
+    ["U+2029 inside an unquoted url", page(`<style>.a{background:url(${EVIL}${PS}b)}</style>`, "")],
+    ["an unterminated url at the end of a style attribute", page("", `<div style="color:red;background:url(${EVIL}">x</div>`)],
+    ["an unterminated url at the end of a style block", page(`<style>.a{background:url(${EVIL}</style>`, "")],
+    ["an unterminated quoted url", page("", `<div style="background:url('${EVIL}'">x</div>`)],
+    ["a no-break space before a data url", page(`<style>.a{background:url(${NBSP}${PIXEL})}</style>`, "")],
+    ["a fragment reference (the renderer uses none)", page("<style>.a{filter:url(#x)}</style>", "")],
+    ["a url with an empty argument", page("<style>.a{background:url()}</style>", "")],
+    ["a url with a data URI followed by more text", page(`<style>.a{background:url(${PIXEL} ${EVIL})}</style>`, "")],
+    ["a url hidden after a valid one", page(`<style>.a{background:url(${PIXEL}),url(${EVIL})}</style>`, "")],
+    ["a url with whitespace before the parenthesis and an external target", page(`<style>.a{background:url\n(${EVIL})}</style>`, "")],
+    // HTML parsing differentials
+    ["a style tag closed with a slash", page(`<style/>.a{background:url(${EVIL})}</style>`, "")],
+    ["an unquoted style value containing =", page("", `<div style=a=b;background:url(${EVIL})>x</div>`)],
+    ["an unquoted onclick value containing quotes", page("", "<div title=a'b onclick=x()>x</div>")],
+    ["a script hidden inside what looks like a quoted value", page("", "<div title=a'><script>alert(1)</script>'>x</div>")],
+    ["an unterminated style element", page(`<style>.a{color:red}`, "")],
     ["an unterminated tag", page("", '<div title="x')],
     ["a stray less-than sign", page("", "<p>1 < 2</p>")],
     ["a processing instruction", page("", "<?xml version='1.0'?>")],
@@ -112,8 +143,39 @@ describe("checkSelfContained", () => {
     expect(checkSelfContained(doc).ok).toBe(false);
   });
 
+  it("names the comment rule", () => {
+    expect(checkSelfContained(page("<style>/* x */</style>", ""))).toEqual({ ok: false, reason: "CSS comments are not allowed" });
+  });
+
+  it("scans in linear time on adversarial input", () => {
+    const wrap = (head: string, body = "") => page(head, body);
+    const inputs: [string, string][] = [
+      ["url( x 40000", wrap(`<style>${"a{b:url(".repeat(40_000)}</style>`)],
+      ["<p x 40000 then >", wrap("", "<p".repeat(40_000) + ">")],
+      ["<style> x 40000", wrap("<style>".repeat(40_000))],
+      ["<style> x 40000 then close", wrap("<style>".repeat(40_000) + "</style>")],
+      ['<p a=" x 40000', wrap("", '<p a="'.repeat(40_000))],
+      ["<p a='>' x 40000", wrap("", "<p a='>'>".repeat(40_000))],
+      ["url(data) x 40000", wrap(`<style>${`a{b:url(${PIXEL})}`.repeat(4_000)}</style>`)],
+      ["image-set + 1M spaces", wrap(`<style>.a{b:image-set${" ".repeat(1_000_000)}}</style>`)],
+      ["url + 1M spaces", wrap(`<style>.a{b:url${" ".repeat(1_000_000)}}</style>`)],
+    ];
+    for (const [label, doc] of inputs) {
+      const started = performance.now();
+      checkSelfContained(doc);
+      const elapsed = performance.now() - started;
+      expect(elapsed, `${label} took ${elapsed.toFixed(0)} ms`).toBeLessThan(500);
+    }
+  });
+
+  it("refuses a document with more than 200,000 tags before scanning them", () => {
+    expect(MAX_TAG_STARTS).toBe(200_000);
+    const many = page("", "<br>".repeat(MAX_TAG_STARTS));
+    expect(checkSelfContained(many)).toEqual({ ok: false, reason: "document has too many tags" });
+  });
+
   it("handles a very large clean document without hanging", () => {
-    const body = "<p>x</p>".repeat(100_000);
+    const body = "<p>x</p>".repeat(50_000);
     expect(checkSelfContained(page("", body))).toEqual({ ok: true });
   });
 

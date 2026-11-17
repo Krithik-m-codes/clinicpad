@@ -45,7 +45,7 @@ function inspectPng(b: Uint8Array): ImageCheck {
     const next = offset + 12 + length;
     if (next > b.length) return fail(DAMAGED);
     if (type === "IEND") {
-      if (next !== b.length) return fail("The image has extra data after its end. Export it again as a plain PNG or JPEG.");
+      if (next !== b.length) return fail("The image has extra data after its end. Save the image as a plain JPEG or PNG and try again.");
       return withSize("image/png", width, height);
     }
     offset = next;
@@ -72,7 +72,7 @@ function inspectJpeg(b: Uint8Array): ImageCheck {
     }
     if (marker === 0xd9) {
       if (!frame || scans === 0) return fail(DAMAGED);
-      if (offset + 2 !== b.length) return fail("The image has extra data after its end. Export it again as a plain PNG or JPEG.");
+      if (offset + 2 !== b.length) return fail("The image has extra data after its end. Save the image as a plain JPEG or PNG and try again.");
       return withSize("image/jpeg", frame.width, frame.height);
     }
     if (marker === 0x00 || marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) return fail(DAMAGED);
