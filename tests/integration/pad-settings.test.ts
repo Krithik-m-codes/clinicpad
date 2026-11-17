@@ -5,10 +5,10 @@ import { and, eq } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
 import { withTenant } from "@/server/db/tenant";
 import { pgErrorInfo } from "@/server/db/errors";
-import { auditEvents, clinicAssets, clinics, doctors } from "@/server/db/schema";
+import { auditEvents, clinicAssets, clinics, doctors, users } from "@/server/db/schema";
 import {
-  attachClinicLogo,
-  attachDoctorSignature,
+  internalAttachClinicLogo,
+  internalAttachDoctorSignature,
   getClinicPad,
   getDoctorProfile,
   getPadReadiness,
@@ -18,6 +18,7 @@ import {
   updateDoctorProfile,
 } from "@/server/services/pad-settings";
 import { primaryClinic } from "@/server/services/render-snapshot";
+import { ASSET_CAPS } from "@/server/services/assets";
 import { loadRxDocument } from "@/server/services/rx-documents";
 import { createPatient } from "@/server/services/patients";
 import { startPrescription } from "@/server/services/prescriptions";
@@ -93,7 +94,7 @@ describe("clinic pad", () => {
   });
 
   it("stores markup verbatim, strips invisible characters, and refuses a NUL instead of dropping it", async () => {
-    const name = "<script>alert(1)</script>‮";
+    const name = "<script>alert(1)</script>\u202E";
     expect(name.codePointAt(name.length - 1)).toBe(0x202e);
     expect((await updateClinicPad(A.as("owner"), pad({ name }))).ok).toBe(true);
     expect(await getClinicPad(A.as("owner"))).toMatchObject({ ok: true, value: { name: "<script>alert(1)</script>" } });
@@ -114,7 +115,7 @@ describe("clinic pad", () => {
     [{ name: "X" }, "name"],
     [{ name: "" }, "name"],
     [{ name: "   \n " }, "name"],
-    [{ name: "​​" }, "name"],
+    [{ name: "\u200B\u200B" }, "name"],
     [{ name: undefined }, "name"],
     [{ name: "n".repeat(121) }, "name"],
     [{ email: "not-an-email" }, "email"],
@@ -209,6 +210,13 @@ describe("clinic logo", () => {
     expect(await assetCount(A.tenantId)).toBe(before);
   });
 
+  it("writes no audit event when the logo is already removed", async () => {
+    await setClinicLogo(A.as("owner"), null);
+    const events = (await auditFor(A.tenantId, "clinic.logo_removed")).length;
+    expect(await setClinicLogo(A.as("owner"), null)).toEqual({ ok: true, value: { assetId: null } });
+    expect(await auditFor(A.tenantId, "clinic.logo_removed")).toHaveLength(events);
+  });
+
   it("keeps assets immutable for the application role", async () => {
     const error = await withTenant(A.tenantId, (tx) => tx.delete(clinicAssets)).then(
       () => null,
@@ -268,6 +276,42 @@ describe("doctor profile", () => {
     expect(await setDoctorSignature(ownerWithoutProfile, null)).toMatchObject({ ok: false, code: "not_found" });
   });
 
+  it("reports API field names in the audit event", async () => {
+    await updateDoctorProfile(A.as("doctor"), profile({ registrationNo: "MMC/2011/04-9999" }));
+    const events = await auditFor(A.tenantId, "doctor.profile_updated");
+    const last = events[events.length - 1];
+    expect(last.after).toEqual({ changedFields: ["registrationNo"] });
+    await updateDoctorProfile(A.as("doctor"), profile());
+  });
+
+  it("edits only the caller's own doctor row (two doctors in one clinic)", async () => {
+    const [second] = await adminDb
+      .insert(users)
+      .values({ email: `second-doc-${newId()}@example.com`, name: "Second", passwordHash: "not-a-real-hash" })
+      .returning();
+    try {
+      await adminDb.insert(doctors).values({ tenantId: A.tenantId, userId: second.id });
+      const secondCtx = { tenantId: A.tenantId, userId: second.id, role: "doctor" };
+      expect((await updateDoctorProfile(secondCtx, profile({ displayName: "Dr. Second Doctor", registrationNo: "SEC-2" }))).ok).toBe(true);
+      expect((await updateDoctorProfile(A.as("doctor"), profile({ displayName: "Dr. First Doctor", registrationNo: "FIR-1" }))).ok).toBe(true);
+      const byUser = new Map((await adminDb.select().from(doctors).where(eq(doctors.tenantId, A.tenantId))).map((row) => [row.userId, row]));
+      expect(byUser.get(second.id)).toMatchObject({ displayName: "Dr. Second Doctor", regNo: "SEC-2" });
+      expect(byUser.get(A.as("doctor").userId)).toMatchObject({ displayName: "Dr. First Doctor", regNo: "FIR-1" });
+      expect(await getDoctorProfile(secondCtx)).toMatchObject({ ok: true, value: { displayName: "Dr. Second Doctor" } });
+    } finally {
+      await adminDb.delete(doctors).where(eq(doctors.userId, second.id));
+      await adminDb.delete(users).where(eq(users.id, second.id));
+      await updateDoctorProfile(A.as("doctor"), profile());
+    }
+  });
+
+  it("writes no audit event when a removal changes nothing", async () => {
+    await setDoctorSignature(A.as("doctor"), null);
+    const events = (await auditFor(A.tenantId, "doctor.signature_removed")).length;
+    expect(await setDoctorSignature(A.as("doctor"), null)).toEqual({ ok: true, value: { assetId: null } });
+    expect(await auditFor(A.tenantId, "doctor.signature_removed")).toHaveLength(events);
+  });
+
   it("stores and removes a signature", async () => {
     const stored = await setDoctorSignature(A.as("doctor"), { bytes: new Uint8Array(makePng(200, 60)) });
     expect(stored.ok).toBe(true);
@@ -299,12 +343,12 @@ describe("asset kind is enforced on the write path", () => {
     const [doctor] = await adminDb.select().from(doctors).where(eq(doctors.userId, A.as("doctor").userId));
     if (!clinic) throw new Error("no clinic");
 
-    expect(await withTenant(A.tenantId, (tx) => attachClinicLogo(tx, A.tenantId, clinic.id, signature))).toMatchObject({
+    expect(await withTenant(A.tenantId, (tx) => internalAttachClinicLogo(tx, A.tenantId, clinic.id, signature))).toMatchObject({
       ok: false,
       code: "invalid",
       field: "image",
     });
-    expect(await withTenant(A.tenantId, (tx) => attachDoctorSignature(tx, A.tenantId, doctor.id, logo))).toMatchObject({
+    expect(await withTenant(A.tenantId, (tx) => internalAttachDoctorSignature(tx, A.tenantId, doctor.id, logo))).toMatchObject({
       ok: false,
       code: "invalid",
       field: "image",
@@ -315,8 +359,8 @@ describe("asset kind is enforced on the write path", () => {
     expect(doctorRow.signatureAssetId).toBe(signature);
 
     // The right kinds attach.
-    expect(await withTenant(A.tenantId, (tx) => attachClinicLogo(tx, A.tenantId, clinic.id, logo))).toEqual({ ok: true, value: null });
-    expect(await withTenant(A.tenantId, (tx) => attachDoctorSignature(tx, A.tenantId, doctor.id, signature))).toEqual({ ok: true, value: null });
+    expect(await withTenant(A.tenantId, (tx) => internalAttachClinicLogo(tx, A.tenantId, clinic.id, logo))).toEqual({ ok: true, value: null });
+    expect(await withTenant(A.tenantId, (tx) => internalAttachDoctorSignature(tx, A.tenantId, doctor.id, signature))).toEqual({ ok: true, value: null });
   });
 
   it("refuses an unknown id and another clinic's asset", async () => {
@@ -325,8 +369,8 @@ describe("asset kind is enforced on the write path", () => {
     const foreign = await setClinicLogo(B.as("owner"), { bytes: new Uint8Array(makePng(66, 66, [9, 9, 9])) });
     if (!foreign.ok || !foreign.value.assetId) throw new Error("store failed");
     const foreignId = foreign.value.assetId;
-    expect(await withTenant(A.tenantId, (tx) => attachClinicLogo(tx, A.tenantId, clinic.id, foreignId))).toMatchObject({ ok: false, code: "invalid" });
-    expect(await withTenant(A.tenantId, (tx) => attachClinicLogo(tx, A.tenantId, clinic.id, newId()))).toMatchObject({ ok: false, code: "invalid" });
+    expect(await withTenant(A.tenantId, (tx) => internalAttachClinicLogo(tx, A.tenantId, clinic.id, foreignId))).toMatchObject({ ok: false, code: "invalid" });
+    expect(await withTenant(A.tenantId, (tx) => internalAttachClinicLogo(tx, A.tenantId, clinic.id, newId()))).toMatchObject({ ok: false, code: "invalid" });
   });
 });
 
@@ -353,6 +397,37 @@ describe("a settings change does not touch finalized prescriptions", () => {
       expect(frozen).toMatchObject({ ok: true, value: { document: { snapshotSource: "finalize", snapshot: { clinic: { name: "Old Clinic Name" } } } } });
       const live = await loadRxDocument(C.as("doctor"), draft.value.prescriptionId);
       expect(live).toMatchObject({ ok: true, value: { document: { snapshotSource: "live", snapshot: { clinic: { name: "New Clinic Name" } } } } });
+    } finally {
+      await C.cleanup();
+    }
+  });
+});
+
+describe("per-clinic asset caps", () => {
+  it("refuses a new image over the cap but still accepts a repeat of a stored one", async () => {
+    const C = await createTestTenant("padcap");
+    try {
+      const logoCap = ASSET_CAPS.logo;
+      expect(logoCap).toBe(20);
+      expect(ASSET_CAPS.signature).toBe(50);
+      let first: Uint8Array | null = null;
+      for (let i = 0; i < logoCap; i += 1) {
+        const bytes = new Uint8Array(makePng(40 + i, 20, [i, 1, 2]));
+        first ??= bytes;
+        const stored = await setClinicLogo(C.as("owner"), { bytes });
+        if (!stored.ok) throw new Error(stored.message);
+      }
+      expect(await adminDb.select().from(clinicAssets).where(and(eq(clinicAssets.tenantId, C.tenantId), eq(clinicAssets.kind, "logo")))).toHaveLength(logoCap);
+
+      const over = await setClinicLogo(C.as("owner"), { bytes: new Uint8Array(makePng(99, 20, [200, 1, 2])) });
+      expect(over).toMatchObject({ ok: false, code: "invalid", field: "image" });
+      expect(over.ok ? "" : over.message).toContain("20");
+      expect(await adminDb.select().from(clinicAssets).where(and(eq(clinicAssets.tenantId, C.tenantId), eq(clinicAssets.kind, "logo")))).toHaveLength(logoCap);
+
+      // Deduped re-upload at the cap does not count and succeeds.
+      expect((await setClinicLogo(C.as("owner"), { bytes: first as Uint8Array })).ok).toBe(true);
+      // The cap is per kind: a signature still stores.
+      expect((await setDoctorSignature(C.as("doctor"), { bytes: new Uint8Array(makePng(50, 20, [7, 7, 7])) })).ok).toBe(true);
     } finally {
       await C.cleanup();
     }

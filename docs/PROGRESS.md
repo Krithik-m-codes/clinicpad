@@ -232,6 +232,7 @@ A box is ticked only for evidence seen on 2026-11-17 at commit `4c3aa62` (code) 
 - The patient archive UI and unarchive remain open (ruled out of Plan 1B; Plan 1D).
 - Smaller deferred items: `cleanText` applies NFC before the invisible-character strip; `expectedRevision` is not validated like `baseRevision`; no column-classification guard test for amend/repeat copying (a new visit column could be copied or dropped silently); `getSessionContext` and `requireSession` duplicate logic; an unreviewed seed gap (a wrong-schema CSV header skips every row and exits 0).
 - Not built, with their owners: nurse vitals entry (Phase 3, ADR-0030), Hindi labels for the new option codes (Plan 1D), the offline outbox (Phase 4), advice templates and medicine bundles, clinic-learned complaint and diagnosis suggestions, and an undo for discarded drafts (unscheduled; ADR-0031).
+- Uploaded logos and signatures keep their EXIF/GPS metadata in the stored bytes (the image is validated, not re-encoded). Strip it before any image leaves the system, for example WhatsApp sharing (Plan 1D). Assets are capped at 20 logos and 50 signatures per clinic (Plan 1C Task 6 fix round); the cap is checked inside the upload transaction without a lock, so two simultaneous uploads can overshoot by one.
 
 ---
 

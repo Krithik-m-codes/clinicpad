@@ -8,7 +8,7 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
 import { requireSession } from "@/server/auth/session";
 import { adminDb } from "@/server/db/admin";
-import { clinicAssets, clinics } from "@/server/db/schema";
+import { auditEvents, clinicAssets, clinics } from "@/server/db/schema";
 import {
   removeLogoAction,
   removeSignatureAction,
@@ -76,17 +76,17 @@ describe("settings actions", () => {
   it("uploads and removes a logo", async () => {
     const file = new File([new Uint8Array(makePng(80, 40))], "logo.png", { type: "image/png" });
     expect(await uploadLogoAction({}, form({ image: file }))).toEqual({ saved: true });
-    expect(await removeLogoAction({})).toEqual({ saved: true });
+    expect(await removeLogoAction()).toEqual({ saved: true });
   });
 
   it("uploads and removes a signature as a doctor, and refuses it for reception", async () => {
     const file = new File([new Uint8Array(makePng(80, 40, [5, 6, 7]))], "sig.png", { type: "image/png" });
     session.mockResolvedValue(A.as("doctor"));
     expect(await uploadSignatureAction({}, form({ image: file }))).toEqual({ saved: true });
-    expect(await removeSignatureAction({})).toEqual({ saved: true });
+    expect(await removeSignatureAction()).toEqual({ saved: true });
     session.mockResolvedValue(A.as("reception"));
     expect(await uploadSignatureAction({}, form({ image: file }))).toMatchObject({ error: expect.any(String) });
-    expect(await removeSignatureAction({})).toMatchObject({ error: expect.any(String) });
+    expect(await removeSignatureAction()).toMatchObject({ error: expect.any(String) });
   });
 
   it("does not store the client's file name or declared type", async () => {
@@ -94,6 +94,20 @@ describe("settings actions", () => {
     expect(await uploadLogoAction({}, form({ image: file }))).toEqual({ saved: true });
     const rows = await adminDb.select().from(clinicAssets).where(eq(clinicAssets.tenantId, A.tenantId));
     expect(JSON.stringify(rows.map((r) => ({ kind: r.kind, mime: r.mime, sha256: r.sha256, byteSize: r.byteSize })))).not.toContain("Private");
+  });
+
+  it("decides the type from the bytes: PNG bytes named x.svg and declared text/html store as image/png, with no file name kept", async () => {
+    const file = new File([new Uint8Array(makePng(83, 43, [3, 3, 3]))], "x.svg", { type: "text/html" });
+    expect(await uploadLogoAction({}, form({ image: file }))).toEqual({ saved: true });
+    const rows = await adminDb.select().from(clinicAssets).where(eq(clinicAssets.tenantId, A.tenantId));
+    const row = rows.find((r) => r.width === 83);
+    expect(row?.mime).toBe("image/png");
+    const stripped = rows.map((r) => ({ id: r.id, kind: r.kind, mime: r.mime, width: r.width, height: r.height, byteSize: r.byteSize, sha256: r.sha256 }));
+    const audits = await adminDb.select().from(auditEvents).where(eq(auditEvents.tenantId, A.tenantId));
+    for (const text of [JSON.stringify(stripped), JSON.stringify(audits)]) {
+      expect(text).not.toContain("x.svg");
+      expect(text).not.toContain("text/html");
+    }
   });
 
   it("rejects an oversized file before reading it into the database", async () => {

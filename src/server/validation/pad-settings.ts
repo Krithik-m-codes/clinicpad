@@ -10,6 +10,7 @@ export const PAD_LIMITS = {
   clinicName: 120,
   addressLine: 200,
   city: 80,
+  pincode: 12,
   state: 80,
   phone: 80,
   email: 120,
@@ -56,7 +57,7 @@ export const clinicPadSchema = z.object({
   city: cleanOptionalText(PAD_LIMITS.city),
   state: cleanOptionalText(PAD_LIMITS.state),
   // The format rules below also refuse a NUL (it is not in their character classes).
-  pincode: z.preprocess(cleanBlank, z.string().trim().regex(/^[0-9A-Za-z -]{3,12}$/, "Enter a valid PIN code").optional()),
+  pincode: z.preprocess(cleanBlank, z.string().trim().regex(new RegExp(`^[0-9A-Za-z -]{3,${PAD_LIMITS.pincode}}$`), "Enter a valid PIN code").optional()),
   phone: cleanOptionalText(PAD_LIMITS.phone),
   email: z.preprocess(
     cleanBlank,

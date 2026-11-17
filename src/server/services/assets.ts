@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 import { clinicAssets } from "@/server/db/schema";
 import type { TenantTx } from "@/server/db/tenant";
 import type { ImageAsset } from "@/lib/rx-render/types";
@@ -9,6 +9,9 @@ import type { ServiceContext } from "./context";
 
 export type AssetPreview = { id: string; dataUrl: string; width: number; height: number };
 export type AssetKind = "logo" | "signature";
+
+/** Most distinct images a clinic may keep per kind (assets are never deleted, so this bounds storage). */
+export const ASSET_CAPS: Record<AssetKind, number> = { logo: 20, signature: 50 };
 
 function asMime(value: string): ImageAsset["mime"] | null {
   return value === "image/png" || value === "image/jpeg" ? value : null;
@@ -75,6 +78,19 @@ export async function storeImageAsset(
   const [existing] = await tx.select({ id: clinicAssets.id }).from(clinicAssets).where(sameBytes).limit(1);
   if (existing) return stored(existing.id);
 
+  // Only a NEW image counts: a repeat of stored bytes returned above and still works at the cap.
+  const [used] = await tx
+    .select({ n: count() })
+    .from(clinicAssets)
+    .where(and(eq(clinicAssets.tenantId, ctx.tenantId), eq(clinicAssets.kind, kind)));
+  if ((used?.n ?? 0) >= ASSET_CAPS[kind]) {
+    return fail(
+      "invalid",
+      `This clinic has reached its limit of ${ASSET_CAPS[kind]} saved ${kind} images. Reuse one you uploaded before.`,
+      "image",
+    );
+  }
+
   const [row] = await tx
     .insert(clinicAssets)
     .values({
@@ -88,7 +104,7 @@ export async function storeImageAsset(
       bytes: Buffer.from(bytes),
       createdBy: ctx.userId,
     })
-    .onConflictDoNothing()
+    .onConflictDoNothing({ target: [clinicAssets.tenantId, clinicAssets.kind, clinicAssets.sha256] })
     .returning({ id: clinicAssets.id });
   if (row) return stored(row.id);
   // A concurrent upload of the same bytes won the race: use its row.

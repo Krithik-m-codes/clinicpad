@@ -53,16 +53,20 @@ const NO_CLINIC = () => fail("not_found", "Clinic not found.");
 const NO_DOCTOR = () => fail("not_found", "You do not have a doctor profile in this clinic.");
 const WRONG_KIND = (kind: AssetKind) => fail("invalid", `That file is not a ${kind} image.`, "image");
 
-function changedFields(current: Record<string, unknown>, next: Record<string, unknown>): string[] {
-  return Object.keys(next).filter((key) => JSON.stringify(next[key] ?? null) !== JSON.stringify(current[key] ?? null));
+/** Keys of `next` that differ from `current`, reported under their API names (`apiNames` maps database keys that differ). */
+function changedFields(current: Record<string, unknown>, next: Record<string, unknown>, apiNames: Record<string, string> = {}): string[] {
+  return Object.keys(next)
+    .filter((key) => JSON.stringify(next[key] ?? null) !== JSON.stringify(current[key] ?? null))
+    .map((key) => apiNames[key] ?? key);
 }
 
-async function ownDoctor(tx: TenantTx, tenantId: string, userId: string) {
-  const [row] = await tx
+async function ownDoctor(tx: TenantTx, tenantId: string, userId: string, lock = false) {
+  const query = tx
     .select()
     .from(doctors)
     .where(and(eq(doctors.tenantId, tenantId), eq(doctors.userId, userId)))
     .limit(1);
+  const [row] = await (lock ? query.for("update") : query);
   return row ?? null;
 }
 
@@ -116,7 +120,7 @@ export async function updateClinicPad(ctx: ServiceContext, raw: unknown): Promis
   };
 
   return withTenant(ctx.tenantId, async (tx): Promise<Result<{ changedFields: string[] }>> => {
-    const clinic = await primaryClinic(tx, ctx.tenantId);
+    const clinic = await primaryClinic(tx, ctx.tenantId, true);
     if (!clinic) return NO_CLINIC();
     const changed = changedFields(clinic, next);
     if (changed.length === 0) return ok({ changedFields: [] });
@@ -127,17 +131,18 @@ export async function updateClinicPad(ctx: ServiceContext, raw: unknown): Promis
 }
 
 /**
+ * INTERNAL: exported only so tests can pin the kind check; the public way to set a logo is setClinicLogo.
  * Points the clinic's logo at an existing asset after checking it is a `logo` of this tenant (the composite
  * foreign key checks the tenant and the id, not the kind). Call inside withTenant().
  */
-export async function attachClinicLogo(tx: TenantTx, tenantId: string, clinicId: string, assetId: string): Promise<Result<null>> {
+export async function internalAttachClinicLogo(tx: TenantTx, tenantId: string, clinicId: string, assetId: string): Promise<Result<null>> {
   if (!(await assetHasKind(tx, tenantId, assetId, "logo"))) return WRONG_KIND("logo");
   await tx.update(clinics).set({ logoAssetId: assetId }).where(and(eq(clinics.tenantId, tenantId), eq(clinics.id, clinicId)));
   return ok(null);
 }
 
-/** As attachClinicLogo, for a doctor's signature. */
-export async function attachDoctorSignature(tx: TenantTx, tenantId: string, doctorId: string, assetId: string): Promise<Result<null>> {
+/** As internalAttachClinicLogo, for a doctor's signature. */
+export async function internalAttachDoctorSignature(tx: TenantTx, tenantId: string, doctorId: string, assetId: string): Promise<Result<null>> {
   if (!(await assetHasKind(tx, tenantId, assetId, "signature"))) return WRONG_KIND("signature");
   await tx.update(doctors).set({ signatureAssetId: assetId }).where(and(eq(doctors.tenantId, tenantId), eq(doctors.id, doctorId)));
   return ok(null);
@@ -149,13 +154,14 @@ export async function setClinicLogo(ctx: ServiceContext, image: UploadedImage | 
     const clinic = await primaryClinic(tx, ctx.tenantId);
     if (!clinic) return NO_CLINIC();
     if (image === null) {
+      if (clinic.logoAssetId === null) return ok({ assetId: null });
       await tx.update(clinics).set({ logoAssetId: null }).where(and(eq(clinics.tenantId, ctx.tenantId), eq(clinics.id, clinic.id)));
       await recordAudit(tx, ctx, { action: "clinic.logo_removed", entityType: "clinic", entityId: clinic.id });
       return ok({ assetId: null });
     }
     const stored = await storeImageAsset(tx, ctx, "logo", image.bytes);
     if (!stored.ok) return stored;
-    const attached = await attachClinicLogo(tx, ctx.tenantId, clinic.id, stored.value.id);
+    const attached = await internalAttachClinicLogo(tx, ctx.tenantId, clinic.id, stored.value.id);
     if (!attached.ok) return attached;
     await recordAudit(tx, ctx, {
       action: "clinic.logo_set",
@@ -197,9 +203,9 @@ export async function updateDoctorProfile(ctx: ServiceContext, raw: unknown): Pr
   };
 
   return withTenant(ctx.tenantId, async (tx): Promise<Result<{ changedFields: string[] }>> => {
-    const doctor = await ownDoctor(tx, ctx.tenantId, ctx.userId);
+    const doctor = await ownDoctor(tx, ctx.tenantId, ctx.userId, true);
     if (!doctor) return NO_DOCTOR();
-    const changed = changedFields(doctor, next);
+    const changed = changedFields(doctor, next, { regNo: "registrationNo" });
     if (changed.length === 0) return ok({ changedFields: [] });
     await tx.update(doctors).set(next).where(and(eq(doctors.tenantId, ctx.tenantId), eq(doctors.id, doctor.id)));
     await recordAudit(tx, ctx, { action: "doctor.profile_updated", entityType: "doctor", entityId: doctor.id, after: { changedFields: changed } });
@@ -213,13 +219,14 @@ export async function setDoctorSignature(ctx: ServiceContext, image: UploadedIma
     const doctor = await ownDoctor(tx, ctx.tenantId, ctx.userId);
     if (!doctor) return NO_DOCTOR();
     if (image === null) {
+      if (doctor.signatureAssetId === null) return ok({ assetId: null });
       await tx.update(doctors).set({ signatureAssetId: null }).where(and(eq(doctors.tenantId, ctx.tenantId), eq(doctors.id, doctor.id)));
       await recordAudit(tx, ctx, { action: "doctor.signature_removed", entityType: "doctor", entityId: doctor.id });
       return ok({ assetId: null });
     }
     const stored = await storeImageAsset(tx, ctx, "signature", image.bytes);
     if (!stored.ok) return stored;
-    const attached = await attachDoctorSignature(tx, ctx.tenantId, doctor.id, stored.value.id);
+    const attached = await internalAttachDoctorSignature(tx, ctx.tenantId, doctor.id, stored.value.id);
     if (!attached.ok) return attached;
     await recordAudit(tx, ctx, {
       action: "doctor.signature_set",

@@ -80,7 +80,7 @@ export async function uploadLogoAction(_prev: SettingsFormState, formData: FormD
   });
 }
 
-export async function removeLogoAction(_prev: SettingsFormState): Promise<SettingsFormState> {
+export async function removeLogoAction(): Promise<SettingsFormState> {
   return asSession("removeLogoAction", async (session) => {
     const result = await setClinicLogo(session, null);
     if (!result.ok) return { error: result.message };
@@ -100,7 +100,7 @@ export async function uploadSignatureAction(_prev: SettingsFormState, formData: 
   });
 }
 
-export async function removeSignatureAction(_prev: SettingsFormState): Promise<SettingsFormState> {
+export async function removeSignatureAction(): Promise<SettingsFormState> {
   return asSession("removeSignatureAction", async (session) => {
     const result = await setDoctorSignature(session, null);
     if (!result.ok) return { error: result.message };

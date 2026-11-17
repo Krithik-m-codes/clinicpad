@@ -23,7 +23,7 @@ import {
   scheduleText,
 } from "@/lib/rx-render/format";
 import { parseRenderSnapshot, type RenderSnapshot } from "@/lib/rx-render/snapshot";
-import { PAD_LIMITS } from "@/server/validation/pad-settings";
+import { PAD_LIMITS, clinicPadSchema } from "@/server/validation/pad-settings";
 import { PAPER } from "@/lib/rx-render/paper";
 import { BUILTIN_TEMPLATES, pickOption } from "@/lib/rx-render/types";
 import { DEVANAGARI, HOSTILE, documentFixture, item, snapshot } from "../fixtures/rx-documents";
@@ -325,6 +325,14 @@ describe("render snapshot schema", () => {
     expect(parseRenderSnapshot(twentyAllergies)).not.toBeNull();
     const fourFooterLines = snapshot({ clinic: { footerLines: Array.from({ length: PAD_LIMITS.footerLines }, () => text(150)) } });
     expect(parseRenderSnapshot(fourFooterLines)).not.toBeNull();
+  });
+
+  it("keeps the composed 'city, state - pincode' address line within the snapshot line limit", () => {
+    const longest = `${"c".repeat(PAD_LIMITS.city)}, ${"s".repeat(PAD_LIMITS.state)} - ${"9".repeat(PAD_LIMITS.pincode)}`;
+    expect(longest.length).toBeLessThanOrEqual(200);
+    expect(parseRenderSnapshot(snapshot({ clinic: { addressLines: [longest] } }))).not.toBeNull();
+    expect(clinicPadSchema.safeParse({ name: "Clinic", pincode: "9".repeat(PAD_LIMITS.pincode) }).success).toBe(true);
+    expect(clinicPadSchema.safeParse({ name: "Clinic", pincode: "9".repeat(PAD_LIMITS.pincode + 1) }).success).toBe(false);
   });
 
   it("bounds the clinic phone at 200 characters", () => {

@@ -38,13 +38,14 @@ export function footerLines(text: string | null): string[] {
 }
 
 /** The tenant's clinic profile (one per tenant today; the oldest if there are several). */
-export async function primaryClinic(tx: TenantTx, tenantId: string): Promise<ClinicRow | null> {
-  const [row] = await tx
+export async function primaryClinic(tx: TenantTx, tenantId: string, lock = false): Promise<ClinicRow | null> {
+  const query = tx
     .select()
     .from(clinics)
     .where(eq(clinics.tenantId, tenantId))
     .orderBy(asc(clinics.createdAt), asc(clinics.id))
     .limit(1);
+  const [row] = await (lock ? query.for("update") : query);
   return row ?? null;
 }
 
