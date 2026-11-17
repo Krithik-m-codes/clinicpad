@@ -28,6 +28,7 @@ jobs:
       ADMIN_DATABASE_URL: postgresql://clinicpad:clinicpad@localhost:5432/clinicpad
       AUTH_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
       NEXT_PUBLIC_APP_URL: http://localhost:3000
+      GOTENBERG_URL: http://localhost:3001
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -39,6 +40,8 @@ jobs:
       - run: npm run db:migrate
       - run: npm run lint
       - run: npm run typecheck
+      - run: docker run -d --name gotenberg -p 3001:3000 --add-host=host.docker.internal:host-gateway gotenberg/gotenberg:8.11.0 gotenberg --api-timeout=30s --chromium-disable-javascript=true "--chromium-deny-list=^(?!file:///tmp/|data:|about:|blob:).*" --log-level=warn
+      - run: for i in $(seq 1 30); do curl -sf http://localhost:3001/health && break; sleep 2; done
       - run: npm run test
       - run: npm run build:web
       - run: npm run build:desktop

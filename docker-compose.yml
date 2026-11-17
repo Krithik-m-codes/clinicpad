@@ -16,5 +16,32 @@ services:
       timeout: 5s
       retries: 10
 
+  gotenberg:
+    # Pinned (tag verified to exist with `docker pull`). Upgrades need the visual check in
+    # docs/SETUP.md (npm run test:visual). Flags verified against `gotenberg --help` of this tag.
+    image: gotenberg/gotenberg:8.11.0
+    container_name: clinicpad-gotenberg
+    command:
+      - gotenberg
+      - --api-timeout=30s
+      - --chromium-disable-javascript=true
+      # Documents are self-contained (data: URIs only). Deny every request except the staged
+      # input under file:///tmp/ and data:/about:/blob: URLs, so no http(s) or other file: access.
+      - --chromium-deny-list=^(?!file:///tmp/|data:|about:|blob:).*
+      - --log-level=warn
+    ports:
+      - "3001:3000"
+    extra_hosts:
+      # Lets the smoke test's network-isolation probe reach the host on Linux too.
+      - "host.docker.internal:host-gateway"
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   clinicpad_pg:
