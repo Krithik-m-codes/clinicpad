@@ -63,6 +63,8 @@ test("print and download a finalized prescription; a reprint keeps the finalized
     top.__printCalls = top.__printCalls ?? 0;
     window.print = () => {
       top.__printCalls = (top.__printCalls ?? 0) + 1;
+      // Browsers fire afterprint on the printing window when the dialog closes; the app removes its frame then.
+      setTimeout(() => window.dispatchEvent(new Event("afterprint")), 50);
     };
   });
   clinics.push(await registerClinic(page, "rxout"));
@@ -80,7 +82,7 @@ test("print and download a finalized prescription; a reprint keeps the finalized
   expect(printed.status()).toBe(200);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __printCalls?: number }).__printCalls ?? 0)).toBe(1);
   await expect(page.getByText(/could not be prepared for printing/)).toHaveCount(0);
-  // The frame is removed once printing is done; what it printed is what the print route serves.
+  // The frame is removed on afterprint (not when print() returns); what it printed is what the print route serves.
   await expect(page.locator('iframe[title="Prescription print frame"]')).toHaveCount(0);
   await expect(page.getByText(/Printed or downloaded 1 time,/)).toBeVisible();
 
