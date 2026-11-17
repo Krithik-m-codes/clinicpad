@@ -2,7 +2,7 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { can } from "@/lib/domain/permissions";
 import { isUuid } from "@/lib/domain/ids";
-import { CONSENT_METHODS, SHARING_CONSENT_VERSION, type ConsentMethod } from "@/lib/domain/consent";
+import { CONSENT_METHODS, isConsentVersion, type ConsentMethod, type ConsentVersion } from "@/lib/domain/consent";
 import { fail, invalidFrom, ok, type Result } from "@/lib/result";
 import { patientConsents, patients } from "@/server/db/schema";
 import { withTenant, type TenantTx } from "@/server/db/tenant";
@@ -18,6 +18,8 @@ const method = z.enum(CONSENT_METHODS, { error: "Choose how the patient gave con
 const recordSchema = z.object({
   method,
   confirmed: z.literal(true, { error: "Confirm that the patient agreed to the text above." }),
+  // The version of the text the card showed; an unknown one is refused, a known one is recorded as shown.
+  version: z.custom<ConsentVersion>(isConsentVersion, { error: "This consent text is out of date. Reload the page and try again." }),
 });
 const withdrawSchema = z.object({ method: z.enum(CONSENT_METHODS, { error: "Choose how the patient withdrew consent." }) });
 
@@ -43,7 +45,7 @@ export async function getSharingConsent(ctx: ServiceContext, patientId: string):
 }
 
 /**
- * Records that the patient agreed to the current consent text (SHARING_CONSENT_VERSION), how, and by whom. The
+ * Records that the patient agreed to the consent text version the caller names (it must be a known version), how, and by whom. The
  * patient row is locked first (decision 13). Recording again while the same version is granted writes nothing.
  */
 export async function recordSharingConsent(ctx: ServiceContext, patientId: string, raw: unknown): Promise<Result<ConsentView>> {
@@ -60,16 +62,16 @@ export async function recordSharingConsent(ctx: ServiceContext, patientId: strin
       .for("update");
     if (!patient) return notFound();
     const current = await currentSharingConsentIn(tx, ctx.tenantId, patientId);
-    if (current?.granted && current.version === SHARING_CONSENT_VERSION) return ok(current);
+    if (current?.granted && current.version === parsed.data.version) return ok(current);
     const [row] = await tx
       .insert(patientConsents)
-      .values({ tenantId: ctx.tenantId, patientId, purpose: PURPOSE, version: SHARING_CONSENT_VERSION, granted: true, method: parsed.data.method, capturedBy: ctx.userId })
+      .values({ tenantId: ctx.tenantId, patientId, purpose: PURPOSE, version: parsed.data.version, granted: true, method: parsed.data.method, capturedBy: ctx.userId })
       .returning();
     await recordAudit(tx, ctx, {
       action: "patient.consent_recorded",
       entityType: "patient",
       entityId: patientId,
-      after: { consentId: row.id, purpose: PURPOSE, version: SHARING_CONSENT_VERSION, method: parsed.data.method },
+      after: { consentId: row.id, purpose: PURPOSE, version: parsed.data.version, method: parsed.data.method },
     });
     return ok(view(row));
   });

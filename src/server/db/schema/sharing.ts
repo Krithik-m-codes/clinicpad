@@ -27,7 +27,7 @@ export const patientConsents = pgTable(
     version: text("version").notNull(),
     granted: boolean("granted").notNull(),
     method: text("method").notNull(),
-    capturedBy: uuid("captured_by"),
+    capturedBy: uuid("captured_by").notNull(),
     createdAt: createdAt(),
   },
   (t) => [
@@ -79,6 +79,7 @@ export const shareLinks = pgTable(
     check("share_links_token_hash_check", sql`token_hash ~ '^[0-9a-f]{64}$'`),
     check("share_links_opens_check", sql`max_opens between 1 and 50 and open_count between 0 and max_opens`),
     check("share_links_expiry_check", sql`expires_at > created_at and expires_at <= created_at + interval '31 days'`),
+    check("share_links_revoked_by_check", sql`revoked_by is null or revoked_at is not null`),
     check(
       "share_links_revocation_check",
       sql`(revoked_at is null) = (revoke_reason is null) and (revoke_reason is null or revoke_reason in ('user', 'consent_withdrawn', 'patient_archived', 'send_failed'))`,
@@ -116,6 +117,13 @@ export const prescriptionShares = pgTable(
     check("rx_shares_provider_check", sql`provider in ('wa_link', 'resend', 'fake')`),
     check("rx_shares_status_check", sql`status in ('prepared', 'sent', 'failed')`),
     check("rx_shares_recipient_check", sql`char_length(recipient_masked) between 1 and 64`),
+    check("rx_shares_recipient_masked_check", sql`recipient_masked like '%*%' and recipient_masked !~ '[0-9]{5}'`),
+    check(
+      "rx_shares_provider_channel_check",
+      sql`(channel = 'whatsapp' and provider in ('wa_link', 'fake')) or (channel = 'email' and provider in ('resend', 'fake'))`,
+    ),
+    check("rx_shares_wa_link_check", sql`provider <> 'wa_link' or (status = 'prepared' and provider_message_id is null and error_code is null)`),
+    check("rx_shares_failed_check", sql`error_code is null or status = 'failed'`),
     check("rx_shares_error_check", sql`error_code is null or error_code ~ '^[a-z_]{1,40}$'`),
     check("rx_shares_message_id_check", sql`provider_message_id is null or char_length(provider_message_id) <= 200`),
   ],

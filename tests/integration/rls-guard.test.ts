@@ -111,9 +111,7 @@ describe("row-level security across the whole schema", () => {
       select cmd::text as cmd, roles::text[] as roles, qual, with_check from pg_policies
        where schemaname = 'public' and tablename = 'share_links' and policyname = 'share_link_by_token'`);
     expect(p).toMatchObject({ cmd: "SELECT", roles: ["clinicpad_app"], with_check: null });
-    expect(p.qual).toContain("app.share_token_hash");
-    expect(p.qual).not.toContain("app.tenant_id");
-    // An unset or empty hash must match nothing: the comparison is against nullif(setting, '').
-    expect(p.qual).toMatch(/NULLIF\(current_setting\('app\.share_token_hash'::text, true\), ''::text\)/i);
+    // The whole expression, so a widened policy fails: an unset or empty hash must match nothing (nullif(setting, '')).
+    expect(p.qual).toBe("(token_hash = NULLIF(current_setting('app.share_token_hash'::text, true), ''::text))");
   });
 });

@@ -30,6 +30,7 @@ describe("ConsentCard", () => {
     expect(patientId).toBe(ID);
     expect(formData.get("method")).toBe("written");
     expect(formData.get("confirmed")).toBe("yes");
+    expect(formData.get("version")).toBe("sharing-v1");
   });
 
   it("withdraws only after the confirm step, with focus on Keep it", async () => {
@@ -50,6 +51,37 @@ describe("ConsentCard", () => {
       fireEvent.click(screen.getByRole("button", { name: "Yes, withdraw consent" }));
     });
     await waitFor(() => expect(actions.withdrawConsentAction).toHaveBeenCalledTimes(1));
+    const [patientId, , formData] = actions.withdrawConsentAction.mock.calls[0] as [string, unknown, FormData];
+    expect(patientId).toBe(ID);
+    expect(formData.get("method")).toBe("verbal");
+    // The confirm step closes once the request is sent.
+    expect(screen.queryByRole("button", { name: "Yes, withdraw consent" })).toBeNull();
+  });
+
+  it("says when consent was withdrawn and offers the text again", () => {
+    render(
+      <ConsentCard
+        patientId={ID}
+        consent={{ id: "c", granted: false, version: "sharing-v1", method: "written", recordedAt: new Date("2026-11-16T19:00:00Z") }}
+        canCapture
+        archived={false}
+        timeZone="Asia/Kolkata"
+      />,
+    );
+    expect(screen.getByText("Withdrawn on 17 Nov 2026. Nothing can be shared until consent is recorded again.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Record consent" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Withdraw consent" })).toBeNull();
+  });
+
+  it("announces an action error as an alert tied to the form", async () => {
+    actions.recordConsentAction.mockResolvedValue({ error: "Confirm that the patient agreed to the text above.", field: "confirmed" });
+    render(<ConsentCard patientId={ID} consent={null} canCapture archived={false} timeZone="Asia/Kolkata" />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Record consent" }));
+    });
+    const alert = await screen.findByText("Confirm that the patient agreed to the text above.");
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(screen.getByLabelText("The patient (or their guardian) agreed to this text.")).toHaveAttribute("aria-describedby", alert.id);
   });
 
   it("shows only the status to roles that cannot capture consent, and no record form for archived patients", () => {

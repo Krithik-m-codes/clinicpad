@@ -34,7 +34,7 @@ async function run(name: string, work: (session: Awaited<ReturnType<typeof requi
 
 export async function recordConsentAction(patientId: string, _prev: ConsentFormState, formData: FormData): Promise<ConsentFormState> {
   return run("recordConsentAction", (session) =>
-    recordSharingConsent(session, patientId, { method: formData.get("method"), confirmed: formData.get("confirmed") === "yes" }),
+    recordSharingConsent(session, patientId, { method: formData.get("method"), confirmed: formData.get("confirmed") === "yes", version: formData.get("version") }),
   );
 }
 

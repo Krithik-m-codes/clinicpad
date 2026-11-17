@@ -62,7 +62,7 @@ describe("recordSharingConsent", () => {
     const id = await patient("Consent Asha");
     // as("reception") returns a new random user id on every call: keep one context for the call and the assertion.
     const reception = A.as("reception");
-    const recorded = await recordSharingConsent(reception, id, { method: "verbal", confirmed: true });
+    const recorded = await recordSharingConsent(reception, id, { method: "verbal", confirmed: true, version: SHARING_CONSENT_VERSION });
     expect(recorded).toMatchObject({ ok: true, value: { granted: true, version: SHARING_CONSENT_VERSION, method: "verbal" } });
     if (!recorded.ok) return;
     const [row] = await adminDb.select().from(patientConsents).where(eq(patientConsents.id, recorded.value.id));
@@ -77,16 +77,19 @@ describe("recordSharingConsent", () => {
 
   it("does not write a second row while the same consent is already recorded", async () => {
     const id = await patient("Consent Twice");
-    const first = await recordSharingConsent(A.as("doctor"), id, { method: "written", confirmed: true });
-    const second = await recordSharingConsent(A.as("doctor"), id, { method: "written", confirmed: true });
+    const first = await recordSharingConsent(A.as("doctor"), id, { method: "written", confirmed: true, version: SHARING_CONSENT_VERSION });
+    const second = await recordSharingConsent(A.as("doctor"), id, { method: "written", confirmed: true, version: SHARING_CONSENT_VERSION });
     expect(first.ok && second.ok && second.value.id).toBe(first.ok ? first.value.id : "");
     expect(await adminDb.select().from(patientConsents).where(eq(patientConsents.patientId, id))).toHaveLength(1);
   });
 
   it.each([
-    [{ method: "verbal", confirmed: false }, "confirmed"],
-    [{ method: "verbal" }, "confirmed"],
-    [{ method: "sms", confirmed: true }, "method"],
+    [{ method: "verbal", confirmed: false, version: SHARING_CONSENT_VERSION }, "confirmed"],
+    [{ method: "verbal", version: SHARING_CONSENT_VERSION }, "confirmed"],
+    [{ method: "sms", confirmed: true, version: SHARING_CONSENT_VERSION }, "method"],
+    [{ method: "verbal", confirmed: true }, "version"],
+    [{ method: "verbal", confirmed: true, version: "sharing-v99" }, "version"],
+    [{ method: "verbal", confirmed: true, version: "x" }, "version"],
   ])("refuses %j (field %s)", async (raw, field) => {
     const id = await patient("Consent Invalid");
     expect(await recordSharingConsent(A.as("owner"), id, raw)).toMatchObject({ ok: false, code: "invalid", field });
@@ -95,12 +98,26 @@ describe("recordSharingConsent", () => {
   it("is refused to nurses, pharmacists and accountants, and for unknown, archived or foreign patients", async () => {
     const id = await patient("Consent Roles");
     for (const role of ["nurse", "pharmacist", "accountant"]) {
-      expect(await recordSharingConsent(A.as(role), id, { method: "verbal", confirmed: true })).toMatchObject({ ok: false, code: "forbidden" });
+      expect(await recordSharingConsent(A.as(role), id, { method: "verbal", confirmed: true, version: SHARING_CONSENT_VERSION })).toMatchObject({ ok: false, code: "forbidden" });
     }
-    expect(await recordSharingConsent(A.as("owner"), "x", { method: "verbal", confirmed: true })).toMatchObject({ ok: false, code: "not_found" });
-    expect(await recordSharingConsent(B.as("owner"), id, { method: "verbal", confirmed: true })).toMatchObject({ ok: false, code: "not_found" });
+    expect(await recordSharingConsent(A.as("owner"), "x", { method: "verbal", confirmed: true, version: SHARING_CONSENT_VERSION })).toMatchObject({ ok: false, code: "not_found" });
+    expect(await recordSharingConsent(B.as("owner"), id, { method: "verbal", confirmed: true, version: SHARING_CONSENT_VERSION })).toMatchObject({ ok: false, code: "not_found" });
     await adminDb.update(patients).set({ deletedAt: new Date() }).where(eq(patients.id, id));
-    expect(await recordSharingConsent(A.as("owner"), id, { method: "verbal", confirmed: true })).toMatchObject({ ok: false, code: "not_found" });
+    expect(await recordSharingConsent(A.as("owner"), id, { method: "verbal", confirmed: true, version: SHARING_CONSENT_VERSION })).toMatchObject({ ok: false, code: "not_found" });
+  });
+});
+
+describe("recording again after a withdrawal", () => {
+  it("writes a new grant row and leaves the history intact", async () => {
+    const id = await patient("Consent Regrant");
+    const owner = A.as("owner");
+    const raw = { method: "verbal", confirmed: true, version: SHARING_CONSENT_VERSION };
+    const first = await recordSharingConsent(owner, id, raw);
+    expect(await withdrawSharingConsent(owner, id, { method: "verbal" })).toMatchObject({ ok: true });
+    const second = await recordSharingConsent(owner, id, raw);
+    expect(first.ok && second.ok && second.value.id !== first.value.id).toBe(true);
+    expect(await getSharingConsent(owner, id)).toMatchObject({ ok: true, value: { granted: true } });
+    expect(await adminDb.select().from(patientConsents).where(eq(patientConsents.patientId, id))).toHaveLength(3);
   });
 });
 
@@ -108,7 +125,7 @@ describe("getSharingConsent", () => {
   it("is null without a record, and the latest event otherwise", async () => {
     const id = await patient("Consent Latest");
     expect(await getSharingConsent(A.as("nurse"), id)).toEqual({ ok: true, value: null });
-    await recordSharingConsent(A.as("owner"), id, { method: "verbal", confirmed: true });
+    await recordSharingConsent(A.as("owner"), id, { method: "verbal", confirmed: true, version: SHARING_CONSENT_VERSION });
     await withdrawSharingConsent(A.as("owner"), id, { method: "written" });
     expect(await getSharingConsent(A.as("nurse"), id)).toMatchObject({ ok: true, value: { granted: false, method: "written" } });
     expect(await getSharingConsent(A.as("accountant"), id)).toMatchObject({ ok: false, code: "forbidden" });
@@ -119,8 +136,8 @@ describe("withdrawSharingConsent", () => {
   it("records the withdrawal and revokes every open link of that patient, and only that patient", async () => {
     const id = await patient("Consent Withdraw");
     const other = await patient("Consent Other");
-    const granted = await recordSharingConsent(A.as("owner"), id, { method: "verbal", confirmed: true });
-    const otherGranted = await recordSharingConsent(A.as("owner"), other, { method: "verbal", confirmed: true });
+    const granted = await recordSharingConsent(A.as("owner"), id, { method: "verbal", confirmed: true, version: SHARING_CONSENT_VERSION });
+    const otherGranted = await recordSharingConsent(A.as("owner"), other, { method: "verbal", confirmed: true, version: SHARING_CONSENT_VERSION });
     if (!granted.ok || !otherGranted.ok) throw new Error("consent");
     const rx = await finalizedFor(id);
     const otherRx = await finalizedFor(other);
@@ -136,6 +153,17 @@ describe("withdrawSharingConsent", () => {
       .from(auditEvents)
       .where(and(eq(auditEvents.action, "patient.consent_withdrawn"), eq(auditEvents.entityId, id)));
     expect(event.after).toMatchObject({ purpose: "sharing", revokedLinks: 2 });
+  });
+
+  it("is still possible for an archived patient, and revokes that patient's links", async () => {
+    const id = await patient("Consent Archived");
+    const granted = await recordSharingConsent(A.as("owner"), id, { method: "verbal", confirmed: true, version: SHARING_CONSENT_VERSION });
+    if (!granted.ok) throw new Error("consent");
+    const link = await linkFor(await finalizedFor(id), granted.value.id);
+    await adminDb.update(patients).set({ deletedAt: new Date() }).where(eq(patients.id, id));
+    expect(await withdrawSharingConsent(A.as("owner"), id, { method: "verbal" })).toEqual({ ok: true, value: { revokedLinks: 1 } });
+    const [row] = await adminDb.select().from(shareLinks).where(eq(shareLinks.id, link));
+    expect(row.revokeReason).toBe("consent_withdrawn");
   });
 
   it("answers conflict when no consent is on record", async () => {

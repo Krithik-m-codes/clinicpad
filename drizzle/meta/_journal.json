@@ -162,6 +162,13 @@
       "when": 1794925409080,
       "tag": "0022_phase1d_sharing_security",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794926581566,
+      "tag": "0023_phase1d_sharing_integrity",
+      "breakpoints": true
     }
   ]
 }

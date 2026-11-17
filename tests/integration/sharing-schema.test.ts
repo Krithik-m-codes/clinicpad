@@ -7,7 +7,7 @@ import { withTenant } from "@/server/db/tenant";
 import { pgErrorInfo } from "@/server/db/errors";
 import { clinics, patientConsents, prescriptionOutputs, prescriptionShares, shareLinks } from "@/server/db/schema";
 import { createPatient } from "@/server/services/patients";
-import { startPrescription } from "@/server/services/prescriptions";
+import { amendPrescription, startPrescription } from "@/server/services/prescriptions";
 import { finalizeNow, saveDraftNow } from "../helpers/rx";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
@@ -37,6 +37,21 @@ function linkValues(tenantId: string, prescriptionId: string, consentId: string,
   return { tenantId, prescriptionId, consentId, tokenHash: hash(), channel: "whatsapp", createdAt: now, expiresAt: new Date(now.getTime() + 7 * DAY), maxOpens: 10, ...overrides };
 }
 
+function consentRow(T: TestTenant, patientId: string, granted: boolean) {
+  return { tenantId: T.tenantId, patientId, purpose: "sharing", version: "sharing-v1", granted, method: "verbal", capturedBy: T.as("owner").userId };
+}
+
+async function newPatient(T: TestTenant, name: string): Promise<string> {
+  const created = await createPatient(T.as("owner"), { name });
+  if (!created.ok) throw new Error(created.message);
+  return created.value.id;
+}
+
+async function grant(T: TestTenant, patientId: string, granted = true): Promise<string> {
+  const [row] = await adminDb.insert(patientConsents).values(consentRow(T, patientId, granted)).returning();
+  return row.id;
+}
+
 async function prescription(T: TestTenant, patientId: string, finalize: boolean): Promise<string> {
   const started = await startPrescription(T.as("doctor"), { patientId });
   if (!started.ok) throw new Error(started.message);
@@ -61,11 +76,11 @@ beforeAll(async () => {
   finalizedB = await prescription(B, pb.value.id, true);
   const [ca] = await adminDb
     .insert(patientConsents)
-    .values({ tenantId: A.tenantId, patientId: patientA, purpose: "sharing", version: "sharing-v1", granted: true, method: "verbal" })
+    .values(consentRow(A, patientA, true))
     .returning();
   const [cb] = await adminDb
     .insert(patientConsents)
-    .values({ tenantId: B.tenantId, patientId: pb.value.id, purpose: "sharing", version: "sharing-v1", granted: true, method: "verbal" })
+    .values(consentRow(B, pb.value.id, true))
     .returning();
   consentA = ca.id;
   consentB = cb.id;
@@ -85,8 +100,9 @@ describe("clinics.sharing_enabled", () => {
 
 describe("patient_consents", () => {
   it("is tenant-isolated and append-only for the application role, and immutable for the admin connection", async () => {
+    const other = await newPatient(A, "Consent Isolation");
     const [row] = await withTenant(A.tenantId, (tx) =>
-      tx.insert(patientConsents).values({ tenantId: A.tenantId, patientId: patientA, purpose: "sharing", version: "sharing-v1", granted: false, method: "written" }).returning(),
+      tx.insert(patientConsents).values({ ...consentRow(A, other, false), method: "written" }).returning(),
     );
     expect(await withTenant(B.tenantId, (tx) => tx.select().from(patientConsents).where(eq(patientConsents.id, row.id)))).toHaveLength(0);
     await expectCode(withTenant(A.tenantId, (tx) => tx.update(patientConsents).set({ granted: true }).where(eq(patientConsents.id, row.id))), "42501");
@@ -101,7 +117,7 @@ describe("patient_consents", () => {
     ["a malformed version", { version: "v1" }],
   ])("refuses %s (23514)", async (_label, overrides) => {
     await expectCode(
-      adminDb.insert(patientConsents).values({ tenantId: A.tenantId, patientId: patientA, purpose: "sharing", version: "sharing-v1", granted: true, method: "verbal", ...overrides }),
+      adminDb.insert(patientConsents).values({ ...consentRow(A, patientA, true), ...overrides }),
       "23514",
     );
   });
@@ -109,7 +125,7 @@ describe("patient_consents", () => {
   it("belongs to a patient of the same clinic (23503)", async () => {
     const [foreign] = await adminDb.select({ patientId: patientConsents.patientId }).from(patientConsents).where(eq(patientConsents.id, consentB));
     await expectCode(
-      adminDb.insert(patientConsents).values({ tenantId: A.tenantId, patientId: foreign.patientId, purpose: "sharing", version: "sharing-v1", granted: true, method: "verbal" }),
+      adminDb.insert(patientConsents).values(consentRow(A, foreign.patientId, true)),
       "23503",
     );
   });
@@ -143,9 +159,13 @@ describe("share_links", () => {
     ["an expiry before creation", { expiresAt: new Date(Date.now() - DAY) }],
     ["an expiry over 31 days away", { expiresAt: new Date(Date.now() + 40 * DAY) }],
     ["a malformed token hash", { tokenHash: "abc" }],
-    ["a revocation without a reason", { revokedAt: new Date() }],
   ])("refuses %s (23514)", async (_label, overrides) => {
     await expectCode(adminDb.insert(shareLinks).values(linkValues(A.tenantId, finalizedA, consentA, overrides)), "23514");
+  });
+
+  it("refuses a revocation without a reason (23514)", async () => {
+    const [link] = await adminDb.insert(shareLinks).values(linkValues(A.tenantId, finalizedA, consentA)).returning();
+    await expectCode(adminDb.update(shareLinks).set({ revokedAt: new Date() }).where(eq(shareLinks.id, link.id)), "23514");
   });
 
   it("keeps token hashes unique (23505)", async () => {
@@ -198,5 +218,146 @@ describe("prescription_outputs from a share link", () => {
     await adminDb.insert(prescriptionOutputs).values({ ...output, kind: "shared_pdf", shareLinkId: link.id, actorUserId: null });
     await expectCode(adminDb.insert(prescriptionOutputs).values({ ...output, kind: "shared_pdf" }), "23514");
     await expectCode(adminDb.insert(prescriptionOutputs).values({ ...output, kind: "browser_print", shareLinkId: link.id }), "23514");
+  });
+});
+
+describe("tightened rules from migration 0023", () => {
+  it("refuses a consent captured by nobody (23502)", async () => {
+    await expectCode(adminDb.insert(patientConsents).values({ ...consentRow(A, patientA, true), capturedBy: null as unknown as string }), "23502");
+  });
+
+  it("stamps consent rows with the statement clock, so two events in one transaction stay ordered", async () => {
+    const id = await newPatient(A, "Consent Clock");
+    const rows = await adminDb.transaction(async (tx) => {
+      const first = await tx.insert(patientConsents).values(consentRow(A, id, true)).returning();
+      const second = await tx.insert(patientConsents).values(consentRow(A, id, false)).returning();
+      return [first[0], second[0]];
+    });
+    expect(rows[1].createdAt.getTime()).toBeGreaterThan(rows[0].createdAt.getTime());
+    const forced = await adminDb.insert(patientConsents).values({ ...consentRow(A, id, false), createdAt: new Date("2020-01-01T00:00:00Z") }).returning();
+    expect(forced[0].createdAt.getFullYear()).toBeGreaterThan(2024);
+  });
+
+  it("pins a new link to its initial state whatever the insert says", async () => {
+    const pid = await newPatient(A, "Pinned Initial");
+    const consent = await grant(A, pid);
+    const rx = await prescription(A, pid, true);
+    const [link] = await adminDb
+      .insert(shareLinks)
+      .values(
+        linkValues(A.tenantId, rx, consent, {
+          openCount: 4,
+          lastOpenedAt: new Date(),
+          revokedAt: new Date(),
+          revokedBy: A.as("owner").userId,
+          revokeReason: "user",
+          createdAt: new Date(Date.now() - 3 * DAY),
+          expiresAt: new Date(Date.now() + DAY),
+        }),
+      )
+      .returning();
+    expect(link).toMatchObject({ openCount: 0, lastOpenedAt: null, revokedAt: null, revokedBy: null, revokeReason: null });
+    expect(Math.abs(link.createdAt.getTime() - Date.now())).toBeLessThan(60_000);
+  });
+
+  it("refuses revoked_by without a revocation, a cleared last-opened time and a backdated revocation", async () => {
+    const pid = await newPatient(A, "Rules Tight");
+    const consent = await grant(A, pid);
+    const rx = await prescription(A, pid, true);
+    const [link] = await adminDb.insert(shareLinks).values(linkValues(A.tenantId, rx, consent)).returning();
+    const where = eq(shareLinks.id, link.id);
+    await expectCode(adminDb.update(shareLinks).set({ revokedBy: A.as("owner").userId }).where(where), "23514");
+    await adminDb.update(shareLinks).set({ openCount: 1, lastOpenedAt: new Date() }).where(where);
+    await expectCode(adminDb.update(shareLinks).set({ lastOpenedAt: null }).where(where), "23000");
+    await expectCode(adminDb.update(shareLinks).set({ revokedAt: new Date(link.createdAt.getTime() - DAY), revokeReason: "user" }).where(where), "23000");
+    await adminDb.update(shareLinks).set({ revokedAt: new Date(), revokedBy: A.as("owner").userId, revokeReason: "user" }).where(where);
+  });
+});
+
+describe("the consent a link cites (I1)", () => {
+  async function fresh(name: string) {
+    const pid = await newPatient(A, name);
+    return { pid, rx: await prescription(A, pid, true) };
+  }
+
+  it("refuses another patient's consent, a withdrawal row and a grant that was later withdrawn (23000)", async () => {
+    const mine = await fresh("Cite Mine");
+    const other = await newPatient(A, "Cite Other");
+    const otherGrant = await grant(A, other);
+    await expectCode(adminDb.insert(shareLinks).values(linkValues(A.tenantId, mine.rx, otherGrant)), "23000");
+
+    const oldGrant = await grant(A, mine.pid);
+    const withdrawal = await grant(A, mine.pid, false);
+    await expectCode(adminDb.insert(shareLinks).values(linkValues(A.tenantId, mine.rx, withdrawal)), "23000");
+    await expectCode(adminDb.insert(shareLinks).values(linkValues(A.tenantId, mine.rx, oldGrant)), "23000");
+  });
+
+  it("accepts the new grant after a re-grant, and refuses the old one", async () => {
+    const mine = await fresh("Cite Regrant");
+    const first = await grant(A, mine.pid);
+    await grant(A, mine.pid, false);
+    const second = await grant(A, mine.pid);
+    await expectCode(adminDb.insert(shareLinks).values(linkValues(A.tenantId, mine.rx, first)), "23000");
+    await adminDb.insert(shareLinks).values(linkValues(A.tenantId, mine.rx, second));
+  });
+
+  it("refuses a consent id that does not exist (23503)", async () => {
+    const mine = await fresh("Cite Missing");
+    await expectCode(adminDb.insert(shareLinks).values(linkValues(A.tenantId, mine.rx, "00000000-0000-4000-8000-000000000000")), "23503");
+  });
+
+  it("refuses a superseded (amended) prescription (23000)", async () => {
+    const mine = await fresh("Cite Amended");
+    const consent = await grant(A, mine.pid);
+    const amendment = await amendPrescription(A.as("doctor"), { prescriptionId: mine.rx, reason: "Dose correction" });
+    if (!amendment.ok) throw new Error(amendment.message);
+    const saved = await saveDraftNow(A.as("doctor"), amendment.value.prescriptionId, { items: [{ drugName: "Amended Drug" }] });
+    if (!saved.ok) throw new Error(saved.message);
+    const done = await finalizeNow(A.as("doctor"), amendment.value.prescriptionId);
+    if (!done.ok) throw new Error(done.message);
+    await expectCode(adminDb.insert(shareLinks).values(linkValues(A.tenantId, mine.rx, consent)), "23000");
+    await adminDb.insert(shareLinks).values(linkValues(A.tenantId, amendment.value.prescriptionId, consent));
+  });
+});
+
+describe("the share log rules from migration 0023", () => {
+  async function linkAndLog() {
+    const pid = await newPatient(A, "Log Rules");
+    const consent = await grant(A, pid);
+    const rx = await prescription(A, pid, true);
+    const [link] = await adminDb.insert(shareLinks).values(linkValues(A.tenantId, rx, consent)).returning();
+    return {
+      share: { tenantId: A.tenantId, prescriptionId: rx, shareLinkId: link.id, channel: "whatsapp", recipientMasked: "+91******3210", provider: "wa_link", status: "prepared" },
+    };
+  }
+
+  it("refuses a row whose prescription or channel does not match its link (23000)", async () => {
+    const { share } = await linkAndLog();
+    await expectCode(adminDb.insert(prescriptionShares).values({ ...share, prescriptionId: finalizedA }), "23000");
+    await expectCode(
+      adminDb.insert(prescriptionShares).values({ ...share, channel: "email", provider: "resend", status: "sent", recipientMasked: "a***@x.com" }),
+      "23000",
+    );
+    await adminDb.insert(prescriptionShares).values(share);
+  });
+
+  it.each([
+    ["a recipient without a mask", { recipientMasked: "+919876543210" }],
+    ["a recipient with a long digit run", { recipientMasked: "+9198765*3210" }],
+    ["an email provider on a WhatsApp row", { provider: "resend" }],
+    ["a WhatsApp link marked sent", { status: "sent" }],
+    ["an error code on a prepared row", { errorCode: "bad_thing" }],
+  ])("refuses %s (23514)", async (_label, overrides) => {
+    const { share } = await linkAndLog();
+    await expectCode(adminDb.insert(prescriptionShares).values({ ...share, ...overrides }), "23514");
+  });
+
+  it("is isolated per clinic and cannot be deleted by the runtime role", async () => {
+    const { share } = await linkAndLog();
+    const [row] = await withTenant(A.tenantId, (tx) => tx.insert(prescriptionShares).values(share).returning());
+    expect(await withTenant(B.tenantId, (tx) => tx.select().from(prescriptionShares).where(eq(prescriptionShares.id, row.id)))).toHaveLength(0);
+    await expectCode(withTenant(B.tenantId, (tx) => tx.insert(prescriptionShares).values(share)), "23503");
+    await expectCode(withTenant(A.tenantId, (tx) => tx.delete(prescriptionShares).where(eq(prescriptionShares.id, row.id))), "42501");
+    await expectCode(adminDb.delete(prescriptionShares).where(eq(prescriptionShares.id, row.id)), "23000");
   });
 });

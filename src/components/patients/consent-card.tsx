@@ -35,6 +35,8 @@ export function ConsentCard({ patientId, consent, canCapture, archived, timeZone
   const [confirming, setConfirming] = useState(false);
   const keepRef = useRef<HTMLButtonElement>(null);
   const text = CONSENT_TEXT[SHARING_CONSENT_VERSION];
+  const recordErrorId = `consent-record-error-${patientId}`;
+  const withdrawErrorId = `consent-withdraw-error-${patientId}`;
 
   useEffect(() => {
     if (confirming) keepRef.current?.focus();
@@ -61,14 +63,25 @@ export function ConsentCard({ patientId, consent, canCapture, archived, timeZone
             <p lang="hi">{text.hi}</p>
           </blockquote>
           <MethodChoice name="method" legend="How the patient agreed" />
+          <input type="hidden" name="version" value={SHARING_CONSENT_VERSION} />
           <label className="flex items-center gap-2">
-            <input type="checkbox" name="confirmed" value="yes" aria-invalid={recordState.field === "confirmed" || undefined} />
+            <input
+              type="checkbox"
+              name="confirmed"
+              value="yes"
+              aria-invalid={recordState.field === "confirmed" || undefined}
+              aria-describedby={recordState.error ? recordErrorId : undefined}
+            />
             The patient (or their guardian) agreed to this text.
           </label>
           <Button type="submit" disabled={recording}>
             Record consent
           </Button>
-          {recordState.error ? <p className="text-destructive">{recordState.error}</p> : null}
+          {recordState.error ? (
+            <p id={recordErrorId} role="alert" className="text-destructive">
+              {recordState.error}
+            </p>
+          ) : null}
         </form>
       ) : null}
 
@@ -76,7 +89,15 @@ export function ConsentCard({ patientId, consent, canCapture, archived, timeZone
         <div className="space-y-2">
           <div aria-live="polite">{confirming ? "Every link already sent for this patient stops working at once." : null}</div>
           {confirming ? (
-            <form action={withdraw} className="space-y-2 rounded-md border border-red-200 bg-red-50 p-3">
+            <form
+              action={(formData) => {
+                // Leave the confirm step as soon as the request is sent, so a later re-grant starts from a closed card.
+                setConfirming(false);
+                withdraw(formData);
+              }}
+              aria-describedby={withdrawState.error ? withdrawErrorId : undefined}
+              className="space-y-2 rounded-md border border-red-200 bg-red-50 p-3"
+            >
               <MethodChoice name="method" legend="How the patient withdrew" />
               <div className="flex flex-wrap gap-2">
                 <Button type="submit" variant="destructive" disabled={withdrawing}>
@@ -92,7 +113,11 @@ export function ConsentCard({ patientId, consent, canCapture, archived, timeZone
               Withdraw consent
             </Button>
           )}
-          {withdrawState.error ? <p className="text-destructive">{withdrawState.error}</p> : null}
+          {withdrawState.error ? (
+            <p id={withdrawErrorId} role="alert" className="text-destructive">
+              {withdrawState.error}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </section>
