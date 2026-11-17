@@ -1,34 +1,41 @@
 import { z } from "zod";
+import { isCalendarDate, isValidTimeZone } from "./format";
 import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES } from "./types";
+
+/** Limits match the write-side validation (names 120-200, free text 5,000, bounded lists). */
+const name = z.string().max(200);
+const line = z.string().max(200);
+const freeText = z.string().max(5000);
+const assetId = z.uuid().nullable();
 
 /** Shape of prescriptions.render_snapshot, version 1. Bump `v` and keep a parser per version if it changes. */
 export const renderSnapshotSchema = z.object({
   v: z.literal(1),
-  takenAt: z.string(),
+  takenAt: z.iso.datetime({ offset: true }),
   patient: z.object({
-    name: z.string(),
+    name,
     patientNo: z.number().int().nullable(),
-    gender: z.string().nullable(),
-    dob: z.string().nullable(),
-    ageLabel: z.string(),
-    allergies: z.array(z.string()),
+    gender: z.string().max(32).nullable(),
+    dob: z.string().refine(isCalendarDate, "dob must be YYYY-MM-DD").nullable(),
+    ageLabel: z.string().max(32),
+    allergies: z.array(line).max(50),
   }),
   clinic: z.object({
-    name: z.string(),
-    addressLines: z.array(z.string()),
-    phone: z.string().nullable(),
-    email: z.string().nullable(),
-    footerLines: z.array(z.string()),
-    logoAssetId: z.string().nullable(),
-    timezone: z.string(),
+    name,
+    addressLines: z.array(line).max(10),
+    phone: z.string().max(40).nullable(),
+    email: z.string().max(254).nullable(),
+    footerLines: z.array(freeText).max(10),
+    logoAssetId: assetId,
+    timezone: z.string().refine(isValidTimeZone, "timezone must be an IANA zone"),
   }),
   doctor: z.object({
-    name: z.string(),
-    qualifications: z.string().nullable(),
-    designation: z.string().nullable(),
-    registrationNo: z.string().nullable(),
-    registrationCouncil: z.string().nullable(),
-    signatureAssetId: z.string().nullable(),
+    name,
+    qualifications: line.nullable(),
+    designation: line.nullable(),
+    registrationNo: z.string().max(80).nullable(),
+    registrationCouncil: line.nullable(),
+    signatureAssetId: assetId,
   }),
   layout: z.object({
     template: z.object({ kind: z.literal("builtin"), key: z.enum(BUILTIN_TEMPLATES) }),
@@ -39,7 +46,7 @@ export const renderSnapshotSchema = z.object({
 
 export type RenderSnapshot = z.infer<typeof renderSnapshotSchema>;
 
-/** The stored jsonb is data, not trusted code: parse it, and treat anything unexpected as damaged. */
+/** The stored jsonb is data, not trusted code: parse it, and treat anything unexpected as damaged. Never throws. */
 export function parseRenderSnapshot(value: unknown): RenderSnapshot | null {
   const parsed = renderSnapshotSchema.safeParse(value);
   return parsed.success ? parsed.data : null;

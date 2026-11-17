@@ -7,7 +7,7 @@ export const HOSTILE = {
   img: '<img src=x onerror="alert(1)">',
   attrBreaker: '" onmouseover="alert(1)" x="',
   urls: 'src=http://evil.example/a url(http://evil.example/b) @import "http://evil.example/c";',
-  bidi: "‮evil‬",
+  bidi: "\u202Eevil\u202C",
   loneSurrogate: "a\uD800b\uDC00c",
   controls: "a\u0000b\u0007c\u001Fd",
   quotes: `Tom & Jerry's "syrup"`,
@@ -19,8 +19,8 @@ export const DEVANAGARI = {
   name: "आशा राव",
   complaint: "बुखार और खांसी",
   advice: Array.from({ length: 40 }, () => "भोजन के बाद दवा लें। पानी अधिक पिएं।").join(" "),
-  /** Conjuncts joined and split with ZWJ (‍) and ZWNJ (‌), plus a plain conjunct. */
-  conjuncts: "क्‍ष क्‌ष श्र त्र ज्ञ",
+  /** Conjuncts joined and split with ZWJ (\u200D) and ZWNJ (\u200C), plus a plain conjunct. */
+  conjuncts: "क्\u200Dष क्\u200Cष श्र त्र ज्ञ",
 };
 
 /** A 1x1 PNG; the renderer embeds base64 without decoding it. */

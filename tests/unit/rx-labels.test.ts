@@ -7,7 +7,9 @@ import {
   genderText,
   labelHtml,
   labelText,
+  LABELS,
   periodicityText,
+  type LabelKey,
 } from "@/lib/rx-render/labels";
 import {
   bmiText,
@@ -20,7 +22,7 @@ import {
   quantityText,
   scheduleText,
 } from "@/lib/rx-render/format";
-import { parseRenderSnapshot } from "@/lib/rx-render/snapshot";
+import { parseRenderSnapshot, type RenderSnapshot } from "@/lib/rx-render/snapshot";
 import { PAPER } from "@/lib/rx-render/paper";
 import { BUILTIN_TEMPLATES, pickOption } from "@/lib/rx-render/types";
 import { DEVANAGARI, HOSTILE, documentFixture, item, snapshot } from "../fixtures/rx-documents";
@@ -52,6 +54,25 @@ describe("labels", () => {
     expect(genderText("female", "hi")).toBe(translations.hindi.female);
     expect(genderText("unknown", "en")).toBe("");
     expect(genderText(null, "en")).toBe("");
+  });
+
+  it("has English and Hindi text for every label, and never prints identical text twice", () => {
+    const keys = Object.keys(LABELS) as LabelKey[];
+    expect(keys.length).toBeGreaterThan(30);
+    for (const key of keys) {
+      expect(LABELS[key].en.trim(), key).not.toBe("");
+      expect(LABELS[key].hi.trim(), key).not.toBe("");
+      const same = LABELS[key].en === LABELS[key].hi;
+      expect(labelText(key, "bilingual"), key).toBe(same ? LABELS[key].en : `${LABELS[key].en} / ${LABELS[key].hi}`);
+      expect(labelHtml(key, "bilingual").value.includes("l-hi"), key).toBe(!same);
+    }
+    expect(labelText("spo2", "bilingual")).toBe("SpO2");
+    expect(labelText("bmi", "bilingual")).toBe("BMI");
+    expect(labelHtml("bmi", "bilingual").value).toBe("BMI");
+  });
+
+  it("calls the follow-up heading a follow-up, not the next-visit wording", () => {
+    expect(labelText("followUp", "hi")).not.toBe(translations.hindi.followUpDate);
   });
 
   it("does not treat inherited object keys as known codes", () => {
@@ -99,7 +120,7 @@ describe("labels", () => {
 describe("format", () => {
   it("prints the issue date in the clinic's timezone", () => {
     expect(formatIssuedDate("2026-11-12T20:00:00.000Z", "Asia/Kolkata")).toBe("13/11/2026");
-    expect(formatIssuedDate("2026-11-12T20:00:00.000Z", "Mars/Olympus")).toBe("12/11/2026");
+    expect(formatIssuedDate("2026-11-12T20:00:00.000Z", "Mars/Olympus")).toBe("13/11/2026");
     expect(formatIssuedDate("yesterday", "Asia/Kolkata")).toBe("");
   });
 
@@ -108,7 +129,12 @@ describe("format", () => {
     expect(formatIssuedDate(instant, "Asia/Kolkata")).toBe("01/01/2027");
     expect(formatIssuedDate(instant, "America/Los_Angeles")).toBe("31/12/2026");
     expect(formatIssuedDate(instant, "Pacific/Auckland")).toBe("01/01/2027");
-    expect(formatIssuedDate(instant, "")).toBe("31/12/2026");
+    expect(formatIssuedDate(instant, "UTC")).toBe("31/12/2026");
+    // a missing or damaged zone means the product default (IST), never UTC
+    for (const bad of ["", "   ", "garbage", "Mars/Olympus", undefined, null]) {
+      expect(formatIssuedDate(instant, bad)).toBe("01/01/2027");
+    }
+    expect(formatIssuedDate("2026-11-12T20:00:00.000Z", 5 as unknown as string)).toBe("13/11/2026");
   });
 
   it("refuses implausible instants", () => {
@@ -174,6 +200,14 @@ describe("format", () => {
     expect(scheduleText(item(1, { doseMorning: 1, doseAfternoon: 1, doseEvening: 1, doseNight: 1 }))).toBe("1-1-1-1");
     expect(scheduleText(item(1, { doseMorning: 0.5, doseAfternoon: 0, doseEvening: 0, doseNight: 0.5 }))).toBe("½-0-½");
     expect(scheduleText(item(1, { doseMorning: 1, doseAfternoon: 0, doseEvening: 1.5, doseNight: 0 }))).toBe("1-0-1½-0");
+  });
+
+  it("treats a dose that prints as 0 as no dose, so the free-text timing shows", () => {
+    const tiny = item(1, { doseMorning: 0.0001, doseAfternoon: 0.004, doseEvening: null, doseNight: 0, timing: "as directed" });
+    expect(hasSlots(tiny)).toBe(false);
+    expect(scheduleText(tiny)).toBe("as directed");
+    expect(hasSlots(item(1, { doseMorning: 0.005, doseAfternoon: 0, doseEvening: null, doseNight: 0 }))).toBe(true);
+    expect(scheduleText(item(1, { doseMorning: 0.005, doseAfternoon: 0, doseEvening: null, doseNight: 0 }))).toBe("0.01-0-0");
   });
 
   it("never prints garbage for damaged slot values", () => {
@@ -243,9 +277,46 @@ describe("render snapshot schema", () => {
   it("round-trips hostile and Devanagari text unchanged", () => {
     const value = snapshot({
       patient: { name: HOSTILE.script + HOSTILE.bidi, allergies: [HOSTILE.loneSurrogate, DEVANAGARI.conjuncts] },
-      clinic: { name: HOSTILE.long5000, footerLines: [HOSTILE.urls] },
+      clinic: { name: HOSTILE.script, footerLines: [HOSTILE.urls, HOSTILE.long5000] },
     });
     expect(parseRenderSnapshot(JSON.parse(JSON.stringify(value)))).toEqual(value);
+  });
+
+  const longText = "x".repeat(5000);
+
+  it("round-trips strings at their limits", () => {
+    const value = snapshot({
+      patient: { name: "n".repeat(200), allergies: Array.from({ length: 50 }, () => "a".repeat(200)) },
+      clinic: { footerLines: [longText], timezone: "America/New_York" },
+      doctor: { qualifications: "q".repeat(200) },
+    });
+    expect(parseRenderSnapshot(value)).toEqual(value);
+  });
+
+  it("accepts what toISOString writes and valid ids", () => {
+    const id = "01927f3e-5b6a-7c2d-8e1f-0a1b2c3d4e5f"; // a UUIDv7
+    const value = snapshot({ clinic: { logoAssetId: id }, doctor: { signatureAssetId: id } });
+    value.takenAt = new Date("2026-11-12T05:30:00Z").toISOString();
+    expect(parseRenderSnapshot(value)).toEqual(value);
+    expect(parseRenderSnapshot({ ...value, takenAt: "2026-11-12T11:00:00+05:30" })).not.toBeNull();
+  });
+
+  it.each([
+    ["a non-ISO takenAt", (s: RenderSnapshot) => ({ ...s, takenAt: "12 Nov 2026" })],
+    ["a date-only takenAt", (s: RenderSnapshot) => ({ ...s, takenAt: "2026-11-12" })],
+    ["a non-string takenAt", (s: RenderSnapshot) => ({ ...s, takenAt: 1700000000000 })],
+    ["a day-first dob", (s: RenderSnapshot) => ({ ...s, patient: { ...s.patient, dob: "02/04/1990" } })],
+    ["an impossible dob", (s: RenderSnapshot) => ({ ...s, patient: { ...s.patient, dob: "1990-02-30" } })],
+    ["an unknown time zone", (s: RenderSnapshot) => ({ ...s, clinic: { ...s.clinic, timezone: "Mars/Olympus" } })],
+    ["an empty time zone", (s: RenderSnapshot) => ({ ...s, clinic: { ...s.clinic, timezone: "" } })],
+    ["a non-uuid logo id", (s: RenderSnapshot) => ({ ...s, clinic: { ...s.clinic, logoAssetId: "logo-1" } })],
+    ["a non-uuid signature id", (s: RenderSnapshot) => ({ ...s, doctor: { ...s.doctor, signatureAssetId: "../../etc/passwd" } })],
+    ["a name over 200 characters", (s: RenderSnapshot) => ({ ...s, patient: { ...s.patient, name: "n".repeat(201) } })],
+    ["a footer line over 5,000 characters", (s: RenderSnapshot) => ({ ...s, clinic: { ...s.clinic, footerLines: ["x".repeat(5001)] } })],
+    ["more than 50 allergies", (s: RenderSnapshot) => ({ ...s, patient: { ...s.patient, allergies: Array.from({ length: 51 }, () => "a") } })],
+    ["more than 10 address lines", (s: RenderSnapshot) => ({ ...s, clinic: { ...s.clinic, addressLines: Array.from({ length: 11 }, () => "a") } })],
+  ])("rejects %s without throwing", (_label, damage) => {
+    expect(parseRenderSnapshot(damage(snapshot()))).toBeNull();
   });
 
   it.each([
@@ -284,10 +355,15 @@ describe("fixtures", () => {
     expect(HOSTILE.loneSurrogate.length).toBe(5);
     expect(HOSTILE.loneSurrogate.charCodeAt(1)).toBe(0xd800);
     expect(HOSTILE.loneSurrogate.charCodeAt(3)).toBe(0xdc00);
-    expect(DEVANAGARI.conjuncts.includes("‍")).toBe(true);
-    expect(DEVANAGARI.conjuncts.includes("‌")).toBe(true);
+    expect(DEVANAGARI.conjuncts.includes("\u200D")).toBe(true);
+    expect(DEVANAGARI.conjuncts.includes("\u200C")).toBe(true);
     expect(Array.from(DEVANAGARI.conjuncts.slice(0, 5)).map((c) => c.codePointAt(0))).toEqual([0x915, 0x94d, 0x200d, 0x937, 0x20]);
     expect(count(HOSTILE.long5000)).toBe(5000);
+    expect(DEVANAGARI.conjuncts.split("\u200D")).toHaveLength(2);
+    expect(DEVANAGARI.conjuncts.split("\u200C")).toHaveLength(2);
+    expect(Array.from(DEVANAGARI.conjuncts)).toHaveLength(21);
+    expect(DEVANAGARI.advice.split(" ").length).toBeGreaterThan(300);
+    expect(DEVANAGARI.advice.startsWith("भोजन के बाद")).toBe(true);
     expect(count(HOSTILE.longWord)).toBe(2000);
   });
 

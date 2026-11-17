@@ -31,6 +31,25 @@ export function bmiText(weightKg: number | null | undefined, heightCm: number | 
   return numberText(weightKg / (metres * metres), 1);
 }
 
+/** The product default zone, used when a stored zone is missing or damaged. */
+export const DEFAULT_TIME_ZONE = "Asia/Kolkata";
+
+/** True for a real IANA zone name. Never throws. */
+export function isValidTimeZone(zone: unknown): zone is string {
+  if (typeof zone !== "string" || zone.trim() === "") return false;
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True for YYYY-MM-DD naming a real calendar day. */
+export function isCalendarDate(ymd: unknown): ymd is string {
+  return typeof ymd === "string" && formatCalendarDate(ymd) !== "";
+}
+
 function dayMonthYear(date: Date, timeZone: string): string {
   const parts = new Intl.DateTimeFormat("en-GB", { timeZone, day: "2-digit", month: "2-digit", year: "numeric" }).formatToParts(date);
   const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
@@ -38,19 +57,16 @@ function dayMonthYear(date: Date, timeZone: string): string {
 }
 
 /**
- * DD/MM/YYYY of an instant in the given (clinic) timezone, never the machine's. An unknown zone
- * falls back to UTC; an unreadable or implausible instant gives "".
+ * DD/MM/YYYY of an instant in the given (clinic) timezone, never the machine's. A missing, empty or
+ * unknown zone falls back to Asia/Kolkata (never UTC, which would print the wrong day for an Indian
+ * evening); an unreadable or implausible instant gives "".
  */
-export function formatIssuedDate(iso: string, timeZone: string): string {
+export function formatIssuedDate(iso: string, timeZone: string | null | undefined): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
   const year = date.getUTCFullYear();
   if (year < 1900 || year > 2999) return "";
-  try {
-    return dayMonthYear(date, timeZone);
-  } catch {
-    return dayMonthYear(date, "UTC");
-  }
+  return dayMonthYear(date, isValidTimeZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE);
 }
 
 /** "2026-12-01" -> "01/12/2026"; anything else (including 2026-02-31) -> "". */
@@ -69,7 +85,8 @@ const DOSE_CAP = 999;
 
 /** A slot value that can be printed: finite and positive, else 0 (no dose). */
 function cleanQuantity(q: number | null | undefined): number {
-  return typeof q === "number" && Number.isFinite(q) && q > 0 ? q : 0;
+  if (typeof q !== "number" || !Number.isFinite(q) || q <= 0) return 0;
+  return q > DOSE_CAP ? q : Math.round(q * 100) / 100; // two decimals, so "present" matches what prints
 }
 
 /**

@@ -6,6 +6,15 @@ import type { LabelLanguage } from "./types";
 
 const hi = translations.hindi;
 
+/*
+ * NEEDS NATIVE-SPEAKER REVIEW before wide release (Hindi wording not confirmed):
+ *   when = "कब", howToUse = "उपयोग विधि", rxNo = "पर्चा क्रमांक", bloodSugar = "शुगर",
+ *   temperature = "तापमान" (consider "ताप"), respiratoryRate = "श्वसन दर", weight = "वजन",
+ *   noon and afternoon are both "दोपहर" in the legacy strings.
+ * followUp: the legacy followUpDate string means "next meeting" (अगली मुलाकात); a pad heading for a
+ *   follow-up visit is "पुनः जांच" (re-examination), chosen here instead.
+ */
+
 /** Pad headings. Hindi comes from src/lib/translations.ts wherever the legacy app already had it. */
 export const LABELS = {
   name: { en: "Name", hi: hi.name },
@@ -37,7 +46,7 @@ export const LABELS = {
   remarks: { en: "Remarks", hi: hi.remarks },
   investigations: { en: "Investigations", hi: hi.tests },
   advice: { en: "Advice", hi: "सलाह" },
-  followUp: { en: "Follow-up", hi: hi.followUpDate },
+  followUp: { en: "Follow-up", hi: "पुनः जांच" },
   regNo: { en: "Reg. No.", hi: "रजि. नं." },
   bp: { en: "BP", hi: hi.bp },
   pulse: { en: "Pulse", hi: "पल्स" },
