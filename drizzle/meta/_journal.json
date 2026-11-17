@@ -134,6 +134,20 @@
       "when": 1794921766217,
       "tag": "0018_phase1d_schema_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794923504260,
+      "tag": "0019_phase1d_patient_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794923507061,
+      "tag": "0020_phase1d_patient_import_security",
+      "breakpoints": true
     }
   ]
 }

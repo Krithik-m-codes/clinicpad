@@ -18,6 +18,7 @@ import {
 import { sql } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
 import type { Investigation, Vitals } from "../../../lib/domain/rx-options";
+import { patientImports } from "./imports";
 import { branches, doctors, tenants } from "./tenancy";
 
 const pk = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
@@ -47,6 +48,9 @@ export const patients = pgTable(
     allergies: text("allergies").array(),
     conditions: text("conditions").array(),
     notes: text("notes"),
+    /** The import that created this patient (Plan 1D), and the row key that makes a re-run idempotent. */
+    importId: uuid("import_id"),
+    importRowKey: text("import_row_key"),
     createdBy: uuid("created_by"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -58,6 +62,16 @@ export const patients = pgTable(
     unique("patients_tenant_no_unique").on(t.tenantId, t.patientNo),
     // Target of the composite same-tenant foreign keys (a foreign key needs a unique key to point at).
     unique("patients_tenant_id_uq").on(t.tenantId, t.id),
+    // Same-tenant reference to the import job (ADR-0025 pattern). NO ACTION: import rows are never deleted while the tenant exists.
+    foreignKey({
+      name: "patients_import_fk",
+      columns: [t.tenantId, t.importId],
+      foreignColumns: [patientImports.tenantId, patientImports.id],
+    }),
+    index("patients_tenant_import_idx").on(t.tenantId, t.importId),
+    // A re-run of the same file finds its rows here instead of creating them again.
+    uniqueIndex("patients_import_row_key_uq").on(t.tenantId, t.importRowKey).where(sql`${t.importRowKey} is not null`),
+    check("patients_import_row_key_check", sql`import_row_key is null or import_row_key ~ '^[0-9a-f]{64}$'`),
   ],
 );
 

@@ -71,7 +71,7 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
-function toColumns(input: PatientInput) {
+export function toPatientColumns(input: PatientInput) {
   return {
     name: input.name,
     phone: input.phone ?? null,
@@ -93,7 +93,7 @@ export async function createPatient(
   const parsed = patientInputSchema.safeParse(raw);
   if (!parsed.success) return invalidFrom(parsed.error);
   const input = parsed.data;
-  const columns = toColumns(input);
+  const columns = toPatientColumns(input);
 
   return withTenant(ctx.tenantId, async (tx): Promise<CreatePatientResult> => {
     if (await dobInClinicFuture(tx, ctx.tenantId, columns.dob)) return fail("invalid", DOB_FUTURE_MESSAGE, "dob");
@@ -214,7 +214,7 @@ export async function updatePatient(
   if (!isUuid(id)) return notFound();
   const parsed = patientInputSchema.safeParse(raw);
   if (!parsed.success) return invalidFrom(parsed.error);
-  const next = toColumns(parsed.data);
+  const next = toPatientColumns(parsed.data);
 
   return withTenant(ctx.tenantId, async (tx) => {
     if (await dobInClinicFuture(tx, ctx.tenantId, next.dob)) return fail("invalid", DOB_FUTURE_MESSAGE, "dob");

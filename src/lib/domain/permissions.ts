@@ -2,6 +2,7 @@ const MATRIX = {
   "patient.read": ["owner", "doctor", "reception", "nurse"],
   "patient.write": ["owner", "doctor", "reception"],
   "patient.archive": ["owner"],
+  "patient.import": ["owner"],
   "rx.read": ["owner", "doctor", "reception", "nurse", "pharmacist"],
   "rx.draft": ["owner", "doctor"],
   "rx.finalize": ["owner", "doctor"],

@@ -30,3 +30,19 @@ export async function recordAudit(
     after: event.after,
   });
 }
+
+/** Several events in one statement, inside the caller's transaction (bulk import). Same payload rules as recordAudit. */
+export async function recordAuditMany(tx: TenantTx, ctx: ServiceContext, events: readonly AuditInput[]): Promise<void> {
+  if (events.length === 0) return;
+  await tx.insert(auditEvents).values(
+    events.map((event) => ({
+      tenantId: ctx.tenantId,
+      actorUserId: ctx.userId,
+      action: event.action,
+      entityType: event.entityType,
+      entityId: event.entityId,
+      before: event.before,
+      after: event.after,
+    })),
+  );
+}

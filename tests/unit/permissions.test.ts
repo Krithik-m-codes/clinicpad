@@ -38,6 +38,11 @@ describe("can", () => {
     expect(can("doctor", "patient.archive")).toBe(false);
   });
 
+  it("restricts patient import to owners", () => {
+    expect(can("owner", "patient.import")).toBe(true);
+    for (const role of ["doctor", "reception", "nurse", "pharmacist", "accountant"]) expect(can(role, "patient.import")).toBe(false);
+  });
+
   it("denies unknown, empty, and missing roles", () => {
     expect(can("mystery", "patient.read")).toBe(false);
     expect(can("", "patient.read")).toBe(false);
@@ -69,6 +74,7 @@ describe("role x action matrix", () => {
     "patient.read": ["owner", "doctor", "reception", "nurse"],
     "patient.write": ["owner", "doctor", "reception"],
     "patient.archive": ["owner"],
+    "patient.import": ["owner"],
     "rx.read": ["owner", "doctor", "reception", "nurse", "pharmacist"],
     "rx.draft": ["owner", "doctor"],
     "rx.finalize": ["owner", "doctor"],

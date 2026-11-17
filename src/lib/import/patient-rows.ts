@@ -1,11 +1,12 @@
 import { detectDelimiter, parseCsvRows, type CsvDelimiter, type CsvRecord } from "@/lib/csv";
 import { IMPORT_FIELDS, type ColumnMapping, type ImportField } from "./patient-columns";
 
-export const IMPORT_LIMITS = { maxBytes: 1_000_000, maxRows: 5_000, maxColumns: 40, maxCellChars: 2_000 } as const;
+export const IMPORT_LIMITS = { maxBytes: 900_000, maxRows: 5_000, maxColumns: 40, maxCellChars: 2_000 } as const;
 
 export const IMPORT_MESSAGES = {
   empty: "The file is empty.",
   noRows: "The file has a header row but no patients.",
+  tooLarge: "The file is larger than 900 KB. Split it into smaller files.",
   tooManyRows: "The file has more than 5,000 patients. Split it into smaller files.",
   tooManyColumns: "The file has more than 40 columns. Remove the columns you do not need.",
   // Identical to NUL_MESSAGE (src/server/validation/text.ts); tests/unit/patient-import-rows.test.ts pins that.
