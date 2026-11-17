@@ -374,6 +374,8 @@ Shared code must not assume `window` or Node-only APIs without a boundary.
 
 **Second lock order (found in the whole-branch review):** there are two orders, not one. `amendPrescription` locks the parent (the finalized source) `FOR UPDATE`. Finalizing an amendment (`finalizePrescription`) locks the child (the amendment draft) first and then updates the parent (the `finalized -> amended` flip), so it locks child then parent. The two cannot deadlock only because amend's open-amendment check returns `conflict` before it writes anything: while an amendment draft exists, amend takes the parent lock, sees the open child and leaves without taking a child lock. **Any rewrite of `amendPrescription` must keep that order: check for an open amendment first, write afterwards.**
 
+**Plan 1B additions to the lock notes:** `discardDraft` (ADR-0031) locks only the draft row `FOR UPDATE` and never the parent, so a discard and a finalize of the same draft serialize on that row (whichever commits second sees the other's result: `immutable` or `not_found`, and no Rx number is burned). `amendPrescription` reads the open child with a plain select, which is safe against a pending discard: it either sees the open child and returns early, or finds the slot free after the discard commits. `repeatPrescription` reads its source `FOR SHARE` (it conflicts with amend's `FOR UPDATE`) and never locks a child.
+
 **Documented limitations (not enforced by these triggers):**
 - `TRUNCATE`, `ALTER TABLE ... DISABLE TRIGGER` and `session_replication_role = replica` by a superuser or table owner.
 - An `INSERT` of an already-finalized row.
@@ -409,9 +411,9 @@ Shared code must not assume `window` or Node-only APIs without a boundary.
 
 **Context:** RLS checks only a row's own `tenant_id`, and foreign-key checks run without RLS. A single-column foreign key could therefore point at another tenant's row.
 
-**Decision:** Relations between tenant-owned tables use composite keys `(tenant_id, x_id) -> parent(tenant_id, id)`. The parent gets `UNIQUE (tenant_id, id)`. Constraint names are explicit and under 63 characters. Migration 0007 converted `prescription_items -> prescriptions`, `prescriptions -> visits`, `prescriptions.parent_prescription_id` and `visits -> patients`; migration 0009 (`drizzle/0009_tenant_composite_fks_phase0.sql`) converted the last three Phase 0 relations: `branches -> clinics` (`branches_clinic_fk`, cascade), `doctors.primary_branch_id -> branches` (`doctors_primary_branch_fk`) and `template_versions -> templates` (`template_versions_template_fk`, cascade), adding `UNIQUE (tenant_id, id)` on `clinics`, `branches` and `templates`. Nullable parents use the `ON DELETE SET NULL (column)` form (Postgres 15+), so the tenant column is not nulled: `doctors_primary_branch_fk` is `ON DELETE SET NULL ("primary_branch_id")`, hand-written because drizzle-kit emits a plain `SET NULL` that would try to null `tenant_id` and fail the branch delete. A guard test in `tests/integration/tenant-fk.test.ts` fails if a single-column key into a tenant-owned table appears; its allowlist is now empty and must stay empty. `doctors` has no `(tenant_id, id)` unique key yet, and three columns reference tenant-owned rows with no foreign key at all: `visits.doctor_id`, `visits.branch_id` and `prescriptions.template_version_id` (`drizzle/0001_plain_chamber.sql`). They are written only from rows already read through RLS, and the guard test inspects declared keys only, so it cannot see them. The first Plan 1B migration must add `UNIQUE (tenant_id, id)` and `UNIQUE (tenant_id, user_id)` on `doctors` and composite foreign keys for those three columns (`ON DELETE SET NULL (column)`, hand-written). **Pattern for every new tenant-owned table:** unique `(tenant_id, id)` on the parent, foreign key on `(tenant_id, x_id)` in the child. Services still resolve every input id through `withTenant` first.
+**Decision:** Relations between tenant-owned tables use composite keys `(tenant_id, x_id) -> parent(tenant_id, id)`. The parent gets `UNIQUE (tenant_id, id)`. Constraint names are explicit and under 63 characters. Migration 0007 converted `prescription_items -> prescriptions`, `prescriptions -> visits`, `prescriptions.parent_prescription_id` and `visits -> patients`; migration 0009 (`drizzle/0009_tenant_composite_fks_phase0.sql`) converted the last three Phase 0 relations: `branches -> clinics` (`branches_clinic_fk`, cascade), `doctors.primary_branch_id -> branches` (`doctors_primary_branch_fk`) and `template_versions -> templates` (`template_versions_template_fk`, cascade), adding `UNIQUE (tenant_id, id)` on `clinics`, `branches` and `templates`. Nullable parents use the `ON DELETE SET NULL (column)` form (Postgres 15+), so the tenant column is not nulled: `doctors_primary_branch_fk` is `ON DELETE SET NULL ("primary_branch_id")`, hand-written because drizzle-kit emits a plain `SET NULL` that would try to null `tenant_id` and fail the branch delete. A guard test in `tests/integration/tenant-fk.test.ts` fails if a single-column key into a tenant-owned table appears; its allowlist is now empty and must stay empty. Three columns referenced tenant-owned rows with no foreign key at all (`visits.doctor_id`, `visits.branch_id`, `prescriptions.template_version_id`, from `drizzle/0001_plain_chamber.sql`); the guard test inspects declared keys only, so it could not see them. **Update (Plan 1B, migration `drizzle/0010_clinical_references.sql`):** `doctors` now has `UNIQUE (tenant_id, id)` and `UNIQUE (tenant_id, user_id)`, `template_versions` has `UNIQUE (tenant_id, id)`, and the three columns are composite keys: `visits_doctor_fk`, `visits_branch_fk`, `prescriptions_template_version_fk`, each `ON DELETE SET NULL (column)`, hand-written. Deleting a doctor, branch, or template version that a finalized record references is refused by the immutability triggers (deactivate instead); tenant offboarding still works (`tests/integration/clinical-references.test.ts`). **Pattern for every new tenant-owned table:** unique `(tenant_id, id)` on the parent, foreign key on `(tenant_id, x_id)` in the child. Services still resolve every input id through `withTenant` first.
 
-**Consequences:** Composite keys cover every declared relation between tenant-owned tables, and the guard test pins that, so none of those can reference another tenant's row even through the admin connection. The three columns listed above are not covered until the Plan 1B migration lands. Migrations need the unique constraint created before the foreign key that references it (drizzle-kit emits them in the wrong order and needs a hand edit).
+**Consequences:** Composite keys cover every declared relation between tenant-owned tables, and the guard test pins that, so none of those can reference another tenant's row even through the admin connection. Since migration 0010 the three columns listed above are covered too. Migrations need the unique constraint created before the foreign key that references it (drizzle-kit emits them in the wrong order and needs a hand edit).
 
 **Revisit trigger:** partitioning by tenant, which would change how keys are declared.
 
@@ -437,6 +439,81 @@ The nurse reads but does not write patients (design spec section 4). The account
 `repeatPrescription` copies a `finalized` source into a new draft. It refuses a draft source and a superseded (`amended`) source with `conflict`: a superseded version holds exactly the content an amendment corrected, so copying it forward would be a patient-safety hazard. Audit payloads carry ids, counts and field names only, never free text.
 
 **Revisit trigger:** a clinic role model that needs per-clinic custom roles, or nurse charting in Phase 3.
+
+---
+
+## ADR-0027 — Visit clinical content lives in columns on `visits`
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** The clinical form adds complaints, medical and drug history, examination notes, vitals, ordered investigations, and a follow-up reason. `DATA_MODEL.md` sketches separate `vitals` and `investigations` tables. Everything that belongs to a finalized prescription must be immutable (ADR-0023) and copied by amend (ADR-0024).
+
+**Decision:** Store them on `visits`: `text[]` for phrase lists (`complaints`, `medical_history`, `drug_history`), `text` for `examination_notes` and `follow_up_reason`, and typed `jsonb` for `vitals` (one object per visit, temperature in °F, BMI computed not stored) and `investigations` (array of `{ name, instructions }`). Prescription items gain a generic name, four dose slots (`numeric(5,2)`, quarter steps), periodicity, SOS, and duration value + unit, with `duration_days` kept as derived total days. `prescriptions.draft_revision` carries the autosave revision (ADR-0029). Plan 1A rows are read as durations in days; no data backfill (migration 0011). Blank phrase entries are dropped; a NUL in any text is refused (`invalid`), other stray control characters are removed (`cleanInput`, `src/server/validation/text.ts`).
+
+**Consequences:** The existing visit and item immutability triggers, including the 0008 guard on a draft visit whose prescription is already finalized, cover the new columns with no new trigger (`tests/integration/clinical-schema.test.ts`). Amend copies every visit and item column through `omit()`, so later columns are copied too; repeat copies the prescribing content only. A future child table with clinical content (vitals history, lab orders) needs its own ADR-0023-style trigger.
+
+**Revisit trigger:** vitals trend charts, lab orders with result status, or ICD-coded diagnosis analytics.
+
+---
+
+## ADR-0028 — Medicine catalogue: global reference tables plus clinic tables
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** Doctors need fast medicine and clinical-term suggestions from day one, plus their own medicines and favourite dosing. A single table with a nullable `tenant_id` would need a special RLS policy on a tenant table.
+
+**Decision:** `global_medicines` and `global_clinical_terms` have no `tenant_id`, are loaded from `sample_data/*.csv` by `npm run db:seed:catalogue` on the admin connection (idempotent), and are SELECT-only for `clinicpad_app` (INSERT/UPDATE/DELETE/TRUNCATE revoked; RLS forced with a select-only policy for everyone except the migration role; migration 0012). Clinic additions go to `tenant_medicines`; default lines go to `medicine_favourites`, which belong to a doctor profile through the composite key `(tenant_id, doctor_id) -> doctors(tenant_id, id)` (`medicine_favourites_doctor_fk`, `ON DELETE CASCADE`), one per medicine per doctor, upserted, at most 200. Both tenant tables carry the standard forced `tenant_isolation` policy. Search is a GET route handler (`/api/catalogue/search`) with escaped LIKE wildcards; no trigram index yet.
+
+**Consequences:** Every tenant table keeps the standard isolation policy and the tenant-FK guard stays empty. No request path can modify the shared catalogue. A prescriber without a doctor profile has no favourites. The seed data is reference text, not a licensed drug database; it carries no clinical decision support, it has spelling errors and duplicate names with differing generic names, and it needs a clinical review before any pilot (`docs/PROGRESS.md`, section 4.9 follow-ups).
+
+**Revisit trigger:** a licensed drug database (Phase 6), a tenant above ~20k catalogue rows, or demand for clinic-learned complaint and diagnosis lists.
+
+---
+
+## ADR-0029 — Draft autosave with optimistic revisions
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** Drafts must save automatically without losing or reordering edits when saves overlap, the network drops, or the same draft is open twice. The offline outbox is Phase 4.
+
+**Decision:** Every save sends the full draft snapshot and the `draft_revision` it was based on (`baseRevision`, required and validated at the action boundary: a missing or malformed revision is refused before any service call). The server locks the prescription row, rejects a stale revision with `conflict` and the current revision, and otherwise writes and increments the revision. The client (`src/lib/rx/autosave.ts`) keeps exactly one save in flight, debounces 800 ms (at most 5 s during continuous typing), gives each save a 30 s timeout (a timeout is an ambiguous, retryable failure), retries network and server failures with backoff from 1 s doubling to 30 s while showing "not saved", and stops on a conflict until the user reloads the latest version or explicitly keeps their own; a conflict never overwrites without that choice. Teardown is `dispose()` (keep-safe: a final best-effort save) versus `discard()` (drops pending edits, used when the user reloads the latest). Finalize goes through the same queue with `expectedRevision`, so content the doctor never saw is never finalized; the client gives finalize a 45 s timeout and re-reads state after an unknown outcome (the answer may have been lost after the commit). The editor is disabled until it has hydrated, locked while finalizing and after success, and warns before unload while anything is unsaved. Editor server actions never redirect. Autosaves are not audited; `prescription.finalized` and `prescription.amended` add a clinical summary (counts and field names only) to Plan 1A's payload.
+
+**Consequences:** No interleaved or reordered writes; two windows get a visible conflict instead of a merge. The Phase 4 outbox can reuse the revision contract as its idempotency and conflict check. Known limits are listed in `docs/PROGRESS.md` (section 4.9): Next serialises server actions, so a hung finalize delays a resumed autosave, and one invalid field blocks the whole snapshot.
+
+**Revisit trigger:** Phase 4 sync design, or users regularly editing one draft from two devices.
+
+---
+
+## ADR-0030 — Who may edit clinical content and use the catalogue
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** The platform spec gives nurses vitals entry, but a nurse writing into a doctor's open draft would race the doctor's autosave. ADR-0026 holds the Plan 1A matrix.
+
+**Decision:** Every clinical field, vitals included, is edited only by roles with `rx.draft` (owner, doctor); finalizing needs `rx.finalize`. Two actions join the matrix in `src/lib/domain/permissions.ts`: `catalogue.read` (owner, doctor, nurse, pharmacist) for medicine and term search, and `catalogue.write` (owner, doctor) for adding clinic medicines. Reception and accountants have neither. Nurse vitals capture moves to the Phase 3 queue flow as its own action and service.
+
+**Consequences:** One writer per draft. Clinics that want nurses to record vitals wait for Phase 3. Roles with `rx.read` (reception, nurse, pharmacist) now also read history, examination notes, and vitals of a prescription; whether reception and pharmacists should see them is a data-minimisation decision to make before a pilot (`docs/PROGRESS.md`).
+
+**Revisit trigger:** design-partner feedback that nurse vitals entry is needed before Phase 3.
+
+---
+
+## ADR-0031 — Discarding drafts and withdrawing amendments
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** Abandoned drafts stayed on the patient's list forever, and an open amendment could be neither finished nor abandoned, which blocked every further correction (one open amendment per prescription, ADR-0024). Repeat copied a prescription even while its correction was in progress.
+
+**Decision:** `discardDraft` (owner, doctor) deletes a draft prescription with its items and its draft visit, after locking the draft row `FOR UPDATE`: a first-version draft, or an open amendment, which frees its parent's slot without touching the parent. A finalized or amended version is never deleted (`immutable`; the triggers refuse it anyway), and a corrupt state the triggers refuse (a draft prescription on a non-draft visit) returns `immutable` with "This prescription cannot be discarded.". The event `prescription.draft_discarded` records ids and counts only. `repeatPrescription` refuses a source with an open amendment draft (`conflict`) and reads the source `FOR SHARE`. The page offers "Discard draft" / "Withdraw amendment" to roles with `rx.draft` behind an inline confirm step (focus on "Keep it", warning announced politely); after a failed discard the form refreshes the page, and a `not_found` reads "This draft was changed or discarded elsewhere."
+
+**Consequences:** Drafts are not records (ADR-0029), so a discarded draft is gone; only its audit event remains. Doctors can always get out of an unwanted correction. Lock interplay with finalize, amend and repeat is described in ADR-0023; `tests/integration/prescriptions-discard.test.ts` holds the row lock to prove the order deterministically.
+
+**Revisit trigger:** a clinic asking to restore a discarded draft (switch to a `discarded` status).
 
 ---
 

@@ -2,7 +2,7 @@
 
 This file is the single source of truth for any AI agent or developer working on ClinicPad. Read it before touching code. Update it when reality diverges from what is written here.
 
-**Last updated:** 2026-11-16
+**Last updated:** 2026-11-17
 **Product stage:** pre-alpha / foundation
 **Working name:** ClinicPad (verify trademark and domain before public launch)
 
@@ -43,7 +43,7 @@ The repo is a copy of the original `doctor-prescription-app`:
 
 **Nothing here is production-safe for patient data yet.** There is no staging deployment, and the legacy IndexedDB data is demo data.
 
-**Repository state (2026-11-16):** Phase 0 and Phase 1A are code complete on branch `phase-1-prescription-mvp`; the automated gate (`node scripts/verify-gate-0.mjs`: 385 unit/integration tests, 15 e2e) passed on 2026-11-16 (see `docs/PROGRESS.md` section 4.8). What exists: Auth.js credentials login and clinic sign-up, Postgres with row-level security (forced policies) and composite same-tenant foreign keys, a role matrix enforced in services, patients (register, edit, search, duplicate warning; archive exists only as a service, with no action, UI or unarchive yet), the prescription lifecycle (draft, save, finalize, amend with a reason, repeat) with database-enforced immutability, per-clinic Rx numbering, an append-only audit log, Vitest unit/integration tests and Playwright e2e. What does not exist: Template Studio and PDF, WhatsApp/email sharing, offline sync, billing, staging. Decisions: `docs/DECISIONS.md` (ADR-0019 to ADR-0026 cover the current state).
+**Repository state (2026-11-17):** Phase 0, Phase 1A and Phase 1B are code complete on branch `phase-1-prescription-mvp`; the automated gate (`node scripts/verify-gate-0.mjs`: 872 unit/integration tests, 18 e2e) passed on 2026-11-17 (see `docs/PROGRESS.md` sections 4.8 and 4.9). What exists: Auth.js credentials login and clinic sign-up, Postgres with row-level security (forced policies) and composite same-tenant foreign keys, a role matrix enforced in services, patients (register, edit, search, duplicate warning; archive exists only as a service, with no action, UI or unarchive yet), the prescription lifecycle (draft, save, finalize, amend with a reason, repeat) with database-enforced immutability, per-clinic Rx numbering, an append-only audit log, Vitest unit/integration tests and Playwright e2e. Phase 1B adds the server-backed clinical form (vitals, history, investigations, structured medicines with dose schedules), the global + clinic medicine catalogue with per-doctor favourites (`npm run db:seed:catalogue`), revision-checked draft autosave, and discarding drafts / withdrawing amendments. Templates, PDF, sharing, and offline are not built yet. What does not exist: Template Studio and PDF, WhatsApp/email sharing, offline sync, billing, staging. Decisions: `docs/DECISIONS.md` (ADR-0019 to ADR-0031 cover the current state).
 
 ### What is reusable
 
@@ -165,6 +165,7 @@ npm run test:e2e
 npm run db:generate
 npm run db:migrate
 npm run db:seed
+npm run db:seed:catalogue   # global medicine and clinical-term lists (idempotent)
 ```
 
 Environment: Node 22+, npm 11+, Git 2.5x, Docker Desktop (for Postgres/Gotenberg), Rust (desktop only).
@@ -191,7 +192,7 @@ Skills live at `~/.agents/skills` (OpenCode) and `~/.claude/skills` (Claude Code
 
 ## 8. Where we are / what is next
 
-See `docs/PROGRESS.md` for the live tracker. Phase 0 (foundation) is code complete and Phase 1A (patients and prescription core) is code complete; the open items are the Phase 0 ops carry-overs (staging, CI on GitHub, pre-commit hook, 360 px check, MFA note). The next milestone is Plan 1B (clinical form, autosave). Read `docs/ROADMAP.md` before starting it.
+See `docs/PROGRESS.md` for the live tracker. Phase 0 (foundation) is code complete and Phase 1A (patients and prescription core) is code complete; the open items are the Phase 0 ops carry-overs (staging, CI on GitHub, pre-commit hook, 360 px check, MFA note). Plan 1B (clinical form, medicine catalogue, autosave, discard) is code complete as well. The next milestone is Plan 1C (templates, server PDF, print). Read `docs/ROADMAP.md` before starting it.
 
 ---
 
@@ -213,8 +214,12 @@ Track answers in `docs/DECISIONS.md`:
 
 - **The desktop build is a static export and cannot contain server routes.** `scripts/build-desktop.mjs` stashes server-only routes (everything under `src/app/(app)`, auth, API) and exports the legacy shell only. A new server-only route directory outside `(app)` must be added to its list (ADR-0021).
 - **Prescription lock order (there are two).** Lock the prescription row `FOR UPDATE` before touching its items or its visit. Another order can deadlock (`40P01`) against a finalize. Finalizing an amendment locks the child (the amendment draft) first and then the parent (`finalizePrescription`), while `amendPrescription` locks the parent. That is safe only because amend's open-amendment check returns before it writes anything; any rewrite of `amendPrescription` must keep that order (check first, write after) (ADR-0023). The immutability triggers (ADR-0023) reject edits of finalized records with SQLSTATE `23000` even on the admin connection; do not work around them.
-- **Composite-FK pattern for new tenant tables.** The parent gets `UNIQUE (tenant_id, id)`; the child references `(tenant_id, x_id)`. Composite keys cover every DECLARED relation between tenant-owned tables, and the guard test pins that. `doctors` has no `(tenant_id, id)` unique key yet, and `visits` already references doctors (`visits.doctor_id`) with no foreign key at all, as do `visits.branch_id` and `prescriptions.template_version_id`; those three columns are written only from rows read through RLS. The first Plan 1B migration must add `unique (tenant_id, id)` and `unique (tenant_id, user_id)` on `doctors` plus composite foreign keys for the three columns (`ON DELETE SET NULL (col)`, by hand). Name constraints explicitly (under 63 characters), and use `ON DELETE SET NULL (col)` for nullable parents. A guard test in `tests/integration/tenant-fk.test.ts` fails on a single-column key into a tenant-owned table (ADR-0025). drizzle-kit emits the foreign key before the unique constraint it needs; reorder by hand.
-- **`repeatPrescription` refuses superseded (`amended`) versions** and drafts; only the latest `finalized` version can be repeated (ADR-0026).
+- **Composite-FK pattern for new tenant tables.** The parent gets `UNIQUE (tenant_id, id)`; the child references `(tenant_id, x_id)`. Composite keys cover every DECLARED relation between tenant-owned tables, and the guard test pins that. Migration 0010 added `unique (tenant_id, id)` and `unique (tenant_id, user_id)` on `doctors` and composite keys for `visits.doctor_id`, `visits.branch_id`, `prescriptions.template_version_id`; a doctor, branch, or template version referenced by a signed record cannot be deleted. Name constraints explicitly (under 63 characters), and use `ON DELETE SET NULL (col)` for nullable parents. A guard test in `tests/integration/tenant-fk.test.ts` fails on a single-column key into a tenant-owned table (ADR-0025). drizzle-kit emits the foreign key before the unique constraint it needs; reorder by hand.
+- **`repeatPrescription` refuses superseded (`amended`) versions** and drafts; only the latest `finalized` version can be repeated (ADR-0026). It also refuses a source with an open amendment draft, and reads the source `FOR SHARE` (ADR-0031).
+- **Discard locks only the draft row.** `discardDraft` never locks the parent; amend's plain select of the open child is safe against a pending discard, and `repeatPrescription` never locks a child (ADR-0023, ADR-0031).
+- **Migrations cannot backfill clinical rows.** The immutability triggers reject `UPDATE` on finalized `visits`, `prescriptions`, and `prescription_items`; add nullable columns or constant defaults and read old rows with a fallback.
+- **Server actions run one at a time.** Use GET route handlers for anything a client component fetches while typing (see `/api/catalogue/search`).
+- **A NUL is refused, never stripped.** Validate free text through `cleanInput`/`cleanOptionalText`/`cleanRequiredText` (`src/server/validation/text.ts`); `cleanText` alone strips NUL and is meant for search terms and keys.
 - **Windows vitest needs an UPPERCASE drive letter** in the working directory (`E:\...`). A lowercase `e:` loads two vitest instances and every test fails.
 - **Docker Desktop on this machine lives under `%LOCALAPPDATA%\Programs\DockerDesktop`**, not Program Files.
 - **Playwright `getByRole("alert")` also matches Next's route announcer.** Scope the locator or use a test id.
