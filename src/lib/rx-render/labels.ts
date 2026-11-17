@@ -1,4 +1,4 @@
-import { FOOD_RELATION_LABELS, PERIODICITY_LABELS, type FoodRelation, type Periodicity } from "@/lib/domain/rx-options";
+import { FOOD_RELATION_LABELS, FOOD_RELATION_LABELS_HI, PERIODICITY_LABELS, PERIODICITY_LABELS_HI } from "@/lib/domain/rx-options";
 import { translations } from "@/lib/translations";
 import { numberText } from "./format";
 import { html, type SafeHtml } from "./html";
@@ -78,27 +78,6 @@ export function labelHtml(key: LabelKey, lang: LabelLanguage): SafeHtml {
   return html`<span class="l-en">${en}</span><span class="l-hi">${hindi}</span>`;
 }
 
-const HI_FOOD: Record<FoodRelation, string> = {
-  before: hi.before,
-  after: hi.after,
-  with: hi.with,
-  without: hi.without,
-  with_tea: hi.with_tea,
-  just_for_now: hi.just_for_now,
-  according_to_pain: hi.according_to_pain,
-};
-
-const HI_PERIODICITY: Record<Periodicity, string> = {
-  daily: hi.daily,
-  alternate_day: hi.alternate,
-  twice_weekly: hi.weeklyTwice,
-  weekly: hi.weekly,
-  every_5th_day: hi.every_5th_day,
-  fortnightly: hi.fortnightly,
-  monthly: hi.monthly,
-  as_needed: hi.asNeeded,
-};
-
 const GENDER: Record<string, { en: string; hi: string }> = {
   female: { en: "Female", hi: hi.female },
   male: { en: "Male", hi: hi.male },
@@ -117,11 +96,11 @@ function coded<K extends string>(
 }
 
 export function foodText(code: string | null, lang: LabelLanguage): string {
-  return coded(code, FOOD_RELATION_LABELS, HI_FOOD, lang);
+  return coded(code, FOOD_RELATION_LABELS, FOOD_RELATION_LABELS_HI, lang);
 }
 
 export function periodicityText(code: string | null, lang: LabelLanguage): string {
-  return coded(code, PERIODICITY_LABELS, HI_PERIODICITY, lang);
+  return coded(code, PERIODICITY_LABELS, PERIODICITY_LABELS_HI, lang);
 }
 
 export function genderText(code: string | null, lang: LabelLanguage): string {

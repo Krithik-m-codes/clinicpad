@@ -1,7 +1,8 @@
+import { translations } from "@/lib/translations";
 /**
  * Codes and limits shared by validation, services, and the editor UI. Codes are what the
- * database stores; English labels live here. Hindi labels arrive with Plan 1D, keyed by the
- * same codes (they match the legacy keys in src/lib/translations.ts).
+ * database stores; English labels live here. Hindi labels (for the printed pad today) live here too,
+ * keyed by the same codes.
  */
 export const FOOD_RELATIONS = [
   "before",
@@ -84,3 +85,30 @@ export type Vitals = {
 
 /** An ordered test, stored in the jsonb array `visits.investigations`. */
 export type Investigation = { name: string; instructions?: string };
+
+const hi = translations.hindi;
+
+/*
+ * NEEDS NATIVE-SPEAKER REVIEW before wide release (human decision, Plan 1D). Taken from the legacy app's strings
+ * (src/lib/translations.ts). The app UI is English; these are printed on Hindi and bilingual pads.
+ */
+export const FOOD_RELATION_LABELS_HI: Record<FoodRelation, string> = {
+  before: hi.before,
+  after: hi.after,
+  with: hi.with,
+  without: hi.without,
+  with_tea: hi.with_tea,
+  just_for_now: hi.just_for_now,
+  according_to_pain: hi.according_to_pain,
+};
+
+export const PERIODICITY_LABELS_HI: Record<Periodicity, string> = {
+  daily: hi.daily,
+  alternate_day: hi.alternate,
+  twice_weekly: hi.weeklyTwice,
+  weekly: hi.weekly,
+  every_5th_day: hi.every_5th_day,
+  fortnightly: hi.fortnightly,
+  monthly: hi.monthly,
+  as_needed: hi.asNeeded,
+};

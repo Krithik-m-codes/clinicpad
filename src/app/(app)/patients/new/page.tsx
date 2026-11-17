@@ -11,7 +11,7 @@ export default async function NewPatientPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">New patient</h1>
-      <PatientForm action={createPatientAction} submitLabel="Register patient" allowDuplicateConfirm />
+      <PatientForm autoFocusName action={createPatientAction} submitLabel="Register patient" allowDuplicateConfirm />
     </div>
   );
 }

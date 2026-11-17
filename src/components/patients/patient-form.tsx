@@ -14,6 +14,8 @@ type Props = {
   submitLabel: string;
   /** Show the "register anyway" button when the server reports duplicate candidates. */
   allowDuplicateConfirm?: boolean;
+  /** Put the cursor in Name on first render (registration: type the name straight away). */
+  autoFocusName?: boolean;
 };
 
 const selectClass =
@@ -36,7 +38,7 @@ function invalidProps(state: PatientFormState, field: string) {
     : ({} as const);
 }
 
-export function PatientForm({ action, initial, submitLabel, allowDuplicateConfirm }: Props) {
+export function PatientForm({ action, initial, submitLabel, allowDuplicateConfirm, autoFocusName }: Props) {
   const [state, formAction, pending] = useActionState(action, {} as PatientFormState);
   const v = state.values ?? initial ?? {};
   const formRef = useRef<HTMLFormElement>(null);
@@ -76,6 +78,7 @@ export function PatientForm({ action, initial, submitLabel, allowDuplicateConfir
         <Input
           id="name"
           name="name"
+          autoFocus={autoFocusName}
           required
           minLength={2}
           defaultValue={v.name ?? ""}
