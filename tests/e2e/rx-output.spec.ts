@@ -64,7 +64,8 @@ test("print and download a finalized prescription; a reprint keeps the finalized
     window.print = () => {
       top.__printCalls = (top.__printCalls ?? 0) + 1;
       // Browsers fire afterprint on the printing window when the dialog closes; the app removes its frame then.
-      setTimeout(() => window.dispatchEvent(new Event("afterprint")), 50);
+      // (Synchronously: the print frame is sandboxed without allow-scripts, so its timers never run.)
+      window.dispatchEvent(new Event("afterprint"));
     };
   });
   clinics.push(await registerClinic(page, "rxout"));
