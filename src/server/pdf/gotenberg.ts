@@ -46,6 +46,38 @@ export function gotenbergForm(doc: RenderedDocument): FormData {
   return form;
 }
 
+/**
+ * Reads a body while counting bytes; stops (and cancels the stream) once `maxBytes` is exceeded,
+ * so a hostile or broken service cannot make us buffer more than the cap.
+ */
+async function readCapped(response: Response, maxBytes: number): Promise<ArrayBuffer | "too_large"> {
+  const reader = response.body?.getReader();
+  if (!reader) return new ArrayBuffer(0);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return "too_large";
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out.buffer;
+}
+
+async function discard(response: Response): Promise<void> {
+  await response.body?.cancel().catch(() => undefined);
+}
+
 /** Posts a prepared form. Callers must have checked the document; createGotenbergEngine().render does. */
 export async function postHtmlToGotenberg(options: GotenbergOptions, form: FormData): Promise<PdfOutcome> {
   const fetchImpl = options.fetch ?? fetch;
@@ -60,18 +92,22 @@ export async function postHtmlToGotenberg(options: GotenbergOptions, form: FormD
   } catch (error) {
     return failure(isTimeout(error) ? "pdf_timeout" : "pdf_unavailable");
   }
-  if (response.status === 502 || response.status === 503) return failure("pdf_unavailable");
-  if (!response.ok) return failure("pdf_failed");
-  if (!(response.headers.get("content-type") ?? "").includes("application/pdf")) return failure("pdf_failed");
-  if (Number(response.headers.get("content-length") ?? "0") > maxBytes) return failure("pdf_too_large");
+  const early = async (code: PdfFailureCode): Promise<PdfOutcome> => {
+    await discard(response);
+    return failure(code);
+  };
+  if (response.status === 502 || response.status === 503) return early("pdf_unavailable");
+  if (!response.ok) return early("pdf_failed");
+  if (!(response.headers.get("content-type") ?? "").includes("application/pdf")) return early("pdf_failed");
+  if (Number(response.headers.get("content-length") ?? "0") > maxBytes) return early("pdf_too_large");
 
-  let pdf: ArrayBuffer;
+  let pdf: ArrayBuffer | "too_large";
   try {
-    pdf = await response.arrayBuffer();
+    pdf = await readCapped(response, maxBytes);
   } catch (error) {
     return failure(isTimeout(error) ? "pdf_timeout" : "pdf_failed");
   }
-  if (pdf.byteLength > maxBytes) return failure("pdf_too_large");
+  if (pdf === "too_large") return failure("pdf_too_large");
   if (!startsWithPdfMagic(pdf)) return failure("pdf_failed");
   const pageCount = countPdfPages(pdf);
   if (pageCount < 1) return failure("pdf_failed");
@@ -82,26 +118,38 @@ export async function postHtmlToGotenberg(options: GotenbergOptions, form: FormD
 /**
  * PDF engine backed by Gotenberg's Chromium route (ADR-0007). Refuses any document that is
  * not self-contained before it leaves the process, so the renderer cannot make Chromium fetch.
+ * render() never throws: every failure is a typed outcome with a safe message.
  */
 export function createGotenbergEngine(options: GotenbergOptions): PdfEngine {
   const fetchImpl = options.fetch ?? fetch;
   return {
     async render(doc) {
-      // Size first: the self-contained checker would otherwise report an oversize document as refused.
-      if (new TextEncoder().encode(doc.html).byteLength > PDF_LIMITS.maxHtmlBytes) return failure("pdf_too_large");
-      for (const part of [doc.html, doc.footerHtml]) {
-        if (!checkSelfContained(part).ok) return failure("pdf_refused");
+      try {
+        // Size first (cheap length test, then exact bytes): the self-contained checker would
+        // otherwise report an oversize document as refused.
+        if (doc.html.length > PDF_LIMITS.maxHtmlBytes) return failure("pdf_too_large");
+        if (Buffer.byteLength(doc.html, "utf8") > PDF_LIMITS.maxHtmlBytes) return failure("pdf_too_large");
+        for (const part of [doc.html, doc.footerHtml]) {
+          if (!checkSelfContained(part).ok) return failure("pdf_refused");
+        }
+        return await postHtmlToGotenberg(options, gotenbergForm(doc));
+      } catch {
+        return failure("pdf_failed");
       }
-      return postHtmlToGotenberg(options, gotenbergForm(doc));
     },
     async health() {
       try {
         const response = await fetchImpl(`${trimSlash(options.baseUrl)}/health`, {
           signal: AbortSignal.timeout(options.healthTimeoutMs ?? PDF_LIMITS.healthTimeoutMs),
         });
-        if (!response.ok) return { up: false, detail: `status ${response.status}` };
-        const body = (await response.json()) as { status?: unknown };
-        return body.status === "up" ? { up: true, detail: "up" } : { up: false, detail: "reported down" };
+        if (!response.ok) {
+          await discard(response);
+          return { up: false, detail: `status ${response.status}` };
+        }
+        const body = await readCapped(response, 4096);
+        if (body === "too_large") return { up: false, detail: "unexpected response" };
+        const parsed = JSON.parse(new TextDecoder().decode(body)) as { status?: unknown };
+        return parsed.status === "up" ? { up: true, detail: "up" } : { up: false, detail: "reported down" };
       } catch {
         return { up: false, detail: "unreachable" };
       }

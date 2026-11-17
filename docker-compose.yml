@@ -17,26 +17,41 @@ services:
       retries: 10
 
   gotenberg:
-    # Pinned (tag verified to exist with `docker pull`). Upgrades need the visual check in
-    # docs/SETUP.md (npm run test:visual). Flags verified against `gotenberg --help` of this tag.
-    image: gotenberg/gotenberg:8.11.0
+    # Hardening set for the PDF engine. Production deployment copies this flag set verbatim.
+    # Image pinned by digest (tag 8.11.0). Upgrades need the visual check in docs/SETUP.md.
+    # Flags verified against `gotenberg --help` of this image:
+    #   --chromium-disable-javascript      documents are static HTML, no script runs
+    #   --chromium-deny-list=...           only the staged input file:///tmp/, data:, about:, blob:
+    #   --webhook-disable                  no outbound callbacks from the API
+    #   --api-disable-download-from        no server-side fetch of caller-supplied URLs
+    #   --libreoffice-disable-routes       Office conversion is not used until Phase 2
+    #   --pdfengines-disable-routes        merge/split/convert routes are not used
+    #   --api-timeout=30s                  hard request limit
+    # Bound to loopback only: the API has no authentication.
+    image: gotenberg/gotenberg:8.11.0@sha256:e60da3ecc52050303c3886630aa7ed82f9486660b82a1ce6e5bf253c3b0764d4
     container_name: clinicpad-gotenberg
+    restart: unless-stopped
     command:
       - gotenberg
       - --api-timeout=30s
+      - --api-disable-download-from
+      - --webhook-disable
+      - --libreoffice-disable-routes
+      - --pdfengines-disable-routes
       - --chromium-disable-javascript=true
-      # Documents are self-contained (data: URIs only). Deny every request except the staged
-      # input under file:///tmp/ and data:/about:/blob: URLs, so no http(s) or other file: access.
       - --chromium-deny-list=^(?!file:///tmp/|data:|about:|blob:).*
       - --log-level=warn
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     extra_hosts:
       # Lets the smoke test's network-isolation probe reach the host on Linux too.
       - "host.docker.internal:host-gateway"
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
     mem_limit: 1g
+    pids_limit: 512
     healthcheck:
       test: ["CMD", "curl", "--silent", "--fail", "http://localhost:3000/health"]
       interval: 10s

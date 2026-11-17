@@ -31,7 +31,8 @@ export const PDF_MESSAGES: Record<PdfFailureCode, string> = {
 
 /** Counts `/Type /Page` objects (not `/Pages`); falls back to the page tree's `/Count`. */
 export function countPdfPages(pdf: ArrayBuffer): number {
-  const text = new TextDecoder("latin1").decode(new Uint8Array(pdf));
+  // Stream bodies (images, fonts, content) are binary and can contain any text, e.g. a JPEG comment.
+  const text = new TextDecoder("latin1").decode(new Uint8Array(pdf)).replace(/stream\r?\n[\s\S]*?endstream/g, "stream endstream");
   const pages = (text.match(/\/Type\s*\/Page(?![A-Za-z])/g) ?? []).length;
   if (pages > 0) return pages;
   const tree = /\/Type\s*\/Pages\b[^>]*?\/Count\s+(\d+)/.exec(text);

@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { createGotenbergEngine } from "@/server/pdf/gotenberg";
+import { resolveGotenbergUrl } from "@/server/pdf";
+import type { RenderedDocument } from "@/lib/rx-render/types";
 import { countPdfPages, PDF_LIMITS } from "@/server/pdf/engine";
 import { renderPrescription } from "@/lib/rx-render/render";
 import { documentFixture } from "../fixtures/rx-documents";
@@ -71,6 +73,71 @@ describe("createGotenbergEngine.render", () => {
     expect(await engine.render(rendered)).toMatchObject({ ok: false, code });
   });
 
+  it("sends A5 paper size, all four margins and the print media type", async () => {
+    const a5Doc = documentFixture();
+    const a5 = renderPrescription({ ...a5Doc, snapshot: { ...a5Doc.snapshot, layout: { ...a5Doc.snapshot.layout, paperSize: "A5" } } }, { logo: null, signature: null, fontCss: "" });
+    const { calls, impl } = recorder(async () => pdfResponse(1));
+    await createGotenbergEngine({ baseUrl: BASE, fetch: impl }).render(a5);
+    const form = calls[0].init?.body as FormData;
+    const inches = (mm: number) => (mm / 25.4).toFixed(3);
+    expect(a5.paper.size).toBe("A5");
+    expect(form.get("paperWidth")).toBe(String(a5.paper.widthIn));
+    expect(form.get("paperHeight")).toBe(String(a5.paper.heightIn));
+    expect(form.get("paperWidth")).not.toBe("8.27");
+    expect(form.get("marginLeft")).toBe(inches(a5.paper.marginMm.left));
+    expect(form.get("marginRight")).toBe(inches(a5.paper.marginMm.right));
+    expect(form.get("emulatedMediaType")).toBe("print");
+  });
+
+  it("refuses a footer that is not self-contained without calling the service", async () => {
+    const { calls, impl } = recorder(async () => pdfResponse(1));
+    const tampered = { ...rendered, footerHtml: rendered.footerHtml.replace("</body>", '<img src="http://evil.example/x.png"></body>') };
+    expect(await createGotenbergEngine({ baseUrl: BASE, fetch: impl }).render(tampered)).toMatchObject({ ok: false, code: "pdf_refused" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("never throws: a malformed document becomes pdf_failed", async () => {
+    const { calls, impl } = recorder(async () => pdfResponse(1));
+    const engine = createGotenbergEngine({ baseUrl: BASE, fetch: impl });
+    const noPaper = { ...rendered, paper: undefined } as unknown as RenderedDocument;
+    const noHtml = { ...rendered, html: undefined } as unknown as RenderedDocument;
+    expect(await engine.render(noPaper)).toMatchObject({ ok: false, code: "pdf_failed" });
+    expect(await engine.render(noHtml)).toMatchObject({ ok: false, code: "pdf_failed" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("honours the maxPages and maxPdfBytes options", async () => {
+    const pages = createGotenbergEngine({ baseUrl: BASE, fetch: async () => pdfResponse(2), maxPages: 1 });
+    expect(await pages.render(rendered)).toMatchObject({ ok: false, code: "pdf_too_large" });
+    const bytes = createGotenbergEngine({ baseUrl: BASE, fetch: async () => pdfResponse(1), maxPdfBytes: 50 });
+    expect(await bytes.render(rendered)).toMatchObject({ ok: false, code: "pdf_too_large" });
+  });
+
+  it("stops reading a streamed body at the byte cap and cancels it", async () => {
+    let cancelled = false;
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(new Uint8Array(1024).fill(65));
+        if (pulled > 1000) controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const respond = async () => new Response(body, { status: 200, headers: { "Content-Type": "application/pdf" } });
+    const engine = createGotenbergEngine({ baseUrl: BASE, fetch: respond, maxPdfBytes: 4096 });
+    expect(await engine.render(rendered)).toMatchObject({ ok: false, code: "pdf_too_large" });
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThan(20);
+  });
+
+  it("rejects a PDF with no pages", async () => {
+    const empty = async () => new Response("%PDF-1.7\n%%EOF", { status: 200, headers: { "Content-Type": "application/pdf" } });
+    expect(await createGotenbergEngine({ baseUrl: BASE, fetch: empty }).render(rendered)).toMatchObject({ ok: false, code: "pdf_failed" });
+  });
+
   it("gives up after the timeout", async () => {
     const hang: typeof fetch = (_input, init) =>
       new Promise((_resolve, reject) => {
@@ -93,7 +160,60 @@ describe("createGotenbergEngine.health", () => {
   });
 });
 
+describe("createGotenbergEngine.health failures", () => {
+  it("gives up after the health timeout", async () => {
+    const hang: typeof fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      });
+    const health = await createGotenbergEngine({ baseUrl: BASE, fetch: hang, healthTimeoutMs: 50 }).health();
+    expect(health).toEqual({ up: false, detail: "unreachable" });
+  });
+
+  it("treats a non-JSON body as down", async () => {
+    const health = await createGotenbergEngine({ baseUrl: BASE, fetch: async () => new Response("ok", { status: 200 }) }).health();
+    expect(health.up).toBe(false);
+  });
+});
+
+describe("resolveGotenbergUrl", () => {
+  it("defaults to localhost outside production", () => {
+    expect(resolveGotenbergUrl({ NODE_ENV: "development" })).toEqual({ ok: true, url: "http://localhost:3001" });
+    expect(resolveGotenbergUrl({ NODE_ENV: "test", GOTENBERG_URL: "" })).toEqual({ ok: true, url: "http://localhost:3001" });
+  });
+
+  it("accepts http(s) URLs only", () => {
+    expect(resolveGotenbergUrl({ NODE_ENV: "development", GOTENBERG_URL: "https://pdf.internal:8443/" })).toEqual({ ok: true, url: "https://pdf.internal:8443" });
+    for (const bad of ["ftp://x", "file:///etc/passwd", "not a url", "javascript:alert(1)"]) {
+      expect(resolveGotenbergUrl({ NODE_ENV: "development", GOTENBERG_URL: bad }).ok, bad).toBe(false);
+    }
+  });
+
+  it("requires an explicit URL in production", () => {
+    expect(resolveGotenbergUrl({ NODE_ENV: "production" }).ok).toBe(false);
+    expect(resolveGotenbergUrl({ NODE_ENV: "production", GOTENBERG_URL: "" }).ok).toBe(false);
+    expect(resolveGotenbergUrl({ NODE_ENV: "production", GOTENBERG_URL: "http://gotenberg:3000" })).toEqual({ ok: true, url: "http://gotenberg:3000" });
+  });
+});
+
 describe("countPdfPages", () => {
+  it("ignores /Type /Page text inside stream bodies", () => {
+    const fake = "/Type /Page ".repeat(25);
+    const text = `%PDF-1.7
+1 0 obj << /Type /Pages /Count 1 >> endobj
+2 0 obj << /Type /Page >> endobj
+3 0 obj << /Length 300 >>
+stream
+${fake}
+endstream
+endobj
+%%EOF`;
+    const bytes = new TextEncoder().encode(text);
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    expect(countPdfPages(copy.buffer)).toBe(1);
+  });
+
   it("counts page objects but not the page tree", () => {
     expect(countPdfPages(fakePdfBytes(3))).toBe(3);
   });
