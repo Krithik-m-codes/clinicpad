@@ -8,6 +8,7 @@ import { listFavourites } from "@/server/services/catalogue";
 import { getPadReadiness } from "@/server/services/pad-settings";
 import { getVersionLinks, loadRxDocument } from "@/server/services/rx-documents";
 import { listPrescriptionOutputs } from "@/server/services/rx-output";
+import { getSharePanel } from "@/server/services/sharing";
 import { amendAction, discardDraftAction, repeatAction } from "@/server/actions/prescriptions";
 import { AllergyBanner } from "@/components/patients/allergy-banner";
 import { AmendForm } from "@/components/rx/amend-form";
@@ -16,6 +17,7 @@ import { DiscardDraftForm } from "@/components/rx/discard-draft-form";
 import { PrescriptionReadOnly } from "@/components/rx/prescription-view";
 import { RepeatForm } from "@/components/rx/repeat-form";
 import { RxOutputPanel, type PrintGap } from "@/components/rx/rx-output-panel";
+import { SharePanel } from "@/components/rx/share-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -52,12 +54,13 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
       return null;
     }
   };
-  const [favourites, links, readiness, outputs, printable] = await Promise.all([
+  const [favourites, links, readiness, outputs, printable, share] = await Promise.all([
     settle(canEdit ? listFavourites(session) : null),
     settle(getVersionLinks(session, rx.id)),
     settle(canEdit ? getPadReadiness(session) : null),
     settle(isDraft ? null : listPrescriptionOutputs(session, rx.id)),
     settle(isDraft ? null : loadRxDocument(session, rx.id, { withAssets: false })),
+    settle(!isDraft && can(session.role, "rx.share") ? getSharePanel(session, rx.id) : null),
   ]);
   // A finalized version shows the record as finalized (ADR-0032). The allergy banner stays live on purpose:
   // it is a safety prompt for whoever acts on the prescription today.
@@ -106,6 +109,7 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
         outputs={outputs?.ok ? outputs.value : null}
         timeZone={printable?.ok ? printable.value.document.snapshot.clinic.timezone : "Asia/Kolkata"}
       />
+      {share?.ok ? <SharePanel data={share.value} canCaptureConsent={can(session.role, "consent.capture")} isOwner={session.role === "owner"} /> : null}
 
       {canEdit ? (
         <ClinicalEditor

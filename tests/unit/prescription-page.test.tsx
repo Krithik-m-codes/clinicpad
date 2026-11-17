@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   loadRxDocument: vi.fn(),
   listPrescriptionOutputs: vi.fn(),
   getPadReadiness: vi.fn(),
+  getSharePanel: vi.fn(),
   notFound: vi.fn(),
   session: { tenantId: "t", userId: "u", role: "doctor" },
 }));
@@ -28,6 +29,8 @@ vi.mock("@/server/services/rx-documents", () => ({
   loadRxDocument: mocks.loadRxDocument,
 }));
 vi.mock("@/server/services/rx-output", () => ({ listPrescriptionOutputs: mocks.listPrescriptionOutputs }));
+vi.mock("@/server/services/sharing", () => ({ getSharePanel: mocks.getSharePanel }));
+vi.mock("@/components/rx/share-panel", () => ({ SharePanel: () => <div>share panel</div> }));
 vi.mock("@/server/services/pad-settings", () => ({ getPadReadiness: mocks.getPadReadiness }));
 vi.mock("@/server/actions/prescriptions", () => ({
   amendAction: vi.fn(),
@@ -52,6 +55,7 @@ beforeEach(() => {
   mocks.loadRxDocument.mockResolvedValue({ ok: false, code: "not_found", message: "x" });
   mocks.listPrescriptionOutputs.mockResolvedValue({ ok: true, value: { count: 0, lastAt: null } });
   mocks.getPadReadiness.mockResolvedValue({ ok: true, value: { missing: [] } });
+  mocks.getSharePanel.mockResolvedValue({ ok: true, value: {} });
 });
 
 function finalizedView(status: "finalized" | "amended") {
@@ -266,3 +270,38 @@ describe("prescription page print panel and notices", () => {
   });
 });
 
+
+describe("prescription page share panel", () => {
+  it("shows the panel on a finalized version to owners, doctors and reception", async () => {
+    for (const role of ["owner", "doctor", "reception"]) {
+      mocks.session.role = role;
+      mocks.getPrescription.mockResolvedValue(finalizedView("finalized"));
+      const view = render(await PrescriptionPage({ params }));
+      expect(screen.getByText("share panel")).toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
+  it("never asks for the panel for nurses or pharmacists, or on drafts", async () => {
+    for (const role of ["nurse", "pharmacist"]) {
+      mocks.session.role = role;
+      mocks.getPrescription.mockResolvedValue(finalizedView("finalized"));
+      const view = render(await PrescriptionPage({ params }));
+      expect(screen.queryByText("share panel")).toBeNull();
+      view.unmount();
+    }
+    mocks.session.role = "doctor";
+    mocks.getPrescription.mockResolvedValue(draftView(null));
+    render(await PrescriptionPage({ params }));
+    expect(screen.queryByText("share panel")).toBeNull();
+    expect(mocks.getSharePanel).not.toHaveBeenCalled();
+  });
+
+  it("still renders the page when the panel read fails", async () => {
+    mocks.getPrescription.mockResolvedValue(finalizedView("finalized"));
+    mocks.getSharePanel.mockRejectedValue(new Error("down"));
+    render(await PrescriptionPage({ params }));
+    expect(screen.queryByText("share panel")).toBeNull();
+    expect(screen.getByText("read-only")).toBeInTheDocument();
+  });
+});
