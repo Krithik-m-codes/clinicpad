@@ -1,8 +1,8 @@
 # ClinicPad — Progress Tracker
 
 **Last updated:** 2026-11-17
-**Current phase:** Phase 1B — Clinical form, medicine catalogue, autosave (code complete; automated gate passed locally 2026-11-17). Phase 1A is code complete too. Phase 0 ops items (staging etc.) still open.
-**Overall status:** 🟡 `node scripts/verify-gate-0.mjs` PASSED locally on 2026-11-12, 2026-11-16 (with the Phase 1A tests) and 2026-11-17 (with the Phase 1B tests); not yet deployed to staging
+**Current phase:** Phase 1C — Pad renderer, server PDF, print (code complete; automated gate passed locally 2026-11-17). Phases 1A and 1B are code complete too; 1D (sharing, CSV import, filters, hardening) is not started. Phase 0 ops items (staging etc.) still open.
+**Overall status:** 🟡 `node scripts/verify-gate-0.mjs` PASSED locally on 2026-11-12, 2026-11-16 (Phase 1A tests) and 2026-11-17 (Phase 1B tests, then Phase 1C tests); not yet deployed to staging
 
 This is the live source of truth for *what is actually true*. Update it at the end of every work session. Do not mark a task done without evidence (command output, link, screenshot, or commit hash).
 
@@ -15,8 +15,8 @@ This is the live source of truth for *what is actually true*. Update it at the e
 | Product stage | pre-alpha / foundation |
 | Codebase origin | copy of `doctor-prescription-app` |
 | Git initialized | yes (`97a4af0`) |
-| Tests passing | 872 unit/integration in 48 files + 18 e2e (smoke 6, patients 4, prescriptions 6, clinical-form 2), all passed on 2026-11-17 (`npm run test`; `node scripts/verify-gate-0.mjs`) |
-| Build status | `build:web` and `build:desktop` pass with strict type/lint (inside `verify-gate-0` on 2026-11-17; `build:desktop` also run alone, exit 0, 6 legacy routes exported, `git status --short` listed only documentation edits) |
+| Tests passing | 1,604 unit/integration passed + 1 skipped in 70 files, and 49 e2e (41 passed, 8 skipped: the opt-in screenshot tests; smoke 6, patients 4, prescriptions 6, clinical-form 3, pad-settings 2, rx-output 4, rx-visual 24), on 2026-11-17 (`npm run test`; `node scripts/verify-gate-0.mjs`; `npm run test:visual` 24 passed) |
+| Build status | `build:web` and `build:desktop` pass with strict type/lint (inside `verify-gate-0` on 2026-11-17; `build:desktop` also run alone after the last code change, exit 0, `git status --short` clean) |
 | Paying clinics | 0 |
 | Design partners | 0 |
 | MRR | ₹0 |
@@ -30,7 +30,7 @@ This is the live source of truth for *what is actually true*. Update it at the e
 | Phase | Status | Started | Completed | Evidence |
 |---|---|---|---|---|
 | 0 — Foundation | 🟡 in progress | 2026-11-06 | — | `node scripts/verify-gate-0.mjs` PASSED 2026-11-12 |
-| 1 — Prescription MVP | 🟡 in progress (1A patients + prescription core and 1B clinical form, catalogue, autosave code complete; 1C templates/PDF and 1D hardening not started) | 2026-11-12 | — | see sections 4.8 and 4.9; `node scripts/verify-gate-0.mjs` PASSED 2026-11-17 (872 tests + 18 e2e) |
+| 1 — Prescription MVP | 🟡 in progress (1A patients + prescription core, 1B clinical form, catalogue, autosave and 1C pad renderer, PDF, print code complete; 1D sharing, CSV import, filters, hardening not started) | 2026-11-12 | — | see sections 4.8 to 4.10; `node scripts/verify-gate-0.mjs` PASSED 2026-11-17 (1,604 tests + 41 e2e passed, 8 skipped) |
 | 2 — Template Studio | ⚪ not started | — | — | — |
 | 3 — Clinic operations | ⚪ not started | — | — | — |
 | 4 — Offline + desktop | ⚪ not started | — | — | — |
@@ -173,14 +173,14 @@ A box is ticked only for evidence seen on 2026-11-16 (after migration 0009 lande
 - Patient archive UI and unarchive: only the service `archivePatient` exists (no server action, no screen, no way back). Owner: Plan 1D.
 - No way to discard a draft or withdraw an open amendment (Plan 1B) — resolved in Plan 1B (`f4959ad`, tests pinned in `4c3aa62`).
 - `repeatPrescription` ignores an open amendment on the source; decide together with discard (Plan 1B) — resolved in Plan 1B (`f4959ad`, ADR-0031).
-- Superseded and draft views are unmarked for read-only roles, and the finalized view reads the LIVE patient row (name, allergies); a snapshot at finalization is needed (Plan 1C).
-- `/prescriptions/:path*` is missing from the middleware matcher (Plan 1C).
+- Superseded and draft views are unmarked for read-only roles, and the finalized view reads the LIVE patient row (name, allergies); a snapshot at finalization is needed (Plan 1C) — resolved in Plan 1C (`d7f5567`, `75da6e3`; the allergy banner stays live by decision, ADR-0032).
+- `/prescriptions/:path*` is missing from the middleware matcher (Plan 1C) — resolved in Plan 1C (`bc4bd07`).
 - The app role can `DELETE` from `tenant_counters`; revoke it (Plan 1D).
 - Triggers: add a BEFORE INSERT guard (`status = 'draft'`), a finalized-child precondition for the `finalized -> amended` flip, and CHECK constraints on the status columns (Plan 1D).
 - `doctorIdFor` can pick an arbitrary row because `doctors` has no `unique (tenant_id, user_id)` — resolved in Plan 1B (migration 0010, `023e716`).
 - e2e `seedPatients` bypasses `tenant_counters` (Plan 1D).
 - The dev database holds leaked test tenants and users from aborted runs; write a sweep script (Plan 1D).
-- An owner without a doctor profile can finalize a prescription: a human decision is needed before any pilot (Plan 1C warns).
+- An owner without a doctor profile can finalize a prescription: a human decision is needed before any pilot (Plan 1C warns before finalizing and prints no doctor block, ADR-0032; the decision itself is still open).
 - Date of birth uses the UTC date, so a newborn registered between 00:00 and 05:30 IST is rejected as "in the future" (Plan 1D; must land before paediatric or maternity pilots).
 
 **Gate 0 evidence block** (fill at review):
@@ -221,7 +221,7 @@ A box is ticked only for evidence seen on 2026-11-17 at commit `4c3aa62` (code) 
 - The `sample_data` medicine list is unreviewed: spelling errors (for example "Glimepride") and 23 duplicate names with differing generic names (the seed keeps the first). It needs a clinical review before any pilot; it is not a licensed drug database (Phase 6; ADR-0028). The seed test pins some typo-bearing values and will need updating with the data.
 - Temperature is stored in °F only (Plan 1D or a locale pass).
 - Reception and pharmacist roles now read history, examination notes and vitals through `rx.read`: a data-minimisation decision is needed before any pilot (ADR-0030; Plan 1D).
-- An owner without a doctor profile can finalize, and such a prescriber has no favourites (Plan 1C warns; human decision before a pilot).
+- An owner without a doctor profile can finalize, and such a prescriber has no favourites (Plan 1C warns before finalizing and prints no doctor block, ADR-0032; the decision itself is still open).
 - Autosave limits (ADR-0029; Plan 1D or Phase 4): Next serialises server actions, so a hung finalize delays the resumed autosave and the page refresh; `dispose()` skips the final save while a finalize runs, so edits that exist only in the finalize payload are lost if finalize fails before saving and the doctor navigates away mid-finalize; the ambiguous-conflict text is not set after an `exclusive` unknown outcome; one invalid field blocks the whole snapshot (the status now says everything since the last save is unsaved and names the field, for example "medicines 3 · dose"); a halted, held or failing engine still cannot save on unmount, which is why soft navigation (links, back and forward) now asks "You have changes that are not saved. Leave anyway?" in that state (`src/components/rx/use-leave-guard.ts`; it prompts when something is unsaved and the engine is halted, held, finalizing, retrying, in doubt after an ambiguous failure, or has a save in flight; an edit still in the debounce is sent by `dispose()` and never prompts; the sign-out form is guarded too, via `data-leave-guard`); a finalize conflict with nothing unsaved now enters the conflict halt (Keep / Load); after an unknown finalize outcome the page is re-read (`router.refresh`) only when the browser is online and the flush left nothing unsaved, otherwise (offline) a check runs on the next `online` event; online but unreadable, the text says to use Reload and promises no re-check, and Finalize is disabled while offline; a flush on a timed-out in-flight save retries once and then resolves.
 - Discard: no concurrency tests for repeat-vs-amend or withdraw-vs-finalize-of-the-child (analysis in ADR-0023 says safe); a discarded draft cannot be restored (ADR-0031).
 - Missing indexes on the new foreign-key columns `visits(tenant_id, doctor_id)`, `visits(tenant_id, branch_id)`, `prescriptions(tenant_id, template_version_id)`, which matter for offboarding scans at scale (Plan 1D).
@@ -234,6 +234,38 @@ A box is ticked only for evidence seen on 2026-11-17 at commit `4c3aa62` (code) 
 - Not built, with their owners: nurse vitals entry (Phase 3, ADR-0030), Hindi labels for the new option codes (Plan 1D), the offline outbox (Phase 4), advice templates and medicine bundles, clinic-learned complaint and diagnosis suggestions, and an undo for discarded drafts (unscheduled; ADR-0031).
 - Uploaded logos and signatures keep their EXIF/GPS metadata in the stored bytes (the image is validated, not re-encoded). Strip it before any image leaves the system, for example WhatsApp sharing (Plan 1D). Assets are capped at 20 logos and 50 signatures per clinic (Plan 1C Task 6 fix round); the cap is checked inside the upload transaction without a lock, so two simultaneous uploads can overshoot by one.
 
+### 4.10 Phase 1C checklist (pad renderer, PDF, print)
+
+A box is ticked only for evidence seen on 2026-11-17 at commit `38fdb5d` (the code; documentation edits uncommitted when the gate ran): `npm run lint` 0 errors (2 existing warnings in `ui/form.tsx` and `use-toast.ts`), `npm run typecheck` clean, `npm run test` = 70 files, 1,604 passed + 1 skipped (the engine-required placeholder in `gotenberg-smoke.test.ts`), with Gotenberg up; `node scripts/verify-gate-0.mjs` (fourth run) ran lint, typecheck, those tests, `build:web`, `build:desktop` and the e2e suite and ended with `41 passed (4.7m)`, `8 skipped` (the screenshot tests, which need `RX_VISUAL`) and `Gate 0 verification PASSED`; `npm run test:visual` = 24 passed; `npm run build:desktop` run alone after the last code change exited 0 and `git status --short` was clean. Three earlier gate runs failed: the first two on the e2e print stub (the frame now outlives `print()`, so the stub has to fire `afterprint`; fixed in `177fe07` and `38fdb5d`), the third on a cold-dev-server timeout in the first `clinical-form` test (passed 3 of 3 alone and on the full re-run). Per-file counts are from a JSON-reporter run.
+
+- [x] Data-driven renderer: General, Paediatric, Derma on A4 and A5 with English, Hindi, or bilingual labels (`tests/unit/rx-render.test.ts`, 92; `tests/unit/__golden__/`, 5 files; `rx-labels` and `rx-format` tests)
+- [x] Hostile text printed literally; every document self-contained (`tests/unit/self-contained.test.ts`, 111; `rx-render.test.ts`; beacon probe, positive control and config-drift check in `tests/integration/gotenberg-smoke.test.ts`, 10 passed + 1 skipped)
+- [x] Finalize freezes the printed details; reprints ignore later patient, clinic, and doctor edits; the finalizer signs, never the visit's doctor (`tests/integration/render-snapshot.test.ts`, 24; `tests/e2e/rx-output.spec.ts`, 4)
+- [x] Clinic pad and doctor profile settings; NUL refused; logo and signature uploads validated from bytes (`tests/integration/pad-settings.test.ts`, 61; `settings-actions.test.ts`, 12; `tests/unit/settings-forms.test.tsx`, 9; `tests/e2e/pad-settings.spec.ts`, 2)
+- [x] Server PDF through Gotenberg with timeouts, caps, health check, and a clear error state (`tests/unit/gotenberg.test.ts`, 30; `tests/integration/rx-output-routes.test.ts`, 32)
+- [x] Print and download audited with ids and counts; non-draft previews audited as `prescription.previewed`; `prescription_outputs` append-only with composite keys (`tests/integration/print-schema.test.ts`, 31; `rx-output-routes.test.ts`)
+- [x] Drafts preview only and are marked for read-only roles; superseded versions marked, printable, never repeated or amended; finalized versions show the frozen patient name; prescribers warned about an incomplete or missing doctor profile (`tests/unit/prescription-page.test.tsx`, 21; `tests/unit/output-actions.test.tsx`, 18; `tests/e2e/rx-output.spec.ts`)
+- [x] `/prescriptions/:path*` in the middleware matcher (`rx-output.spec.ts`, signed-out test)
+- [x] Print layout: embedded font, no requests, unsplit rows, one `.closing` wrapper, page counts in bounds, through Chromium and through the real Gotenberg engine (`tests/e2e/rx-visual.spec.ts`, 8 cases x 3 tests); screenshots and real PDFs reviewed by eye (`npm run test:visual`, 24 passed; findings below)
+- [x] Desktop export unchanged (`npm run build:desktop`, exit 0, clean tree)
+- [x] `node scripts/verify-gate-0.mjs` PASSED with the Phase 1C tests (41 passed, 8 skipped)
+
+**Visual review (2026-11-17).** The Chromium screenshots and the real Gotenberg PDFs were read page by page (PDF pages rendered with PyMuPDF; `pdftoppm` is not installed here). Confirmed: the patient strip and column headings repeat on every page, including A5 bilingual with logo, banner and 30 medicines (7 pages); Devanagari draws with real glyphs; a 2,000-character word wraps inside the page; the signature always prints with the last section (`.closing`), never alone. Defects found and fixed in this review: the PDF footer printed "Rx 12 v1Page 1 of 7" together at the left (Chromium shrink-wraps the footer; now a full-width footer, pinned by a unit test and verified from the PDF word positions), and the four dose-slot headings split mid-word on A5 bilingual ("Mo r", "Nig ht"; slot columns widened, heading font reduced). Observations left as they are: the A5 bilingual watermark wraps to three or four lines and crosses the text (legible); A5 bilingual medicine rows are tall (the Food and Frequency cells wrap to four lines), so a 30-medicine pad needs 7 pages; a page can hold only the last section and the signature (Derma Hindi, page 2).
+
+**Phase 1C known limitations and follow-ups** (from the review ledger; "owner" is the plan that should take it)
+
+- Page numbers only in the Gotenberg PDF, not in browser print; no automated Safari print check (print one pad from Safari before ticking the Phase 1 exit criterion; human).
+- A native Hindi speaker should review the pad labels in `src/lib/rx-render/labels.ts` and the Hindi status labels (human, before a pilot).
+- The round-2 `checkSelfContained()` was never run against live-browser exploit payloads in the build session; defense in depth (CSP, JavaScript off, deny-list, re-check at serve time, the smoke probe) is the mitigation (whole-branch review).
+- `outputFileTracingIncludes` for the fonts is verified only at the first real deployment; the CI workflow's Gotenberg job has not run on GitHub; production must block Gotenberg's network egress (staging plan).
+- Demo seed prescriptions have no snapshot and print with the "finalized before print snapshots were recorded" note.
+- A draft preview is not re-checked against a concurrent save (it may mix two saves for a moment; finalized copies are frozen).
+- Every `rx.read` role (reception, nurse, pharmacist) can print and download the full clinical content: part of the data-minimisation decision in 4.9 (Plan 1D).
+- The PDF concurrency limiter is per process and has no fairness or abort plumbing (Plan 1D, with sharing). A print counts when its HTML is served, not when the dialog is confirmed (ADR-0033).
+- The asset cap (20 logos, 50 signatures per clinic) can overshoot by one under two simultaneous uploads; no malware scan or EXIF stripping of uploaded images (Phase 2.1; strip before sharing, Plan 1D); no PDF cache (ADR-0033).
+- A Next dev-server `TypeError: controller[kState].transformAlgorithm is not a function` is logged once during the `pad-settings` role e2e test; the test passes and the cause is not investigated (Plan 1D).
+- "Page x of y" in the PDF footer is English only (no Devanagari font in the footer template; Plan 1D).
+
 ---
 
 ## 5. In progress
@@ -244,7 +276,9 @@ Phase 1A is code complete and its automated gate passed locally on 2026-11-16 (s
 
 Phase 1B is code complete and its automated gate passed locally on 2026-11-17 (section 4.9); its follow-ups are listed there.
 
-**Next:** Plan 1C (templates, server PDF, print). Plan 1C's ADRs start at ADR-0032; its migrations start at 0013.
+Phase 1C is code complete and its automated gate passed locally on 2026-11-17 (section 4.10); its follow-ups are listed there.
+
+**Next:** Plan 1D (sharing, CSV import, filters, hardening). Plan 1D's ADRs start at ADR-0036; its migrations start at 0016.
 
 ---
 
@@ -352,6 +386,13 @@ Append to §11 at the end of each working session:
 - Blocked by: nothing for the automated gate. Staging, CI on GitHub, pre-commit hook, 360 px check and MFA note remain open (Phase 0 carry-overs).
 - Next: Plan 1C (templates, server PDF, print). Before any pilot: clinical review of the sample medicine list and the reception/pharmacist data-minimisation decision (section 4.9).
 - Gotchas: a `"use server"` module may only export async functions and types (a message constant in `src/server/actions/prescriptions.ts` stays private). Next serialises server actions, so use GET route handlers for typing-time fetches.
+
+### 2026-11-17 — Phase 1C: pad renderer, server PDF, print, clinic pad and profile settings
+- Did: shipped Phase 1C on `phase-1-prescription-mvp` (plan commit `b034109` to `38fdb5d`), each task reviewed. Migrations 0013 (render snapshot, `prescription_outputs`, `clinic_assets`), 0014 (their security) and 0015 (outputs allow-list trigger, admin-level immutability, integrity checks). A pure renderer with General, Paediatric and Derma templates on A4/A5 and English, Hindi or bilingual labels; a deny-by-default self-contained checker; a hardened Gotenberg engine (loopback, digest-pinned, JavaScript off, deny-list); print details frozen at finalize and signed by the finalizer; Print (hidden frame, removed on `afterprint`) and Download PDF with an append-only output log and audit events; clinic pad and doctor profile settings with validated logo and signature uploads. Decisions ADR-0032 to ADR-0035. Task 11 also folded in the review minors (print frame lifetime, image upload status messages, settings form tests, PDF engine guard tests, smoke tests that fail instead of skipping when Gotenberg is required, Derma route printed once) and added the visual spec, which found and fixed two real PDF defects (footer alignment, dose-slot headings).
+- Evidence: see section 4.10 (`npm run test` 70 files / 1,604 passed + 1 skipped; `node scripts/verify-gate-0.mjs` PASSED with `41 passed`, `8 skipped`; `npm run test:visual` 24 passed; `npm run build:desktop` exit 0, clean tree).
+- Blocked by: nothing for the automated gate. Staging, CI on GitHub, pre-commit hook, 360 px check and MFA note remain open (Phase 0 carry-overs).
+- Next: Plan 1D (sharing, CSV import, filters, hardening). Human decisions before any pilot: Hindi label review, a Safari print check, owner finalizing without a doctor profile, reception/pharmacist reading and printing clinical content, clinical review of the sample medicine list.
+- Gotchas: Gotenberg must be up for the e2e PDF checks (`docker compose up -d gotenberg`); with `GOTENBERG_REQUIRED=1` or `CI=true` the smoke tests fail instead of skipping. Run vitest from an uppercase drive letter (a bash shell started as `/e/...` makes every test fail). `pdftoppm` is not installed here: read PDF pages through PyMuPDF. Chromium footer templates need `html{width:100%}` or the two footer spans sit side by side. A print frame that is sandboxed without `allow-scripts` never runs timers, so an e2e `print()` stub must dispatch `afterprint` synchronously.
 
 ---
 

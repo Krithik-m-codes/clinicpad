@@ -517,6 +517,82 @@ The nurse reads but does not write patients (design spec section 4). The account
 
 ---
 
+## ADR-0032 — Printed prescriptions come from a snapshot frozen at finalize, signed by the finalizer
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** A reprint read the patient's name and age, the clinic header, and the doctor's details live, so a later edit (a renamed patient, a moved clinic, a corrected registration number) would change a medico-legal record. The immutability triggers (ADR-0023) forbid writing to a prescription after finalize. An amendment copies the original visit, including its `doctor_id` (ADR-0024), and an owner without a doctor profile can finalize.
+
+**Decision:** `finalizePrescription` builds and Zod-parses `prescriptions.render_snapshot` (patient name, number, gender, date of birth, age, allergies; clinic name, address lines, phone, email, footer lines, logo asset id, timezone; prescribing doctor's name, qualifications, designation, registration number and council, signature asset id; template, paper size, label language) under the prescription row lock and BEFORE the Rx number is allocated, then writes it in the same UPDATE that sets `status = 'finalized'` (the trigger allows it while the row is a draft and freezes it afterwards). The column is always overwritten in that UPDATE, so a stale value stored on a draft cannot survive. Lock order, revision check, numbering rule, and audit payload are unchanged.
+
+- The prescriber is the finalizing user: their own doctor profile, or no doctor block at all; never the visit's doctor.
+- The age is computed for the calendar day in the clinic's timezone (an unknown zone falls back to `Asia/Kolkata`, never UTC).
+- It fails closed: an unparseable snapshot or a tenant with no clinic row refuses to finalize (an invalid-input result) and burns no number. `createTestTenant` inserts a clinic for that reason.
+- The snapshot is versioned (`v: 1`); its field limits are never lower than the write-side limits (`PAD_LIMITS`), pinned by a guard test.
+- Drafts and prescriptions finalized before this ADR print from live data (`loadRxDocument` ignores a draft's stored snapshot; an old finalized row uses its finalizer's current profile) and the pad says so. An amendment gets its own snapshot at its own finalize. The prescription page shows the patient name from the snapshot for finalized versions (with the current name when it changed); the allergy banner stays live as a safety prompt. The draft page warns a prescriber whose profile lacks a name or registration number, or who has no doctor profile; finalize does not block on it.
+
+**Consequences:** Reprints are stable and need no extra trigger. New printed fields must be added to the snapshot schema (bump `v`). Clinic and profile edits apply only to prescriptions finalized afterwards, which the settings pages say. `buildRenderSnapshot` relies on RLS, so it must run inside `withTenant` and never on the admin connection (the demo seed's prescriptions print from live data).
+
+**Revisit trigger:** a regulator requires reprints to show current demographics, a clinic must never print without a registration number (add a finalize precondition), or Template Studio needs fields the snapshot lacks.
+
+---
+
+## ADR-0033 — Print and PDF outputs are logged and audited, not cached
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** The data model sketched `printed_at`, `shared_at`, and `rendered_pdf_url` on `prescriptions`, but finalized rows cannot be updated and there is no object storage yet.
+
+**Decision:** Every browser print and PDF download appends a `prescription_outputs` row (tenant, prescription, actor, kind, template, paper size, page count, PDF size, SHA-256 of the exact HTML) and an audit event with ids and counts only (`prescription.printed`, `prescription.pdf_downloaded`). The runtime role can insert and read the table, never update or delete it; migration 0015 also installs immutability triggers on the admin connection (unless the tenant is being erased), a SHA-256 shape check and a template-key check. A trigger accepts outputs only for `finalized` and `amended` prescriptions (an exact allow-list, `23000` otherwise) and refuses a prescription not visible in the row's tenant (`23503`); the key to `prescriptions` is the composite `(tenant_id, prescription_id)`.
+
+- Viewing a non-draft document without printing (`purpose=preview`) writes no output row but IS audited as `prescription.previewed` (ids only); the print counter on the page counts only print and PDF outputs. Draft previews are not audited as outputs.
+- `HEAD` is refused with 405 and print and PDF requests with `Sec-Fetch-Site` other than `same-origin` (or absent) get 403, so a cross-site page cannot trigger a logged print.
+- A failed log write answers 500 and serves nothing; a document that fails `checkSelfContained()` answers 500. PDF file names drop lone surrogates and bidi/format characters, `pdfFileName` requires the status (a draft never carries an Rx number), and PDF responses carry `nosniff` and no-store headers.
+- PDFs are regenerated on demand from the frozen inputs; the HTML of every reprint is byte-identical (same hash), PDF bytes differ only in Chromium metadata. A print is logged when its HTML is served to the print frame, whether or not the dialog is confirmed.
+- The PDF concurrency limiter is per process (Retry-After on 503 busy); the print frame is removed on `afterprint`, after 60 s, on a new print, or on unmount.
+
+**Consequences:** No stored PHI-bearing files and no retention job; one Gotenberg call per download. Plan 1D's sharing log extends the same table.
+
+**Revisit trigger:** Gotenberg load or latency, WhatsApp/email sharing that needs a stored file, a multi-instance deployment (shared limiter), or Phase 2 storage (cache keyed by `html_sha256`).
+
+---
+
+## ADR-0034 — One self-contained HTML renderer for print and PDF, and a hardened PDF engine
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** ADR-0007 chose Gotenberg's Chromium route for HTML to PDF. The same pad must also print from the browser, render Devanagari identically everywhere, and never let user text or Gotenberg reach the network.
+
+**Decision:** `src/lib/rx-render/` is a pure TypeScript renderer that builds HTML only through the `html` tagged template (auto-escaping; it throws when a value lands in an unsafe position such as a tag or attribute name, an unquoted attribute, or inside a quoted attribute as raw markup). Built-in templates (General, Paediatric, Derma) are data drawn by one renderer; `TemplateRef.kind` is the seam for Phase 2. Documents embed Noto Sans Devanagari (`@fontsource/noto-sans-devanagari`, pinned) and images as `data:` URIs, carry a `default-src 'none'` CSP, and must pass `checkSelfContained()` before they are served or sent. That checker is a deny-by-default parser: every `<` must start a well-formed tag, CSS comments (`/*`) are refused, `url()` accepts only base64 PNG/JPEG images and WOFF2 fonts, `image-set`, `src()`, `@import` and similar are refused in style blocks and attributes, and the document is capped at 4 MB (linear-time scanners). A repeating outer table header (patient strip) and footer give a header on every page without JavaScript; the signature stays with the last section (`.closing`); "Page X of Y" comes from Gotenberg's footer template (sized to the full page width so the Rx number and page number sit at opposite edges).
+
+The engine (`src/server/pdf/`) sits behind an injectable `PdfEngine` that never throws: a 4 MB HTML cap (character and UTF-8 byte length), a streaming PDF byte cap, a page cap, a content-type and `%PDF-` check, render and health timeouts, and a typed failure with a safe message. Gotenberg runs from a digest-pinned image bound to `127.0.0.1:3001` with JavaScript disabled, a Chromium deny-list (only the staged `file:///tmp/`, `data:`, `about:`, `blob:`), `--webhook-disable`, `--api-disable-download-from`, LibreOffice and PDF-engine routes disabled, `cap_drop: ALL`, `no-new-privileges`, and memory and process limits (`docker-compose.yml`; the CI workflow runs the same flags). `tests/integration/gotenberg-smoke.test.ts` proves with a beacon that a page without the CSP cannot reach the network, has a positive-control container without the deny-list, and a config-drift test comparing the running container with the flags; in CI or with `GOTENBERG_REQUIRED=1` a missing Gotenberg or docker fails instead of skipping. `GOTENBERG_URL` is mandatory in production (`resolveGotenbergUrl`), and production must also block the container's network egress. Print uses a hidden iframe and works when Gotenberg is down. Viewing, previewing, printing, and downloading use `rx.read`; `/prescriptions/:path*` is in the middleware matcher.
+
+**Consequences:** Identical output in Gotenberg and browsers apart from page numbers; about 185 KB of font CSS per document; unit tests run without Gotenberg. Pad labels are English, Hindi, or bilingual (`labels.ts`; a native speaker must review the Hindi). The checker's round-2 version was never run against live-browser exploit payloads in the build session (a safety check stopped that review); defense in depth (CSP, JavaScript off, deny-list, the HTML re-checked at serve time) is the mitigation. The legacy `/preview` page remains only for the desktop shell.
+
+**Revisit trigger:** Phase 2 Template Studio, a second script family (Gujarati, Tamil, ...), or a Gotenberg major upgrade (re-run `npm run test:visual` and review the PDFs).
+
+---
+
+## ADR-0035 — Clinic images live in Postgres as immutable assets
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** The pad needs a clinic logo and a doctor signature. There is no object storage yet, uploads are hostile (AGENTS.md invariant 8), and a reprint must keep the signature it was finalized with.
+
+**Decision:** `clinic_assets` stores PNG or JPEG bytes (`bytea`, at most 512 KB, 16 to 2000 px per side, type detected from the bytes, nothing after the true end marker; a JPEG is walked segment by segment), de-duplicated by SHA-256 per tenant and kind (computed server-side). Each clinic is capped at 20 logos and 50 signatures (checked in the upload transaction without a lock, so two simultaneous uploads can overshoot by one). The runtime role can insert and read but never update or delete; admin-level immutability triggers apply unless the tenant is erased. `clinics.logo_asset_id` and `doctors.signature_asset_id` point at the current asset through composite same-tenant keys (`NO ACTION`), and snapshots record the asset ids. `loadImageAssets` returns a map keyed by kind and id, so an id of one kind cannot be passed off as the other, and writes check tenant and kind. A custom Drizzle `bytea` type converts to and from `Buffer` (without it real PNGs failed with `22021`). Two actions join the role matrix: `settings.clinic` (owner) for the clinic pad and logo, `settings.profile` (owner, doctor) for one's own profile and signature. Settings text is validated with the shared cleaning helpers (a NUL is refused) and the clinic name is required.
+
+**Known gap:** the images are only header-parsed and embedded into JavaScript-free Chromium; they are NOT re-encoded, so EXIF and GPS metadata stay in the stored bytes, and there is no malware scan. Strip metadata before any image leaves the system (Plan 1D sharing).
+
+**Consequences:** Data stays in the India-region database; old prescriptions keep their images; the table grows by a few hundred KB per change.
+
+**Revisit trigger:** Phase 2 storage and upload pipeline (ClamAV, re-encoding), or asset volume above a few GB.
+
+---
+
 ## 19. Open decisions
 
 | # | Question | Options | Owner | Needed by |

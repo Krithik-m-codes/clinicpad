@@ -36,14 +36,14 @@ The repo is a copy of the original `doctor-prescription-app`:
 - Tauri v2 desktop wrapper (`src-tauri/`).
 - Client-only state via `src/contexts/PrescriptionContext.tsx`.
 - Persistence via IndexedDB (`src/lib/db/`).
-- Hard-coded doctor identity and design in `src/app/(perscription)/preview/page.tsx`.
+- Hard-coded doctor identity and design in `src/app/(legacy)/(perscription)/preview/page.tsx` (the legacy desktop shell only; the web app prints from clinic and doctor settings since Plan 1C).
 - That original app (legacy routes) still exists under `src/app/(legacy)/` and is what the desktop build exports.
-- No billing, no appointments, no templates or PDF generation, no sharing, no offline sync for the web app.
+- No billing, no appointments, no sharing, no offline sync for the web app; built-in pad templates and PDF exist since Plan 1C, Template Studio does not.
 - `next.config.ts` builds a normal server app for the web; the desktop export is a separate build (`scripts/build-desktop.mjs`, ADR-0021). Build errors are no longer ignored.
 
 **Nothing here is production-safe for patient data yet.** There is no staging deployment, and the legacy IndexedDB data is demo data.
 
-**Repository state (2026-11-17):** Phase 0, Phase 1A and Phase 1B are code complete on branch `phase-1-prescription-mvp`; the automated gate (`node scripts/verify-gate-0.mjs`: 872 unit/integration tests, 18 e2e) passed on 2026-11-17 (see `docs/PROGRESS.md` sections 4.8 and 4.9). What exists: Auth.js credentials login and clinic sign-up, Postgres with row-level security (forced policies) and composite same-tenant foreign keys, a role matrix enforced in services, patients (register, edit, search, duplicate warning; archive exists only as a service, with no action, UI or unarchive yet), the prescription lifecycle (draft, save, finalize, amend with a reason, repeat) with database-enforced immutability, per-clinic Rx numbering, an append-only audit log, Vitest unit/integration tests and Playwright e2e. Phase 1B adds the server-backed clinical form (vitals, history, investigations, structured medicines with dose schedules), the global + clinic medicine catalogue with per-doctor favourites (`npm run db:seed:catalogue`), revision-checked draft autosave, and discarding drafts / withdrawing amendments. Templates, PDF, sharing, and offline are not built yet. What does not exist: Template Studio and PDF, WhatsApp/email sharing, offline sync, billing, staging. Decisions: `docs/DECISIONS.md` (ADR-0019 to ADR-0031 cover the current state).
+**Repository state (2026-11-17):** Phase 0, Phase 1A, Phase 1B and Phase 1C are code complete on branch `phase-1-prescription-mvp`; the automated gate (`node scripts/verify-gate-0.mjs`: 1,604 unit/integration tests passed + 1 skipped in 70 files, 41 e2e passed and 8 opt-in screenshot tests skipped) passed on 2026-11-17 (see `docs/PROGRESS.md` sections 4.8 to 4.10). What exists: Auth.js credentials login and clinic sign-up, Postgres with row-level security (forced policies) and composite same-tenant foreign keys, a role matrix enforced in services, patients (register, edit, search, duplicate warning; archive exists only as a service, with no action, UI or unarchive yet), the prescription lifecycle (draft, save, finalize, amend with a reason, repeat) with database-enforced immutability, per-clinic Rx numbering, an append-only audit log, Vitest unit/integration tests and Playwright e2e. Phase 1B adds the server-backed clinical form (vitals, history, investigations, structured medicines with dose schedules), the global + clinic medicine catalogue with per-doctor favourites (`npm run db:seed:catalogue`), revision-checked draft autosave, and discarding drafts / withdrawing amendments. Phase 1C adds the prescription pad: a pure renderer (`src/lib/rx-render/`) with General, Paediatric, and Derma templates on A4/A5 with English, Hindi, or bilingual labels; clinic pad and doctor profile settings with validated logo and signature uploads (`clinic_assets`); print details frozen at finalize and signed by the finalizer (`prescriptions.render_snapshot`); browser print and Gotenberg PDF download with an append-only `prescription_outputs` log. What does not exist: Template Studio (DOCX or overlay templates), WhatsApp/email sharing, offline sync, billing, staging. Decisions: `docs/DECISIONS.md` (ADR-0019 to ADR-0035 cover the current state).
 
 ### What is reusable
 
@@ -62,7 +62,7 @@ The repo is a copy of the original `doctor-prescription-app`:
 | Area | Replacement |
 |---|---|
 | IndexedDB-only data | Server Postgres + local-first sync (Phase 4) |
-| Hard-coded doctor header | Clinic/doctor profile + template variables |
+| Hard-coded doctor header | Done for the web app (clinic pad + doctor profile, Plan 1C); the legacy preview remains for the desktop shell |
 | Single prescription design | Template Studio (built-in + DOCX) |
 | `alert()` / `window.location` flows | Proper app shell, toasts, routing |
 | Static export-only config | Dual build: web (server) + desktop (static/Tauri) |
@@ -166,6 +166,8 @@ npm run db:generate
 npm run db:migrate
 npm run db:seed
 npm run db:seed:catalogue   # global medicine and clinical-term lists (idempotent)
+docker compose up -d gotenberg   # PDF service for Download PDF
+npm run test:visual   # print-layout screenshots (opt-in)
 ```
 
 Environment: Node 22+, npm 11+, Git 2.5x, Docker Desktop (for Postgres/Gotenberg), Rust (desktop only).
@@ -192,7 +194,7 @@ Skills live at `~/.agents/skills` (OpenCode) and `~/.claude/skills` (Claude Code
 
 ## 8. Where we are / what is next
 
-See `docs/PROGRESS.md` for the live tracker. Phase 0 (foundation) is code complete and Phase 1A (patients and prescription core) is code complete; the open items are the Phase 0 ops carry-overs (staging, CI on GitHub, pre-commit hook, 360 px check, MFA note). Plan 1B (clinical form, medicine catalogue, autosave, discard) is code complete as well. The next milestone is Plan 1C (templates, server PDF, print). Read `docs/ROADMAP.md` before starting it.
+See `docs/PROGRESS.md` for the live tracker. Phase 0 (foundation) is code complete and Phase 1A (patients and prescription core) is code complete; the open items are the Phase 0 ops carry-overs (staging, CI on GitHub, pre-commit hook, 360 px check, MFA note). Plan 1B (clinical form, medicine catalogue, autosave, discard) is code complete as well. Plan 1C (pad renderer, server PDF, print, clinic pad and profile settings) is code complete too. The next milestone is Plan 1D (sharing, CSV import, filters, hardening). Read `docs/ROADMAP.md` before starting it.
 
 ---
 
@@ -223,8 +225,10 @@ Track answers in `docs/DECISIONS.md`:
 - **Windows vitest needs an UPPERCASE drive letter** in the working directory (`E:\...`). A lowercase `e:` loads two vitest instances and every test fails.
 - **Docker Desktop on this machine lives under `%LOCALAPPDATA%\Programs\DockerDesktop`**, not Program Files.
 - **Playwright `getByRole("alert")` also matches Next's route announcer.** Scope the locator or use a test id.
-- **Hard-coded Hindi doctor details** in the preview page. Extract to data before any real clinic uses it.
+- **Finalized prescriptions print from `render_snapshot`.** Never render a finalized prescription from live patient, clinic, or doctor rows; add new printed fields to the snapshot schema (`src/lib/rx-render/snapshot.ts`) and bump `v`. The finalizer signs the pad: `buildRenderSnapshot` never falls back to the visit's doctor once there is a finalizer, and it must run inside `withTenant` (it relies on RLS; never call it with `adminDb`). Finalize fails closed (no clinic row or an unparseable snapshot) and burns no Rx number (ADR-0032).
+- **Every document must pass `checkSelfContained()`.** Build HTML only with `html`, `userText`, and `raw` (`src/lib/rx-render/html.ts`); no external URLs, scripts, fonts, CSS comments, or raw markup inside attributes (the `html` tag throws). Changing the checker or the Gotenberg flags means re-running `tests/integration/gotenberg-smoke.test.ts` with Gotenberg up (ADR-0034).
+- **PDF layout needs a human look after template or CSS changes.** Run `npm run test:visual`, then read the PNGs and the real Gotenberg PDFs it writes to `test-results/rx-visual-pdf/` (Chromium footers shrink-wrap without `html{width:100%}`, narrow table headings split mid-word, and screenshots do not show page breaks).
+- **The legacy `/preview` page still hard-codes a Hindi doctor header and manipulates `document.body.innerHTML` to print.** It serves only the desktop shell until Phase 4; the web app prints through `src/lib/rx-render/`.
+- **PDFs need Gotenberg** (`docker compose up -d gotenberg`; `GOTENBERG_URL` is mandatory in production). Without it, Download PDF shows an error and Print still works.
 - **IndexedDB repositories are client-only.** They cannot be called from server components.
-- **Tauri print path manipulates `document.body.innerHTML`.** Fragile; replace with the template renderer.
-- **PDF generation today is browser-print based.** Server-side PDF is required for WhatsApp/email and consistent output.
 - **No test coverage of the legacy preview page.** The new app has unit, integration and e2e tests; the legacy routes do not. Add tests before refactoring the preview page.

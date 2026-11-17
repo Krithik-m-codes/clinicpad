@@ -72,6 +72,7 @@ Copy-Item .env.example .env.local
 | `SUPABASE_SERVICE_ROLE_KEY` | server only | Admin tasks; never expose to the client |
 | `AUTH_SECRET` | yes | Session signing (32+ random bytes) |
 | `ENCRYPTION_KEY` | yes | Field-level encryption for sensitive data |
+| `GOTENBERG_URL` | for PDFs; mandatory in production | PDF service (Gotenberg); defaults to `http://localhost:3001` outside production, and the app reports the PDF service as down in production when it is unset or not an http(s) URL |
 
 Generate secrets:
 
@@ -84,7 +85,6 @@ Generate secrets:
 
 | Variable | Phase | Purpose |
 |---|---|---|
-| `GOTENBERG_URL` | 2 | Document conversion service |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | 2 | Template and PDF storage |
 | `CLAMAV_HOST`, `CLAMAV_PORT` | 2 | Upload scanning |
 | `RESEND_API_KEY`, `EMAIL_FROM` | 2 | Transactional email |
@@ -99,7 +99,7 @@ Generate secrets:
 
 ## 4. Local services
 
-Phase 0 introduces a `docker-compose.yml` for local dependencies. Until then, only the Next.js dev server is required.
+`docker-compose.yml` runs `postgres` (5432) and `gotenberg` (127.0.0.1:3001, prescription PDFs). Start both with `docker compose up -d`; without Gotenberg the app still works, Print still works, and Download PDF shows an error. On this project's Windows machine Docker Desktop lives under `%LOCALAPPDATA%\Programs\DockerDesktop`.
 
 Target compose stack:
 
@@ -162,6 +162,10 @@ For Supabase staging, use the pooled URL in `DATABASE_URL` and the direct URL in
 
 ---
 
+### 4.2 Document engine (Gotenberg)
+
+`docker compose up -d gotenberg` starts the digest-pinned Gotenberg image with JavaScript disabled, a Chromium deny-list, no webhooks or download-from, and the API bound to loopback only (it has no authentication). Check it with `curl http://localhost:3001/health` or the app's `GET /api/health/pdf`. Prescription documents embed their fonts and images, carry a `default-src 'none'` CSP, and are checked before they are sent, so Gotenberg never needs network access: in staging and production run it with no egress (no outbound network from its container) and copy the flag set from `docker-compose.yml`. Set `GOTENBERG_URL` explicitly in production. After upgrading the image, run `npm run test:visual` (it also writes the real PDFs to `test-results/rx-visual-pdf/`) and review the screenshots and PDF pages. Set `GOTENBERG_REQUIRED=1` to make `npm run test` fail instead of skipping when Gotenberg or docker is missing (CI does this).
+
 ## 5. Run the app
 
 ```powershell
@@ -179,7 +183,8 @@ npm run start          # run the production web build
 npm run lint           # ESLint
 npm run typecheck      # tsc --noEmit
 npm run test           # Vitest (unit + integration; integration needs Postgres running)
-npm run test:e2e       # Playwright (starts the dev server; needs Postgres and one-time `npx playwright install chromium`)
+npm run test:e2e       # Playwright (starts the dev server; needs Postgres, Gotenberg for the PDF checks, and one-time `npx playwright install chromium`)
+npm run test:visual    # print-layout screenshots (opt-in, per-platform baselines)
 node scripts/verify-gate-0.mjs   # everything above, in order
 ```
 
@@ -297,7 +302,7 @@ All commands must exit `0`. Then start the app and check:
 | Postgres auth error | Wrong URL / pooler vs direct | Check `DATABASE_URL` vs `DIRECT_URL` |
 | RLS returns zero rows | Session tenant not set | Verify `app.tenant_id` is set in the transaction |
 | Migration hangs | Locked table / wrong DB | Check `pg_stat_activity`; use direct connection |
-| PDF conversion timeout | Gotenberg down or file too large | `docker compose ps`; check 25 MB limit |
+| Download PDF says the PDF service is not reachable | Gotenberg not running | `docker compose up -d gotenberg`; then `curl http://localhost:3001/health` |
 | WhatsApp template rejected | Missing approval / wrong category | Check Meta Business Manager; use an approved template |
 | `npm ci` fails after lockfile change | Lockfile out of sync | Run `npm install`, commit `package-lock.json` |
 
