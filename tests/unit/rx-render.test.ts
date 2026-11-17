@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderPrescription, footerTemplate } from "@/lib/rx-render/render";
 import { checkSelfContained } from "@/lib/rx-render/self-contained";
-import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES, type RenderAssets, type RxDocument } from "@/lib/rx-render/types";
+import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES, type RenderAssets, type RxDocument, type RxItem } from "@/lib/rx-render/types";
 import { translations } from "@/lib/translations";
 import { DEVANAGARI, HOSTILE, TINY_PNG, documentFixture, item, manyItems, snapshot, visit } from "../fixtures/rx-documents";
 
@@ -234,10 +234,10 @@ describe("templates", () => {
     expect(dom.querySelector(".meds tbody tr td.when")?.textContent).toBe("1-0-1");
   });
 
-  it("Derma prints how to use each medicine and no vitals", () => {
+  it("Derma prints how to use each medicine and a compact vitals line", () => {
     const dom = parse(render(documentFixture({ layout: { template: { kind: "builtin", key: "derma" } } })).html);
     expect(dom.querySelector(".meds-topical")).not.toBeNull();
-    expect(dom.querySelector(".vitals")).toBeNull();
+    expect(dom.querySelector(".vitals.vitals-compact")?.textContent).toContain("BP 130/85 mmHg");
     expect(dom.querySelector(".meds tbody tr td.how")?.textContent).toBe("Oral · 1 tab · 1-0-1 · After food");
   });
 
@@ -346,6 +346,268 @@ describe("determinism and the PDF footer", () => {
     expect(footer).toContain("Rx 12 v1");
     expect(footer).not.toContain("Asha");
     expect(checkSelfContained(footer)).toEqual({ ok: true });
+  });
+});
+
+const URDU = "لگائیں"; // Arabic-script text (6 code points)
+
+const FULL_ITEM_ONE: RxItem = {
+  drugName: "IDRUGONE", genericName: "IGENONE", strength: "ISTRONE", form: "IFORMONE", route: "IROUTEONE", dose: "IDOSEONE",
+  doseMorning: 1, doseAfternoon: 0.5, doseEvening: 3, doseNight: 2, timing: "ITIMINGONE", foodRelation: "before",
+  periodicity: "alternate_day", isSos: true, durationValue: 7, durationUnit: "weeks", durationDays: 49, remarks: "IREMARKONE",
+};
+const FULL_ITEM_TWO: RxItem = {
+  ...FULL_ITEM_ONE, drugName: "IDRUGTWO", genericName: "IGENTWO", strength: "ISTRTWO", form: "IFORMTWO", route: "IROUTETWO", dose: "IDOSETWO",
+  doseMorning: null, doseAfternoon: null, doseEvening: null, doseNight: null, timing: "ITIMINGTWO", isSos: false, remarks: "IREMARKTWO",
+  foodRelation: "with_tea", periodicity: "monthly", durationValue: 3, durationUnit: "months",
+};
+
+function fullDocument(): RxDocument {
+  return documentFixture({
+    version: 3,
+    replacesVersion: 2,
+    snapshot: snapshot({
+      patient: { name: "PNAME", patientNo: 4242, gender: "male", ageLabel: "7 y", allergies: ["PALLERGYONE", "PALLERGYTWO"] },
+      clinic: { name: "CNAME", addressLines: ["CADDRONE", "CADDRTWO"], phone: "CPHONE", email: "cemail@example.in", footerLines: ["CFOOTONE", "CFOOTTWO"] },
+      doctor: { name: "DNAME", qualifications: "DQUAL", designation: "DDESIG", registrationNo: "DREGNO", registrationCouncil: "DCOUNCIL" },
+    }),
+    visit: visit({
+      chiefComplaint: "VCHIEF", complaints: ["VCOMPONE", "VCOMPTWO"], diagnosis: ["VDIAGONE", "VDIAGTWO"], medicalHistory: ["VMEDHIST"],
+      drugHistory: ["VDRUGHIST"], examinationNotes: "VEXAM",
+      vitals: { bpSystolic: 131, bpDiastolic: 86, pulse: 93, temperatureF: 101.3, spo2: 96, respiratoryRate: 19, weightKg: 23.5, heightCm: 120.5, bloodSugarMgDl: 141, notes: "VVITALNOTES" },
+      investigations: [{ name: "VINVONE", instructions: "VINVINSONE" }, { name: "VINVTWO" }],
+      advice: "VADVICE", followUpDate: "2026-12-03", followUpReason: "VFUREASON",
+    }),
+    items: [FULL_ITEM_ONE, FULL_ITEM_TWO],
+  });
+}
+
+const COMPLETENESS_MARKERS = [
+  "PNAME", "4242", "Male", "7 y", "PALLERGYONE", "PALLERGYTWO",
+  "CNAME", "CADDRONE", "CADDRTWO", "CPHONE", "cemail@example.in", "CFOOTONE", "CFOOTTWO",
+  "DNAME", "DQUAL", "DDESIG", "DREGNO", "DCOUNCIL",
+  "VCHIEF", "VCOMPONE", "VCOMPTWO", "VDIAGONE", "VDIAGTWO", "VMEDHIST", "VDRUGHIST", "VEXAM",
+  "131/86", "93/min", "101.3 °F", "96%", "19/min", "23.5 kg", "120.5 cm", "141 mg/dL", "VVITALNOTES",
+  "VINVONE", "VINVINSONE", "VINVTWO", "VADVICE", "03/12/2026", "VFUREASON", "12/11/2026", "12 (v3)", "Replaces version 2",
+  "IDRUGONE", "IGENONE", "ISTRONE", "IFORMONE", "IROUTEONE", "IDOSEONE", "ITIMINGONE", "Before food", "Alternate days", "SOS", "7 weeks", "IREMARKONE",
+  "IDRUGTWO", "IGENTWO", "ISTRTWO", "IFORMTWO", "IROUTETWO", "IDOSETWO", "ITIMINGTWO", "With tea or snacks", "Monthly", "3 months", "IREMARKTWO",
+];
+
+describe("completeness: nothing recorded is dropped", () => {
+  for (const key of BUILTIN_TEMPLATES) {
+    it(`prints every recorded field in ${key}`, () => {
+      const out = render(withLayout(fullDocument(), { template: { kind: "builtin", key } }), { ...NO_ASSETS, logo: TINY_PNG, signature: TINY_PNG });
+      const dom = parse(out.html);
+      const body = dom.body.textContent ?? "";
+      expect(COMPLETENESS_MARKERS.filter((marker) => !body.includes(marker))).toEqual([]);
+      expect(dom.querySelectorAll("img")).toHaveLength(2);
+      if (key === "general") {
+        expect(Array.from(dom.querySelectorAll(".meds tbody tr")[0].querySelectorAll("td.slot")).map((td) => td.textContent)).toEqual(["1", "½", "3", "2"]);
+      } else {
+        expect(body).toContain("1-½-3-2");
+      }
+      expect(out.title).toBe("Prescription Rx-12 v3");
+      expect(out.footerHtml).toContain("Rx 12 v3");
+      expect(checkSelfContained(out.html)).toEqual({ ok: true });
+    });
+
+    it(`prints every user value on a Hindi pad in ${key}`, () => {
+      const out = render(withLayout(fullDocument(), { template: { kind: "builtin", key }, labels: "hi" }));
+      const body = text(out.html);
+      const userMarkers = COMPLETENESS_MARKERS.filter((m) => /^[A-Z]{4,}$/.test(m));
+      expect(userMarkers.length).toBeGreaterThan(30);
+      expect(userMarkers.filter((marker) => !body.includes(marker))).toEqual([]);
+    });
+  }
+
+  it("prints distinct M/A/E/N doses in their own columns", () => {
+    const dom = parse(render(fullDocument()).html);
+    const cells = Array.from(dom.querySelectorAll(".meds tbody tr")[0].querySelectorAll("td.slot")).map((td) => td.textContent);
+    expect(cells).toEqual(["1", "½", "3", "2"]);
+  });
+
+  it("prints free-text timing together with dose slots, slots first, on every template", () => {
+    for (const key of BUILTIN_TEMPLATES) {
+      const doc = withLayout(documentFixture({ items: [item(1, { doseMorning: 1, doseAfternoon: 0, doseEvening: null, doseNight: 1, timing: "every 6 hours" })] }), { template: { kind: "builtin", key } });
+      const body = text(render(doc).html);
+      expect(body, key).toContain("every 6 hours");
+      if (key === "general") {
+        const dom = parse(render(doc).html);
+        expect(Array.from(dom.querySelectorAll("td.slot")).map((td) => td.textContent), key).toEqual(["1", "0", "0", "1"]);
+      } else {
+        expect(body.indexOf("1-0-1"), key).toBeGreaterThan(-1);
+        expect(body.indexOf("1-0-1"), key).toBeLessThan(body.indexOf("every 6 hours"));
+      }
+    }
+    const pattern = parse(render(withLayout(documentFixture({ items: [item(1, { timing: "every 6 hours" })] }), { template: { kind: "builtin", key: "paediatric" } })).html);
+    expect(pattern.querySelector("td.when")?.textContent).toBe("1-0-1 · every 6 hours");
+    const derma = parse(render(withLayout(documentFixture({ items: [item(1, { timing: "every 6 hours" })] }), { template: { kind: "builtin", key: "derma" } })).html);
+    expect(derma.querySelector("td.how")?.textContent).toBe("Oral · 1 tab · 1-0-1 · every 6 hours · After food");
+  });
+
+  it("prints strength, form and route with the medicine name on every template", () => {
+    for (const key of BUILTIN_TEMPLATES) {
+      const doc = withLayout(documentFixture({ items: [item(1, { drugName: "Drops", strength: "0.5%", form: "Eye drops", route: "Ophthalmic" })] }), { template: { kind: "builtin", key } });
+      const name = parse(render(doc).html).querySelector(".meds tbody tr .med-name")?.textContent;
+      expect(name, key).toBe("1. Drops 0.5% Eye drops · Ophthalmic");
+    }
+  });
+
+  it("prints blood sugar and drug history on Paediatric", () => {
+    const body = text(render(documentFixture({ layout: { template: { kind: "builtin", key: "paediatric" } }, visit: visit({ vitals: { bloodSugarMgDl: 141 }, drugHistory: ["DHIST"] }) })).html);
+    expect(body).toContain("141 mg/dL");
+    expect(body).toContain("DHIST");
+  });
+
+  it("prints Derma vitals notes even when nothing else is recorded", () => {
+    const dom = parse(render(documentFixture({ layout: { template: { kind: "builtin", key: "derma" } }, visit: visit({ vitals: { notes: "VNOTE" } }) })).html);
+    expect(dom.querySelector(".vitals-compact")?.textContent).toContain("VNOTE");
+  });
+});
+
+describe("drafts never carry an Rx number", () => {
+  for (const key of BUILTIN_TEMPLATES) {
+    it(`omits the number of an amendment draft in ${key}`, () => {
+      const doc = withLayout(documentFixture({ status: "draft", rxNo: 12, version: 2, replacesVersion: 1, issuedAt: null, snapshotSource: "live" }), { template: { kind: "builtin", key } });
+      const out = render(doc);
+      const dom = parse(out.html);
+      expect(out.title).toBe("Prescription draft v2");
+      expect(out.footerHtml).not.toContain("Rx 12");
+      expect(out.footerHtml).toContain("Draft");
+      expect(dom.body.textContent).not.toContain("Rx No.");
+      expect(dom.querySelector(".patient-meta")?.textContent).not.toMatch(/12 /);
+      expect(dom.querySelector(".patient-meta")?.textContent).toContain("Draft amendment of version 1");
+      expect(footerTemplate(doc, out.paper)).not.toContain("Rx 12");
+    });
+  }
+
+  it("says it in Hindi on a Hindi pad", () => {
+    const doc = documentFixture({ status: "draft", rxNo: 12, version: 2, replacesVersion: 1, issuedAt: null, layout: { labels: "hi" } });
+    expect(text(render(doc).html)).toContain("संस्करण 1 का संशोधन मसौदा");
+  });
+});
+
+describe("bidirectional safety in joined cells", () => {
+  it("keeps every part of the Derma how-to-use cell in its own isolated span", () => {
+    expect(Array.from(URDU)).toHaveLength(6);
+    const doc = withLayout(documentFixture({ items: [item(1, { route: URDU, dose: null, doseMorning: 1, doseAfternoon: 0, doseEvening: null, doseNight: 2, remarks: URDU })] }), { template: { kind: "builtin", key: "derma" } });
+    const spans = Array.from(parse(render(doc).html).querySelectorAll("td.how span.v")).map((el) => el.textContent);
+    expect(spans).toEqual([URDU, "1-0-2", "After food"]);
+  });
+
+  it("isolates each allergy, list entry and frequency part on its own", () => {
+    const doc = documentFixture({ snapshot: snapshot({ patient: { allergies: [URDU, "Sulfa 2"] } }), visit: visit({ complaints: [URDU, "Fever 2"] }) });
+    const dom = parse(render(doc).html);
+    expect(Array.from(dom.querySelectorAll(".allergies span.v")).map((el) => el.textContent)).toEqual([URDU, "Sulfa 2"]);
+    expect(Array.from(dom.querySelectorAll("p.line span.v")).map((el) => el.textContent)).toEqual(expect.arrayContaining([URDU, "Fever 2"]));
+    const freq = dom.querySelectorAll(".meds tbody tr")[0].querySelectorAll("td.center")[1];
+    expect(Array.from(freq.querySelectorAll("span.v")).map((el) => el.textContent)).toEqual(["Daily", "5 days"]);
+  });
+
+  it("isolates unknown coded values as text", () => {
+    const doc = documentFixture({ items: [item(1, { foodRelation: URDU, periodicity: URDU })] });
+    const cells = Array.from(parse(render(doc).html).querySelectorAll(".meds tbody tr")[0].querySelectorAll("td.center span.v")).map((el) => el.textContent);
+    expect(cells).toContain(URDU);
+  });
+});
+
+describe("continuation pages", () => {
+  it("repeats the patient and Rx strip in the page header", () => {
+    for (const key of BUILTIN_TEMPLATES) {
+      const dom = parse(render(withLayout(documentFixture(), { template: { kind: "builtin", key } })).html);
+      const head = dom.querySelector("table.sheet > thead")?.textContent ?? "";
+      expect(head, key).toContain("Asha Rao");
+      expect(head, key).toContain("Rx No.");
+      expect(head, key).toContain("12/11/2026");
+      expect(dom.querySelector("table.sheet > tbody .patient")).toBeNull();
+    }
+  });
+
+  it("keeps the signature with the last section and the last medicine row", () => {
+    const out = render(documentFixture());
+    const closing = parse(out.html).querySelector(".closing");
+    expect(closing?.querySelector(".sig")).not.toBeNull();
+    expect(closing?.querySelector(".block, .line")).not.toBeNull();
+    expect(out.html).toContain(".closing{break-inside:avoid;page-break-inside:avoid}");
+    expect(out.html).toContain(".meds tbody tr:last-child{break-after:avoid}");
+  });
+});
+
+describe("dates use the clinic timezone", () => {
+  const LATE = "2026-11-12T19:00:00.000Z"; // 13/11 00:30 in Asia/Kolkata, still 12/11 in UTC
+
+  it("dates the pad and the superseded banner in the clinic zone, not UTC", () => {
+    const dom = parse(render(documentFixture({ issuedAt: LATE, status: "amended", supersededBy: { version: 2, issuedAt: LATE } })).html);
+    expect(dom.querySelector(".patient-meta")?.textContent).toContain("13/11/2026");
+    expect(dom.querySelector(".patient-meta")?.textContent).not.toContain("12/11/2026");
+    expect(dom.querySelector(".banner-superseded")?.textContent).toContain("issued 13/11/2026");
+  });
+
+  it("states the version of a superseded copy", () => {
+    const dom = parse(render(documentFixture({ status: "amended", supersededBy: { version: 2, issuedAt: null } })).html);
+    expect(dom.querySelector(".patient-meta")?.textContent).toContain("12 (v1)");
+  });
+});
+
+describe("assets: mime", () => {
+  it("drops an asset that is not PNG or JPEG", () => {
+    for (const mime of ["image/svg+xml", 'image/png;base64,AAAA" onerror="x', "text/html"]) {
+      const asset = { ...TINY_PNG, mime } as unknown as RenderAssets["logo"];
+      const out = render(documentFixture(), { ...NO_ASSETS, logo: asset, signature: asset });
+      expect(parse(out.html).querySelectorAll("img")).toHaveLength(0);
+      expect(checkSelfContained(out.html)).toEqual({ ok: true });
+    }
+  });
+
+  it("accepts JPEG", () => {
+    const dom = parse(render(documentFixture(), { ...NO_ASSETS, logo: { ...TINY_PNG, mime: "image/jpeg" } }).html);
+    expect(dom.querySelector(".logo img")?.getAttribute("src")).toMatch(/^data:image\/jpeg;base64,/);
+  });
+});
+
+describe("tidy output", () => {
+  it("hides non-positive vitals and whitespace-only entries", () => {
+    const doc = documentFixture({
+      visit: visit({ vitals: { heightCm: 0, weightKg: -5, pulse: 80, notes: "   " }, complaints: ["  ", ""], diagnosis: [" Viral ", " "], investigations: [{ name: "  " }, { name: "CBC" }] }),
+    });
+    const dom = parse(render(doc).html);
+    const vitals = dom.querySelector(".vitals")?.textContent ?? "";
+    expect(vitals).not.toMatch(/Height|-5/);
+    expect(vitals).toContain("80/min");
+    const lines = Array.from(dom.querySelectorAll("p.line")).map((p) => p.textContent);
+    expect(lines.some((l) => l?.startsWith("Complaints"))).toBe(false);
+    expect(lines).toContain("Diagnosis: Viral");
+    expect(dom.querySelectorAll(".tests li")).toHaveLength(1);
+  });
+
+  it("draws no footer strip when the clinic has no footer lines", () => {
+    const dom = parse(render(documentFixture({ snapshot: snapshot({ clinic: { footerLines: ["", "  "] } }) })).html);
+    expect(dom.querySelector(".pad-foot")).toBeNull();
+    expect(dom.querySelector("table.sheet > tfoot")).toBeNull();
+  });
+
+  it("labels the Paediatric and Derma duration column Frequency / Duration", () => {
+    for (const key of ["paediatric", "derma"] as const) {
+      const headings = Array.from(parse(render(documentFixture({ layout: { template: { kind: "builtin", key } } })).html).querySelectorAll(".meds th")).map((th) => th.textContent);
+      expect(headings, key).toContain("Frequency / Duration");
+    }
+  });
+
+  it("guards the title and footer against damaged numbers", () => {
+    const doc = documentFixture({ rxNo: 1.5, version: Number.NaN });
+    const out = render(doc);
+    expect(out.title).toBe("Prescription draft");
+    expect(footerTemplate(doc, out.paper)).toContain("Draft");
+    expect(footerTemplate(doc, out.paper)).not.toMatch(/NaN/);
+  });
+
+  it("localizes status texts on Hindi and bilingual pads", () => {
+    const hi = text(render(documentFixture({ status: "draft", rxNo: null, issuedAt: null, layout: { labels: "hi" } })).html);
+    expect(hi).toContain("मसौदा");
+    const both = parse(render(documentFixture({ status: "draft", rxNo: null, issuedAt: null, layout: { labels: "bilingual" } })).html);
+    expect(both.querySelector(".watermark")?.textContent).toBe("DRAFT · NOT VALID FOR DISPENSING / मसौदा · दवा देने के लिए मान्य नहीं");
+    const sup = text(render(documentFixture({ status: "amended", supersededBy: { version: 2, issuedAt: null }, layout: { labels: "hi" } })).html);
+    expect(sup).toContain("संस्करण 2 द्वारा निरस्त");
   });
 });
 

@@ -159,3 +159,46 @@ export function ageText(label: string, lang: LabelLanguage): string {
   if (!match) return label;
   return pick(label, `${match[1]} ${HI_AGE_UNITS[match[2]]}`, lang);
 }
+
+/*
+ * NEEDS NATIVE-SPEAKER REVIEW before wide release: every Hindi string in the status texts below
+ * (draft, superseded, amendment and legacy-note wording) is a first draft, not confirmed.
+ */
+
+const STATUS_TEXT = {
+  draftWatermark: { en: "DRAFT · NOT VALID FOR DISPENSING", hi: "मसौदा · दवा देने के लिए मान्य नहीं" },
+  draftBanner: {
+    en: "DRAFT PREVIEW · This is not a prescription until it is finalized.",
+    hi: "मसौदा पूर्वावलोकन · अंतिम रूप दिए जाने तक यह पर्चा नहीं है।",
+  },
+  supersededWatermark: { en: "SUPERSEDED", hi: "निरस्त" },
+  supersededNewer: {
+    en: "SUPERSEDED by a newer version. Do not dispense from this copy.",
+    hi: "नए संस्करण द्वारा निरस्त। इस प्रति से दवा न दें।",
+  },
+  legacyNote: {
+    en: "Printed with the clinic, doctor and patient details on file today: this prescription was finalized before print snapshots were recorded.",
+    hi: "आज दर्ज क्लिनिक, चिकित्सक और रोगी विवरण के साथ मुद्रित: यह पर्चा प्रिंट स्नैपशॉट दर्ज होने से पहले अंतिम किया गया था।",
+  },
+} as const satisfies Record<string, { en: string; hi: string }>;
+
+export type StatusTextKey = keyof typeof STATUS_TEXT;
+
+export function statusText(key: StatusTextKey, lang: LabelLanguage): string {
+  return pick(STATUS_TEXT[key].en, STATUS_TEXT[key].hi, lang);
+}
+
+/** "SUPERSEDED by version 2 issued 13/11/2026. Do not dispense from this copy." */
+export function supersededByText(version: number, issued: string, lang: LabelLanguage): string {
+  const en = `SUPERSEDED by version ${version}${issued ? ` issued ${issued}` : ""}. Do not dispense from this copy.`;
+  const hindi = `संस्करण ${version} द्वारा निरस्त${issued ? `, जारी दिनांक ${issued}` : ""}। इस प्रति से दवा न दें।`;
+  return pick(en, hindi, lang);
+}
+
+export function replacesVersionText(version: number, lang: LabelLanguage): string {
+  return pick(`Replaces version ${version}`, `संस्करण ${version} का स्थान लेता है`, lang);
+}
+
+export function draftAmendmentText(version: number, lang: LabelLanguage): string {
+  return pick(`Draft amendment of version ${version}`, `संस्करण ${version} का संशोधन मसौदा`, lang);
+}

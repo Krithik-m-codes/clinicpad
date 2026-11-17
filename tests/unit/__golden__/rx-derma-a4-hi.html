@@ -26,7 +26,7 @@ td,th,.v{overflow-wrap:anywhere;word-break:break-word}
 .banner{margin-top:2mm;padding:1.5mm 2mm;border:1px solid #b45309;background:#fef3c7;font-weight:700;font-size:.9em}
 .banner-superseded{border-color:#b91c1c;background:#fee2e2}
 .watermark{position:fixed;top:45%;left:0;right:0;text-align:center;transform:rotate(-30deg);font-size:3.2em;font-weight:700;color:rgba(185,28,28,.14);pointer-events:none}
-.patient{display:flex;justify-content:space-between;gap:4mm;margin-bottom:2mm}
+.patient{display:flex;justify-content:space-between;gap:4mm;margin-bottom:2mm;padding-bottom:1mm;border-bottom:1px solid #999}
 .patient-main{display:flex;flex-wrap:wrap;gap:1mm 5mm}
 .patient-meta{text-align:right}
 .k{font-weight:700}
@@ -35,6 +35,7 @@ td,th,.v{overflow-wrap:anywhere;word-break:break-word}
 .generic{color:#555;font-size:.85em;font-style:italic}
 .allergies{margin:1mm 0 2mm;padding:1mm 2mm;border-left:3px solid #b91c1c;background:#fff1f2}
 .vitals{display:flex;flex-wrap:wrap;gap:1mm 5mm;margin:1mm 0 2mm}
+.vitals-compact{font-size:.9em;margin:0 0 1.5mm}
 .line{margin:0 0 1.2mm}
 .block{margin:2mm 0;break-inside:avoid}
 .block-title{font-weight:700;color:var(--accent)}
@@ -47,6 +48,7 @@ td,th,.v{overflow-wrap:anywhere;word-break:break-word}
 .meds th{background:#f3f4f6;font-weight:700;text-align:center;font-size:.9em}
 .meds th.left{text-align:left}
 .meds tr{break-inside:avoid;page-break-inside:avoid}
+.meds tbody tr:last-child{break-after:avoid}
 .l-hi{display:block;font-weight:400;font-size:.85em}
 .slot,.slot-text,.center,.when{text-align:center}
 .slot{font-weight:700}
@@ -56,6 +58,7 @@ td,th,.v{overflow-wrap:anywhere;word-break:break-word}
 .meds-pattern .c-med{width:30%}.meds-pattern .c-dose{width:12%}.meds-pattern .c-when{width:12%}.meds-pattern .c-food{width:13%}.meds-pattern .c-dur{width:15%}.meds-pattern .c-rem{width:18%}
 .meds-topical .c-med{width:32%}.meds-topical .c-how{width:30%}.meds-topical .c-dur{width:14%}.meds-topical .c-ins{width:24%}
 .tests{margin:.5mm 0 0;padding-left:5mm}
+.closing{break-inside:avoid;page-break-inside:avoid}
 .sig{margin-top:6mm;margin-left:auto;width:55mm;text-align:center;break-inside:avoid}
 .sig-box{height:16mm;display:flex;align-items:flex-end;justify-content:center;border-bottom:1px solid #999}
 .sig-box img{max-height:16mm;max-width:50mm;width:auto;height:auto}
@@ -85,10 +88,7 @@ td,th,.v{overflow-wrap:anywhere;word-break:break-word}
 </div>
 </div>
 
-</header></td></tr></thead>
-<tfoot><tr><td><footer class="pad-foot"><div><span class="v">Mon-Sat 9 am to 1 pm</span></div><div><span class="v">Please bring your previous prescriptions.</span></div></footer></td></tr></tfoot>
-<tbody><tr><td>
-<section class="patient">
+</header><section class="patient">
 <div class="patient-main">
 <div class="kv"><span class="k">नाम:</span> <b><span class="v">Asha Rao</span></b></div>
 <div class="kv"><span class="k">उम्र:</span> <span class="v">36 वर्ष</span></div>
@@ -101,37 +101,39 @@ td,th,.v{overflow-wrap:anywhere;word-break:break-word}
 <div class="kv"><span class="k">पर्चा क्रमांक:</span> <span class="v">12</span></div>
 
 </div>
-</section>
+</section></td></tr></thead>
+<tfoot><tr><td><footer class="pad-foot"><div><span class="v">Mon-Sat 9 am to 1 pm</span></div><div><span class="v">Please bring your previous prescriptions.</span></div></footer></td></tr></tfoot>
+<tbody><tr><td>
 <div class="allergies"><span class="k">एलर्जी:</span> <span class="v">Penicillin</span></div>
 <div class="rx-mark">R<span>x</span></div>
-<p class="line"><span class="k">मुख्य शिकायत:</span> <span class="v">Fever for 2 days</span></p><p class="line"><span class="k">रोगी की शिकायतें:</span> <span class="v">Fever, Body ache</span></p><section class="block"><div class="block-title">परीक्षण</div><div class="block-body"><span class="v">Throat congested. Chest clear.</span></div></section><p class="line"><span class="k">रोग निदान:</span> <span class="v">Viral fever</span></p><table class="meds meds-topical">
+<p class="line"><span class="k">मुख्य शिकायत:</span> <span class="v">Fever for 2 days</span></p><p class="line"><span class="k">रोगी की शिकायतें:</span> <span class="v">Fever</span>, <span class="v">Body ache</span></p><section class="block"><div class="block-title">परीक्षण</div><div class="block-body"><span class="v">Throat congested. Chest clear.</span></div></section><div class="vitals vitals-compact"><span class="vital"><span class="k">रक्तचाप</span> 130/85 mmHg</span><span class="vital"><span class="k">पल्स</span> 92/min</span><span class="vital"><span class="k">तापमान</span> 100.4 °F</span><span class="vital"><span class="k">SpO2</span> 97%</span><span class="vital"><span class="k">वजन</span> 70 kg</span><span class="vital"><span class="k">लंबाई</span> 175 cm</span><span class="vital"><span class="k">BMI</span> 22.9</span></div><p class="line"><span class="k">रोग निदान:</span> <span class="v">Viral fever</span></p><table class="meds meds-topical">
 <colgroup><col class="c-med"><col class="c-how"><col class="c-dur"><col class="c-ins"></colgroup>
-<thead><tr><th class="left">दवा</th><th>उपयोग विधि</th><th>अवधि</th><th>निर्देश</th></tr></thead>
+<thead><tr><th class="left">दवा</th><th>उपयोग विधि</th><th>आवृत्ति / अवधि</th><th>निर्देश</th></tr></thead>
 <tbody><tr><td class="med">
-<div class="med-name">1. <span class="v">Medicine 1</span> <span class="muted"><span class="v">500 mg</span></span></div>
+<div class="med-name">1. <span class="v">Medicine 1</span> <span class="muted"><span class="v">500 mg</span> <span class="v">Tablet</span> · <span class="v">Oral</span></span></div>
 <div class="generic"><span class="v">Generic 1</span></div>
-<div class="small"><span class="v">Tablet</span></div>
 
 
-</td><td class="how"><span class="v">Oral · 1 tab · 1-0-1 · भोजन के बाद</span></td><td class="center">रोज · 5 दिन</td><td></td></tr><tr><td class="med">
-<div class="med-name">2. <span class="v">Cetirizine</span> <span class="muted"><span class="v">500 mg</span></span> <span class="sos">SOS</span></div>
+
+</td><td class="how"><span class="v">Oral</span> · <span class="v">1 tab</span> · <span class="v">1-0-1</span> · <span class="v">भोजन के बाद</span></td><td class="center"><span class="v">रोज</span> · <span class="v">5 दिन</span></td><td></td></tr><tr><td class="med">
+<div class="med-name">2. <span class="v">Cetirizine</span> <span class="muted"><span class="v">500 mg</span> <span class="v">Tablet</span> · <span class="v">Oral</span></span> <span class="sos">SOS</span></div>
 <div class="generic"><span class="v">Generic 2</span></div>
-<div class="small"><span class="v">Tablet</span></div>
 
 
-</td><td class="how"><span class="v">Oral · 1 tab · 0-0-1</span></td><td class="center">जरूरत पड़ने पर · 5 दिन</td><td></td></tr><tr><td class="med">
-<div class="med-name">3. <span class="v">ORS sachet</span> <span class="muted"><span class="v">500 mg</span></span></div>
+
+</td><td class="how"><span class="v">Oral</span> · <span class="v">1 tab</span> · <span class="v">0-0-1</span></td><td class="center"><span class="v">जरूरत पड़ने पर</span> · <span class="v">5 दिन</span></td><td></td></tr><tr><td class="med">
+<div class="med-name">3. <span class="v">ORS sachet</span> <span class="muted"><span class="v">500 mg</span> <span class="v">Tablet</span> · <span class="v">Oral</span></span></div>
 <div class="generic"><span class="v">Generic 3</span></div>
-<div class="small"><span class="v">Tablet</span></div>
 
 
-</td><td class="how"><span class="v">Oral · 1 tab · After every loose stool</span></td><td class="center">रोज · 3 दिन</td><td></td></tr></tbody>
-</table><section class="block"><div class="block-title">जांच</div><ol class="tests"><li><span class="v">CBC</span></li><li><span class="v">Dengue NS1</span> <span class="muted">(<span class="v">If fever persists</span>)</span></li></ol></section><section class="block"><div class="block-title">सलाह</div><div class="block-body"><span class="v">Plenty of fluids.<br>Rest for 3 days.</span></div></section><p class="line"><span class="k">पुनः जांच:</span> 19/11/2026 · <span class="v">Review CBC report</span></p><p class="line"><span class="k">चिकित्सा इतिहास:</span> <span class="v">Type 2 diabetes</span></p><p class="line"><span class="k">दवाओं का इतिहास:</span> <span class="v">Metformin 500</span></p>
-<div class="sig">
+
+</td><td class="how"><span class="v">Oral</span> · <span class="v">1 tab</span> · <span class="v">After every loose stool</span></td><td class="center"><span class="v">रोज</span> · <span class="v">3 दिन</span></td><td></td></tr></tbody>
+</table><section class="block"><div class="block-title">जांच</div><ol class="tests"><li><span class="v">CBC</span></li><li><span class="v">Dengue NS1</span> <span class="muted">(<span class="v">If fever persists</span>)</span></li></ol></section><section class="block"><div class="block-title">सलाह</div><div class="block-body"><span class="v">Plenty of fluids.<br>Rest for 3 days.</span></div></section><p class="line"><span class="k">पुनः जांच:</span> 19/11/2026 · <span class="v">Review CBC report</span></p><p class="line"><span class="k">चिकित्सा इतिहास:</span> <span class="v">Type 2 diabetes</span></p>
+<div class="closing"><p class="line"><span class="k">दवाओं का इतिहास:</span> <span class="v">Metformin 500</span></p><div class="sig">
 <div class="sig-box"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" alt="" width="120" height="60"></div>
 <div class="sig-name"><span class="v">Dr. Meera Shah</span></div>
 <div class="sig-line">रजि. नं.: <span class="v">MMC 2011/04/1234</span></div>
-</div>
+</div></div>
 
 </td></tr></tbody>
 </table>

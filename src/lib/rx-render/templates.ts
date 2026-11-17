@@ -29,6 +29,8 @@ export type TemplateDefinition = {
   medicineLayout: MedicineLayout;
   /** Paediatric dosing is weight-based: print weight next to the age. */
   prominentWeight: boolean;
+  /** Print the vitals as one small line instead of a block (pads where vitals are not the focus). */
+  compactVitals: boolean;
 };
 
 /** Built-in pads are data, drawn by one renderer. Template Studio (Phase 2) adds other kinds beside them. */
@@ -42,25 +44,28 @@ export const TEMPLATE_DEFINITIONS: Record<BuiltinTemplateKey, TemplateDefinition
     vitals: ["bp", "pulse", "temperatureF", "spo2", "respiratoryRate", "weightKg", "heightCm", "bmi", "bloodSugarMgDl"],
     medicineLayout: "slots",
     prominentWeight: false,
+    compactVitals: false,
   },
   paediatric: {
     key: "paediatric",
     name: "Paediatric",
     description: "Weight beside the age, with dose and schedule columns for syrups and drops.",
     accent: "#0f766e",
-    sections: ["vitals", "chiefComplaint", "complaints", "medicalHistory", "examination", "diagnosis", "medicines", "investigations", "advice", "followUp"],
-    vitals: ["weightKg", "heightCm", "temperatureF", "pulse", "respiratoryRate", "spo2", "bp"],
+    sections: ["vitals", "chiefComplaint", "complaints", "medicalHistory", "drugHistory", "examination", "diagnosis", "medicines", "investigations", "advice", "followUp"],
+    vitals: ["weightKg", "heightCm", "temperatureF", "pulse", "respiratoryRate", "spo2", "bp", "bloodSugarMgDl"],
     medicineLayout: "pattern",
     prominentWeight: true,
+    compactVitals: false,
   },
   derma: {
     key: "derma",
     name: "Dermatology",
-    description: "Findings first, with how-to-use instructions for creams and lotions.",
+    description: "Findings first, a compact vitals line, and how-to-use instructions for creams and lotions.",
     accent: "#6d28d9",
-    sections: ["chiefComplaint", "complaints", "examination", "diagnosis", "medicines", "investigations", "advice", "followUp", "medicalHistory", "drugHistory"],
-    vitals: [],
+    sections: ["chiefComplaint", "complaints", "examination", "vitals", "diagnosis", "medicines", "investigations", "advice", "followUp", "medicalHistory", "drugHistory"],
+    vitals: ["bp", "pulse", "temperatureF", "spo2", "respiratoryRate", "weightKg", "heightCm", "bmi", "bloodSugarMgDl"],
     medicineLayout: "topical",
     prominentWeight: false,
+    compactVitals: true,
   },
 };
