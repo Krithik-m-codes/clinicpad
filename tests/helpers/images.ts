@@ -58,5 +58,28 @@ export function makeJpegHeader(width: number, height: number): Buffer {
   return Buffer.from([0xff, 0xd8, ...app0, ...sof0, ...sos, 0x12, 0x34, 0x56, 0xff, 0xd9]);
 }
 
+/** A minimal DHT segment (one table, one symbol). */
+const JPEG_DHT = Buffer.from([0xff, 0xc4, 0x00, 0x14, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x05]);
+
+/**
+ * A structurally valid JPEG with the given entropy-coded scans (bytes after each SOS header),
+ * baseline (SOF0) or progressive (SOF2). Stuffed FF00 and RSTn markers may appear in the scans.
+ */
+export function makeJpegCustom(
+  width: number,
+  height: number,
+  options: { progressive?: boolean; scans?: Buffer[] } = {},
+): Buffer {
+  const scans = options.scans ?? [Buffer.from([0x12, 0x34, 0x56])];
+  const sof = [
+    0xff, options.progressive ? 0xc2 : 0xc0, 0x00, 0x11, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff,
+    0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+  ];
+  const parts: Buffer[] = [Buffer.from([0xff, 0xd8]), Buffer.from(sof)];
+  for (const scan of scans) parts.push(JPEG_DHT, JPEG_SOS, scan);
+  parts.push(Buffer.from([0xff, 0xd9]));
+  return Buffer.concat(parts);
+}
+
 /** The scan segment alone, for building malformed JPEGs. */
 export const JPEG_SOS = Buffer.from([0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00]);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { IMAGE_LIMITS, inspectImage } from "@/lib/domain/image";
-import { JPEG_SOS, makeJpegHeader, makePng } from "../helpers/images";
+import { JPEG_SOS, makeJpegCustom, makeJpegHeader, makePng } from "../helpers/images";
 
 const bytes = (b: Buffer) => new Uint8Array(b);
 
@@ -114,6 +114,53 @@ describe("inspectImage", () => {
     const nonMarker = makeJpegHeader(100, 100);
     nonMarker[2 + 18] = 0x00; // first byte of the SOF0 marker
     expect(inspectImage(bytes(nonMarker)).ok).toBe(false);
+  });
+
+  describe("JPEG structure", () => {
+    const EOI = Buffer.from([0xff, 0xd9]);
+    const refused = (input: Buffer, message?: RegExp) => {
+      const result = inspectImage(bytes(input));
+      expect(result.ok).toBe(false);
+      if (!result.ok && message) expect(result.message).toMatch(message);
+    };
+
+    it("accepts a progressive JPEG (SOF2) with several scans", () => {
+      const jpeg = makeJpegCustom(640, 480, { progressive: true, scans: [Buffer.from([1, 2, 3]), Buffer.from([4, 5])] });
+      expect(inspectImage(bytes(jpeg))).toEqual({ ok: true, info: { mime: "image/jpeg", width: 640, height: 480 } });
+    });
+
+    it("accepts stuffed FF00 bytes and RSTn markers inside scan data", () => {
+      const scan = Buffer.from([0x12, 0xff, 0x00, 0x34, 0xff, 0xd0, 0x56, 0xff, 0xd7, 0xff, 0xff, 0xd3, 0x78]);
+      expect(inspectImage(bytes(makeJpegCustom(100, 100, { scans: [scan] }))).ok).toBe(true);
+    });
+
+    it("refuses HTML after the real EOI even when the file ends in another FFD9", () => {
+      const jpeg = Buffer.concat([makeJpegHeader(100, 100), Buffer.from("<script>alert(1)</script>"), EOI]);
+      expect(jpeg.subarray(-2).equals(EOI)).toBe(true);
+      refused(jpeg, /extra data/);
+    });
+
+    it("refuses a duplicate EOI and trailing junk", () => {
+      refused(Buffer.concat([makeJpegHeader(100, 100), EOI]), /extra data/);
+      refused(Buffer.concat([makeJpegHeader(100, 100), Buffer.from("junk")]), /incomplete/);
+      refused(Buffer.concat([makeJpegHeader(100, 100), Buffer.from([0x00])]), /incomplete/);
+    });
+
+    it("refuses a JPEG cut off inside its scan or after its last scan", () => {
+      const jpeg = makeJpegCustom(100, 100);
+      refused(jpeg.subarray(0, jpeg.length - 2), /incomplete/);
+      refused(jpeg.subarray(0, jpeg.length - 4), /incomplete/);
+    });
+
+    it("refuses a second frame header, a missing scan, and a bogus marker inside scan data", () => {
+      const sof0 = makeJpegHeader(100, 100).subarray(20, 39);
+      expect(sof0[1]).toBe(0xc0);
+      const twoFrames = Buffer.concat([makeJpegHeader(100, 100).subarray(0, 39), sof0, JPEG_SOS, EOI]);
+      refused(twoFrames, /damaged/);
+      const noScan = Buffer.concat([makeJpegHeader(100, 100).subarray(0, 39), EOI]);
+      refused(noScan, /damaged/);
+      refused(makeJpegCustom(100, 100, { scans: [Buffer.from([0x12, 0xff, 0xe0, 0xff, 0xff])] }), /damaged/);
+    });
   });
 
   it("decides by the bytes, not by any name or declared type", () => {

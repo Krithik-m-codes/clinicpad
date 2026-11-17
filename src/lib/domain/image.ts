@@ -53,30 +53,57 @@ function inspectPng(b: Uint8Array): ImageCheck {
   return fail(DAMAGED);
 }
 
-/** Reads markers up to the first frame header (SOF); the file must end with EOI. */
+/**
+ * Walks the segment structure to the first real EOI: marker segments with lengths, then each
+ * scan's entropy-coded data (stuffed FF00 and RSTn skipped) up to the next real marker. The file
+ * must end exactly at that EOI, so nothing can hide after it, and it needs one frame and a scan.
+ */
 function inspectJpeg(b: Uint8Array): ImageCheck {
   if (b[b.length - 2] !== 0xff || b[b.length - 1] !== 0xd9) return fail("The image file is incomplete. Export it again.");
   let offset = 2;
-  while (offset + 4 <= b.length) {
+  let frame: { width: number; height: number } | null = null;
+  let scans = 0;
+  while (offset + 2 <= b.length) {
     if (b[offset] !== 0xff) return fail(DAMAGED);
     const marker = b[offset + 1];
     if (marker === 0xff) {
       offset += 1; // fill byte
       continue;
     }
-    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) {
-      offset += 2; // markers without a length
+    if (marker === 0xd9) {
+      if (!frame || scans === 0) return fail(DAMAGED);
+      if (offset + 2 !== b.length) return fail("The image has extra data after its end. Export it again as a plain PNG or JPEG.");
+      return withSize("image/jpeg", frame.width, frame.height);
+    }
+    if (marker === 0x00 || marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) return fail(DAMAGED);
+    if (marker === 0x01) {
+      offset += 2; // TEM has no length
       continue;
     }
-    if (marker === 0xd9 || marker === 0xda) return fail(DAMAGED); // end or scan before any frame header
+    if (offset + 4 > b.length) return fail(DAMAGED);
     const length = u16(b, offset + 2);
     if (length < 2 || offset + 2 + length > b.length) return fail(DAMAGED);
     const isFrameHeader = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
     if (isFrameHeader) {
-      if (length < 7) return fail(DAMAGED);
-      return withSize("image/jpeg", u16(b, offset + 7), u16(b, offset + 5));
+      if (frame || length < 7) return fail(DAMAGED);
+      frame = { width: u16(b, offset + 7), height: u16(b, offset + 5) };
     }
     offset += 2 + length;
+    if (marker !== 0xda) continue;
+    if (!frame) return fail(DAMAGED); // scan before any frame header
+    scans += 1;
+    // Entropy-coded data: runs until a marker that is neither FF00 (stuffed) nor RSTn.
+    while (offset < b.length) {
+      if (b[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const next = b[offset + 1];
+      if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) offset += 2;
+      else if (next === 0xff) offset += 1;
+      else break;
+    }
+    if (offset + 2 > b.length) return fail("The image file is incomplete. Export it again.");
   }
   return fail(DAMAGED);
 }

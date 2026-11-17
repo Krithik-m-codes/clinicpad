@@ -18,20 +18,65 @@ export function escapeHtml(value: string): string {
   return value.replace(CONTROL_CHARACTERS, "").replace(/[&<>"']/g, (c) => ESCAPES[c]);
 }
 
-function serialize(value: HtmlValue): string {
+function misuse(index: number, where: string): Error {
+  return new Error(`html template: interpolation ${index + 1} is ${where}; only element text and quoted attribute values are allowed`);
+}
+
+function serialize(value: HtmlValue, inAttribute: boolean, index: number): string {
   if (value === null || value === undefined || value === false) return "";
-  if (value instanceof SafeHtml) return value.value;
-  if (Array.isArray(value)) return value.map(serialize).join("");
+  if (value instanceof SafeHtml) {
+    if (inAttribute) throw misuse(index, "markup (SafeHtml) inside an attribute value");
+    return value.value;
+  }
+  if (Array.isArray(value)) return value.map((item) => serialize(item, inAttribute, index)).join("");
   return escapeHtml(String(value));
+}
+
+type Mode = "text" | "tag" | "quote";
+
+/** Follows the static parts of the template through text, an open tag, and a quoted attribute value. */
+function advance(mode: Mode, quote: string, chunk: string): { mode: Mode; quote: string } {
+  for (let i = 0; i < chunk.length; i += 1) {
+    const c = chunk[i];
+    if (mode === "text") {
+      // "<" opens a tag unless it is plain text ("1 < 2"); a "<" ending the chunk is a tag-name position.
+      if (c === "<" && (i + 1 === chunk.length || /[A-Za-z/!?]/.test(chunk[i + 1]))) mode = "tag";
+    } else if (mode === "tag") {
+      if (c === '"' || c === "'") {
+        mode = "quote";
+        quote = c;
+      } else if (c === ">") mode = "text";
+    } else if (c === quote) mode = "tag";
+  }
+  return { mode, quote };
 }
 
 /**
  * Builds markup. Every interpolated string or number is escaped; only SafeHtml (from html,
  * raw, or userText) is inserted unchanged. This is the only way the renderer writes HTML.
+ *
+ * Contract: interpolate only in element text or inside a quoted attribute value. Escaping
+ * cannot protect a tag name, an attribute name, or an unquoted value (`<img width=${x}>`), so
+ * those positions throw. SafeHtml (userText, nested html``) goes in element text only. Use
+ * raw() for static, trusted fragments only, never for anything derived from user text; a
+ * SafeHtml must be a complete element or text, because the template tracks tags only through
+ * its own static parts.
+ *
+ * For Task 4: user text spans (`<span class="v">`) need `.v { unicode-bidi: isolate; }` in
+ * the document CSS so right-to-left text cannot reorder what surrounds it.
  */
 export function html(strings: TemplateStringsArray, ...values: HtmlValue[]): SafeHtml {
   let out = strings[0];
-  for (let i = 0; i < values.length; i += 1) out += serialize(values[i]) + strings[i + 1];
+  let state = advance("text", "", strings[0]);
+  for (let i = 0; i < values.length; i += 1) {
+    if (state.mode === "tag") {
+      const tagName = /<\/?$/.test(strings[i]);
+      throw misuse(i, tagName ? "in a tag name" : "in an attribute name or unquoted attribute value");
+    }
+    out += serialize(values[i], state.mode === "quote", i) + strings[i + 1];
+    state = advance(state.mode, state.quote, strings[i + 1]);
+  }
+  if (state.mode !== "text") throw new Error("html template: the template ends inside a tag");
   return new SafeHtml(out);
 }
 

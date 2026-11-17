@@ -7,7 +7,13 @@ export const ALLOWED_TAGS = new Set([
   "table", "colgroup", "col", "thead", "tbody", "tfoot", "tr", "th", "td", "ol", "ul", "li", "img",
 ]);
 
-const URL_ATTRIBUTES = new Set([
+/** Longest document (in characters) that is scanned; a prescription is far smaller. Bounds the scan time. */
+export const MAX_DOCUMENT_CHARS = 4 * 1024 * 1024;
+
+// For Task 4: this check cannot see CSS semantics. Document CSS must give user text spans
+// (`.v`) `unicode-bidi: isolate`, so right-to-left text cannot reorder the text around it.
+
+const URL_ATTRIBUTES =new Set([
   "href", "srcset", "poster", "action", "formaction", "data", "xlink:href", "background",
   "ping", "cite", "longdesc", "manifest", "codebase", "lowsrc", "dynsrc",
 ]);
@@ -28,9 +34,21 @@ function unquote(value: string): string {
   return value.length >= 2 && (value[0] === '"' || value[0] === "'") ? value.slice(1, -1) : value;
 }
 
-function checkCss(css: string): SelfContainedResult {
+// CSS functions that can fetch or reference a resource other than url(); the renderer uses none
+// of them, so they are refused outright instead of having their arguments parsed. image-set()
+// accepts a bare string as an image URL. Backslash escapes (\69mage-set) are refused below, so
+// no function name can be spelled around this list.
+const DENIED_CSS_FUNCTION =
+  /(?:^|[^A-Za-z0-9_])(?:-[a-z]+-)?(image-set|src|image|cross-fade|element|paint|attr)\s*\(/i;
+
+function checkCss(source: string): SelfContainedResult {
+  // Comments are removed first (an unterminated one to the end), so "image-set /**/ (" and
+  // "image/**/-set(" are judged as the function they could become.
+  const css = source.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, "");
   if (/@import/i.test(css)) return failure("CSS @import is not allowed");
   if (css.includes("\\")) return failure("CSS escapes are not allowed");
+  const denied = DENIED_CSS_FUNCTION.exec(css);
+  if (denied) return failure(`CSS function ${denied[1].toLowerCase()}() is not allowed`);
   if (/expression\s*\(/i.test(css)) return failure("CSS expressions are not allowed");
   if (/\blocal\s*\(/i.test(css)) return failure("local() fonts are not allowed");
   for (const match of css.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)) {
@@ -47,6 +65,7 @@ function checkCss(css: string): SelfContainedResult {
  * document is served to a browser or sent to the PDF service.
  */
 export function checkSelfContained(document: string): SelfContainedResult {
+  if (document.length > MAX_DOCUMENT_CHARS) return failure("document is too large");
   // Every "<" must start a well-formed tag (or the doctype). User text is escaped, so a stray
   // "<" (comment, unterminated tag, a ">" hidden in a quoted value) means the markup is not ours.
   for (let at = document.indexOf("<"); at !== -1; at = document.indexOf("<", at + 1)) {
@@ -67,6 +86,8 @@ export function checkSelfContained(document: string): SelfContainedResult {
       }
       if (URL_ATTRIBUTES.has(attributeName)) return failure(`attribute ${attributeName} is not allowed`);
       if (attributeName === "style") {
+        // The renderer escapes "&" in attributes, and a browser would decode entities before parsing the CSS.
+        if (value.includes("&")) return failure("style attributes must not contain HTML entities");
         const css = checkCss(value);
         if (!css.ok) return css;
       }

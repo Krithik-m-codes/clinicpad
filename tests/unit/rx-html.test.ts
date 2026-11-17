@@ -34,6 +34,48 @@ describe("html tagged template", () => {
     expect(out).toBe(`<p title="${escaped}">${escaped}</p>`);
   });
 
+  describe("interpolation positions", () => {
+    const evil = "16 onerror=alert(1)";
+
+    it.each([
+      ["an unquoted attribute value", () => html`<img width=${evil}>`],
+      ["an unquoted attribute value after whitespace", () => html`<img width= ${evil}>`],
+      ["an unquoted class value", () => html`<div class=${"a style=color:red"}>x</div>`],
+      ["an attribute name", () => html`<div ${evil}>x</div>`],
+      ["a position between attributes", () => html`<div a="1" ${evil}>x</div>`],
+      ["a position right after a closing quote", () => html`<div a="1"${evil}>x</div>`],
+      ["a tag name", () => html`<${"script"}>x</script>`],
+      ["a closing tag name", () => html`<div>x</${"div"}>`],
+      ["a tag name after a slash", () => html`<br/${evil}>`],
+      ["SafeHtml inside a quoted attribute", () => html`<p title="${raw("<b>")}">x</p>`],
+      ["an array holding SafeHtml inside a quoted attribute", () => html`<p title="${[html`a`]}">x</p>`],
+      ["a number in an unquoted attribute", () => html`<td colspan=${2}>x</td>`],
+      ["null in an attribute-name position (still a template bug)", () => html`<div ${null}>x</div>`],
+    ])("refuses %s", (_label, build) => {
+      expect(build).toThrow(/html template/);
+    });
+
+    it("refuses a template that ends inside a tag", () => {
+      expect(() => html`<div class="a"`).toThrow(/ends inside a tag/);
+      expect(() => html`<div title="open`).toThrow(/ends inside a tag/);
+    });
+
+    it("allows element text, double-quoted and single-quoted attribute values", () => {
+      expect(html`<p>${"a<"}</p>`.value).toBe("<p>a&lt;</p>");
+      expect(html`<p title="${'x" y'}">t</p>`.value).toBe('<p title="x&quot; y">t</p>');
+      expect(html`<p title='${"x' y"}'>t</p>`.value).toBe("<p title='x&#39; y'>t</p>");
+      expect(html`<td colspan="${2}" class="a ${"b"} c">x</td>`.value).toBe('<td colspan="2" class="a b c">x</td>');
+    });
+
+    it("allows nested SafeHtml and arrays in text, and a bare less-than sign in text", () => {
+      const cell = (v: string) => html`<td title="${v}">${v}</td>`;
+      const row = html`<tr>${[cell("a<"), [cell("b")], null, false]}</tr>`;
+      expect(row.value).toBe('<tr><td title="a&lt;">a&lt;</td><td title="b">b</td></tr>');
+      expect(html`<p>1 < ${2} and ${"3"} > 0</p>`.value).toBe("<p>1 < 2 and 3 > 0</p>");
+      expect(html`<table>${html`<tr>${html`<td>${"x"}</td>`}</tr>`}</table>`.value).toBe("<table><tr><td>x</td></tr></table>");
+    });
+  });
+
   it("does not double-process escaped output or re-escape SafeHtml", () => {
     const once = html`${"<"}`;
     expect(html`${once}`.value).toBe("&lt;");

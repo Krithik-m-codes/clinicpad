@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkSelfContained } from "@/lib/rx-render/self-contained";
+import { MAX_DOCUMENT_CHARS, checkSelfContained } from "@/lib/rx-render/self-contained";
 
 const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const FONT = "data:font/woff2;base64,d09GMgABAAAAAAA=";
@@ -83,6 +83,27 @@ describe("checkSelfContained", () => {
     ["a handler hidden after a > inside a quoted value", page("", '<div title=">" onclick="x()">x</div>')],
     ["a src hidden after a > inside a quoted value", page("", '<img alt=">" src="http://evil.example/x.png">')],
     ["an @import in a style tag with attributes", page('<style media="all">@import url(http://evil.example/x.css);</style>', "")],
+    ["image-set with a bare string", page('<style>.a{background:image-set("http://evil.example/x.png" 1x)}</style>', "")],
+    ["image-set with a single-quoted string", page("<style>.a{background:image-set('http://evil.example/x.png' 1x)}</style>", "")],
+    ["-webkit-image-set", page('<style>.a{background:-webkit-image-set("http://evil.example/x.png" 1x)}</style>', "")],
+    ["image-set in a style attribute", page("", `<div style="background:image-set('http://evil.example/x.png' 1x)">x</div>`)],
+    ["IMAGE-SET in capitals", page('<style>.a{background:IMAGE-SET("http://evil.example/x.png" 1x)}</style>', "")],
+    ["image-set with a comment before the parenthesis", page('<style>.a{background:image-set /**/ ("http://evil.example/x.png" 1x)}</style>', "")],
+    ["image-set with a comment inside the name", page('<style>.a{background:image/**/-set("http://evil.example/x.png" 1x)}</style>', "")],
+    ["image-set with a newline before the parenthesis", page('<style>.a{background:image-set\n("http://evil.example/x.png" 1x)}</style>', "")],
+    ["a CSS-escaped image-set", page('<style>.a{background:\\69mage-set("http://evil.example/x.png" 1x)}</style>', "")],
+    ["a CSS-escaped hyphen in image-set", page('<style>.a{background:image\\2d set("http://evil.example/x.png" 1x)}</style>', "")],
+    ["src()", page('<style>.a{background:src("http://evil.example/x.png")}</style>', "")],
+    ["image()", page('<style>.a{background:image("http://evil.example/x.png")}</style>', "")],
+    ["cross-fade()", page('<style>.a{background:cross-fade("http://evil.example/x.png", red)}</style>', "")],
+    ["-webkit-cross-fade()", page('<style>.a{background:-webkit-cross-fade("http://evil.example/x.png", red)}</style>', "")],
+    ["element()", page("<style>.a{background:element(#x)}</style>", "")],
+    ["-moz-element()", page("<style>.a{background:-moz-element(#x)}</style>", "")],
+    ["paint()", page("<style>.a{background:paint(evil)}</style>", "")],
+    ["attr()", page("<style>.a{background:attr(data-x url)}</style>", "")],
+    ["a CSS function in a style attribute with capitals", page("", '<div style="background:Cross-Fade(red, blue)">x</div>')],
+    ["an HTML entity hiding CSS in a style attribute", page("", '<div style="background:&#117;rl(http://evil.example/x)">x</div>')],
+    ["an unterminated CSS comment hiding a function", page("<style>.a{background:image-set(/*</style>", "")],
     ["an unterminated tag", page("", '<div title="x')],
     ["a stray less-than sign", page("", "<p>1 < 2</p>")],
     ["a processing instruction", page("", "<?xml version='1.0'?>")],
@@ -94,6 +115,28 @@ describe("checkSelfContained", () => {
   it("handles a very large clean document without hanging", () => {
     const body = "<p>x</p>".repeat(100_000);
     expect(checkSelfContained(page("", body))).toEqual({ ok: true });
+  });
+
+  it("still accepts the CSS the renderer legitimately uses", () => {
+    const css =
+      `@page{size:A4;margin:0}@font-face{font-family:"X";src:url(${FONT}) format('woff2')}` +
+      `body{font-family:"X",sans-serif;background-image:url(${PIXEL});list-style-image:none}.v{unicode-bidi:isolate}`;
+    const body = `<div style="width:10mm;margin:0 auto;background:url(${PIXEL})">x</div>`;
+    expect(checkSelfContained(page(`<style>${css}</style>`, body))).toEqual({ ok: true });
+  });
+
+  it("names the CSS function it refused", () => {
+    const result = checkSelfContained(page('<style>.a{background:image-set("x" 1x)}</style>', ""));
+    expect(result).toEqual({ ok: false, reason: "CSS function image-set() is not allowed" });
+  });
+
+  it("refuses a document over the size cap before scanning it", () => {
+    expect(MAX_DOCUMENT_CHARS).toBe(4 * 1024 * 1024);
+    const filler = "<p>x</p>".repeat(MAX_DOCUMENT_CHARS / 8 + 1);
+    expect(checkSelfContained(page("", filler))).toEqual({ ok: false, reason: "document is too large" });
+    const atCap = page("", "").length;
+    expect(checkSelfContained(page("", "x".repeat(MAX_DOCUMENT_CHARS - atCap)))).toEqual({ ok: true });
+    expect(checkSelfContained(page("", "x".repeat(MAX_DOCUMENT_CHARS - atCap + 1))).ok).toBe(false);
   });
 
   it("does not blow up on many unterminated quotes", () => {
