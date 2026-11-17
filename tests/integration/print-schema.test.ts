@@ -71,6 +71,23 @@ async function prescriptionIn(tenantId: string, status: "draft" | "finalized"): 
   return rx.id;
 }
 
+/** Supersedes a finalized prescription the way finalizing an amendment does: a finalized version 2 first, then the flip (0017). */
+async function supersede(tenantId: string, parentId: string): Promise<void> {
+  const [parent] = await adminDb
+    .select({ rxNo: prescriptions.rxNo, visitId: prescriptions.visitId })
+    .from(prescriptions)
+    .where(eq(prescriptions.id, parentId));
+  const [parentVisit] = await adminDb.select({ patientId: visits.patientId }).from(visits).where(eq(visits.id, parent.visitId));
+  const [visit] = await adminDb.insert(visits).values({ tenantId, patientId: parentVisit.patientId, status: "draft" }).returning();
+  const [child] = await adminDb
+    .insert(prescriptions)
+    .values({ tenantId, visitId: visit.id, rxNo: parent.rxNo, version: 2, status: "draft", parentPrescriptionId: parentId, amendmentReason: "Schema test" })
+    .returning();
+  await adminDb.update(prescriptions).set({ status: "finalized", finalizedAt: new Date() }).where(eq(prescriptions.id, child.id));
+  await adminDb.update(visits).set({ status: "finalized", finalizedAt: new Date() }).where(eq(visits.id, visit.id));
+  await adminDb.update(prescriptions).set({ status: "amended" }).where(eq(prescriptions.id, parentId));
+}
+
 function outputValues(tenantId: string, prescriptionId: string, overrides: Partial<typeof prescriptionOutputs.$inferInsert> = {}) {
   return {
     tenantId,
@@ -237,7 +254,7 @@ describe("prescriptions.render_snapshot", () => {
   it("is frozen with the rest of a finalized prescription, and the amended flip still works", async () => {
     const id = await prescriptionIn(A, "finalized");
     await expectCode(adminDb.update(prescriptions).set({ renderSnapshot: { v: 1, marker: "tampered" } }).where(eq(prescriptions.id, id)), "23000");
-    await adminDb.update(prescriptions).set({ status: "amended" }).where(eq(prescriptions.id, id));
+    await supersede(A, id);
     const [row] = await adminDb.select().from(prescriptions).where(eq(prescriptions.id, id));
     expect(row.renderSnapshot).toEqual({ v: 1, marker: "frozen" });
   });
@@ -273,13 +290,13 @@ describe("prescription_outputs", () => {
 
   it("accepts amended (superseded) prescriptions but refuses any other status", async () => {
     const amended = await prescriptionIn(A, "finalized");
-    await adminDb.update(prescriptions).set({ status: "amended" }).where(eq(prescriptions.id, amended));
+    await supersede(A, amended);
     await adminDb.insert(prescriptionOutputs).values(outputValues(A, amended));
 
-    // status is free text, so a draft moved to an arbitrary status must still be refused.
+    // status is a closed vocabulary since 0017, so an unknown status never reaches the outputs trigger; its
+    // allow-list (0015) stays as defence in depth.
     const odd = await prescriptionIn(A, "draft");
-    await adminDb.update(prescriptions).set({ status: "void" }).where(eq(prescriptions.id, odd));
-    await expectCode(adminDb.insert(prescriptionOutputs).values(outputValues(A, odd)), "23000");
+    await expectCode(adminDb.update(prescriptions).set({ status: "void" }).where(eq(prescriptions.id, odd)), "23514");
   });
 
   it("refuses outputs for drafts, even on the admin connection", async () => {

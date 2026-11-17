@@ -106,14 +106,24 @@ describe("finalized records are immutable, even on the admin connection", () => 
     expect(unchanged.rxNo).toBe(101);
   });
 
-  it("allows only the finalized -> amended status flip and nothing else", async () => {
-    const { rx, visit } = await draftRx(102);
+  it("allows only the finalized -> amended status flip, once a finalized amendment exists, and nothing else", async () => {
+    const { rx, visit, patient } = await draftRx(102);
     await finalize(rx.id, visit.id);
 
     await expectCode(
       adminDb.update(prescriptions).set({ status: "amended", rxNo: 555 }).where(eq(prescriptions.id, rx.id)),
       "23000",
     );
+    // No finalized successor yet: superseding is refused (0017).
+    await expectCode(adminDb.update(prescriptions).set({ status: "amended" }).where(eq(prescriptions.id, rx.id)), "23000");
+
+    const [childVisit] = await adminDb.insert(visits).values({ tenantId, patientId: patient.id, status: "draft" }).returning();
+    const [child] = await adminDb
+      .insert(prescriptions)
+      .values({ tenantId, visitId: childVisit.id, rxNo: 102, version: 2, status: "draft", parentPrescriptionId: rx.id, amendmentReason: "Dose correction" })
+      .returning();
+    await finalize(child.id, childVisit.id);
+
     await adminDb.update(prescriptions).set({ status: "amended" }).where(eq(prescriptions.id, rx.id));
     const [flipped] = await adminDb.select().from(prescriptions).where(eq(prescriptions.id, rx.id));
     expect(flipped.status).toBe("amended");

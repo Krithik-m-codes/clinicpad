@@ -138,12 +138,12 @@ export async function seedDemo(): Promise<void> {
           patientId: patientRows[i].id,
           doctorId: primaryDoctorId,
           branchId: mainBranch.id,
-          status: "finalized",
+          // Born as a draft (0017's insert guard); finalized below the way the services do it.
+          status: "draft",
           visitType: i % 3 === 0 ? "follow-up" : "new",
           chiefComplaint: "Fever and body ache",
           diagnosis: ["Viral fever"],
           advice: "Rest, fluids, review if fever persists beyond 3 days.",
-          finalizedAt: now,
         })),
       )
       .returning();
@@ -193,6 +193,8 @@ export async function seedDemo(): Promise<void> {
       .update(prescriptions)
       .set({ status: "finalized", finalizedAt: now, finalizedBy: ownerId })
       .where(eq(prescriptions.tenantId, tenantId));
+    // Then the visits: once a prescription is finalized, a draft visit accepts only this plain flip (0008).
+    await tx.update(visits).set({ status: "finalized", finalizedAt: now }).where(eq(visits.tenantId, tenantId));
 
     // Invariant 2: clinical records carry audit events, demo data included.
     await tx.insert(auditEvents).values([
