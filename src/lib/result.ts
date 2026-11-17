@@ -1,6 +1,6 @@
 import type { ZodError } from "zod";
 
-export type ErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "immutable";
+export type ErrorCode = "forbidden" | "not_found" | "invalid" | "conflict" | "immutable" | "unavailable" | "timeout";
 
 export type Ok<T> = { ok: true; value: T };
 /** `field` is the first path segment; `path` (only for nested problems) is the full dotted path, e.g. "items.2.dose". */

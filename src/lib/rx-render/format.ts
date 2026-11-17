@@ -126,9 +126,13 @@ export function scheduleText(item: Slots & Pick<RxItem, "timing">): string {
   return slots.map(quantityText).join("-");
 }
 
-/** Download name. Never contains patient data. */
-export function pdfFileName(rx: { rxNo: number | null; version: number }): string {
-  const no = rx.rxNo !== null && Number.isSafeInteger(rx.rxNo) && rx.rxNo > 0 ? String(rx.rxNo) : "draft";
+/**
+ * Download name. Never contains patient data. A draft never carries a number, even though an
+ * amendment draft inherits its parent's `rxNo`: pass `status` and the name stays "Rx-draft-v<n>.pdf".
+ */
+export function pdfFileName(rx: { rxNo: number | null; version: number; status?: string }): string {
+  const numbered = rx.status !== "draft" && rx.rxNo !== null && Number.isSafeInteger(rx.rxNo) && rx.rxNo > 0;
+  const no = numbered ? String(rx.rxNo) : "draft";
   const version = Number.isSafeInteger(rx.version) && rx.version > 0 ? rx.version : 1;
   return `Rx-${no}-v${version}.pdf`;
 }

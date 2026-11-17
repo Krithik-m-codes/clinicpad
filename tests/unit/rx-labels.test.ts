@@ -267,6 +267,12 @@ describe("format", () => {
     expect(pdfFileName({ rxNo: -4, version: 0 })).toBe("Rx-draft-v1.pdf");
     expect(pdfFileName({ rxNo: 1e21, version: 1.5 })).toBe("Rx-draft-v1.pdf");
   });
+
+  it("never numbers a draft, even an amendment draft that carries its parent's number", () => {
+    expect(pdfFileName({ rxNo: 12, version: 2, status: "draft" })).toBe("Rx-draft-v2.pdf");
+    expect(pdfFileName({ rxNo: 12, version: 2, status: "finalized" })).toBe("Rx-12-v2.pdf");
+    expect(pdfFileName({ rxNo: 12, version: 1, status: "amended" })).toBe("Rx-12-v1.pdf");
+  });
 });
 
 describe("render snapshot schema", () => {
