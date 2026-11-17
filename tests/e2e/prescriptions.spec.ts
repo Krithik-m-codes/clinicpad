@@ -192,3 +192,45 @@ test("an accountant cannot open a prescription", async ({ page }) => {
   await expect(page.getByText(/could not be found/i)).toBeVisible();
   await expect(page.getByLabel("Chief complaint")).toHaveCount(0);
 });
+
+test("discard a draft and withdraw an amendment", async ({ page }) => {
+  test.setTimeout(120_000);
+  clinics.push(await registerClinic(page, "rxdiscard"));
+
+  await page.goto("/patients/new");
+  await page.getByLabel("Name").fill("Discard Case");
+  await page.getByRole("button", { name: /register patient/i }).click();
+  await expect(page.getByRole("heading", { name: "Discard Case" })).toBeVisible();
+
+  // An unwanted draft: Discard asks first; "Keep it" changes nothing; confirming returns to the patient.
+  await page.getByRole("button", { name: /new prescription/i }).click();
+  await waitForEditor(page);
+  await page.getByLabel("Medicine name").first().fill("Unwanted");
+  await page.getByRole("button", { name: "Discard draft" }).click();
+  await page.getByRole("button", { name: "Keep it" }).click();
+  await expect(page.getByLabel("Medicine name").first()).toHaveValue("Unwanted");
+  await page.getByRole("button", { name: "Discard draft" }).click();
+  await page.getByRole("button", { name: /yes, discard draft/i }).click();
+  await expect(page.getByRole("heading", { name: "Discard Case" })).toBeVisible();
+  await expect(page.getByText("No prescriptions yet.")).toBeVisible();
+
+  // A finalized prescription and a correction that is withdrawn: the original stays and can be amended again.
+  await page.getByRole("button", { name: /new prescription/i }).click();
+  await waitForEditor(page);
+  await page.getByLabel("Medicine name").first().fill("Kept Medicine");
+  await page.getByRole("button", { name: /^finalize$/i }).click();
+  await expect(page.getByRole("heading", { name: /Rx #1/ })).toBeVisible();
+  const rxUrl = page.url();
+  await expect(page.getByRole("button", { name: "Discard draft" })).toHaveCount(0);
+
+  await page.getByLabel("Reason for amendment").fill("Wrong patient selected");
+  await page.getByRole("button", { name: /start amendment/i }).click();
+  await expect(page.getByRole("heading", { name: /draft amendment/i })).toBeVisible();
+  await waitForEditor(page);
+  await page.getByRole("button", { name: "Withdraw amendment" }).click();
+  await page.getByRole("button", { name: /yes, withdraw amendment/i }).click();
+  await expect(page).toHaveURL(rxUrl);
+  await expect(page.getByRole("heading", { name: /Rx #1$/ })).toBeVisible();
+  await expect(page.getByRole("cell", { name: /Kept Medicine/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /start amendment/i })).toBeVisible();
+});

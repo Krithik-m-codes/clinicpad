@@ -4,10 +4,11 @@ import { requireSession } from "@/server/auth/session";
 import { can } from "@/lib/domain/permissions";
 import { getPrescription } from "@/server/services/prescriptions";
 import { listFavourites } from "@/server/services/catalogue";
-import { amendAction, repeatAction } from "@/server/actions/prescriptions";
+import { amendAction, discardDraftAction, repeatAction } from "@/server/actions/prescriptions";
 import { AllergyBanner } from "@/components/patients/allergy-banner";
 import { AmendForm } from "@/components/rx/amend-form";
 import { ClinicalEditor } from "@/components/rx/clinical-editor";
+import { DiscardDraftForm } from "@/components/rx/discard-draft-form";
 import { PrescriptionReadOnly } from "@/components/rx/prescription-view";
 import { RepeatForm } from "@/components/rx/repeat-form";
 
@@ -79,6 +80,20 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
       ) : (
         <PrescriptionReadOnly rx={rx} />
       )}
+
+      {canEdit ? (
+        <div className="border-t pt-4">
+          <DiscardDraftForm
+            action={discardDraftAction.bind(null, rx.id)}
+            label={rx.parentPrescriptionId ? "Withdraw amendment" : "Discard draft"}
+            warning={
+              rx.parentPrescriptionId
+                ? "The correction is deleted and the original prescription stays exactly as it is. This cannot be undone."
+                : "This draft and everything in it are deleted. This cannot be undone."
+            }
+          />
+        </div>
+      ) : null}
 
       {!isDraft ? (
         <div className="flex flex-wrap items-start gap-6 border-t pt-4">

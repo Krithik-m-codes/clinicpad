@@ -282,6 +282,8 @@ export async function listPrescriptionsForPatient(
 }
 
 const IMMUTABLE_MESSAGE = "This prescription is finalized and cannot be changed.";
+const DRAFT_ONLY = "Only a draft can be discarded. A finalized prescription is kept; amend it instead.";
+const CORRECTION_IN_PROGRESS = "A correction of this prescription is in progress; finish or withdraw it first.";
 const AMENDMENT_IN_PROGRESS = "An amendment is already in progress.";
 const OPEN_AMENDMENT_INDEX = "prescriptions_one_open_amendment";
 
@@ -440,13 +442,21 @@ export async function repeatPrescription(
   if (!isUuid(id)) return prescriptionNotFound();
 
   return withTenant(ctx.tenantId, async (tx): Promise<Result<{ prescriptionId: string }>> => {
-    const [source] = await tx.select().from(prescriptions).where(eq(prescriptions.id, id)).limit(1);
+    // FOR SHARE serializes with amendPrescription, which locks the source FOR UPDATE.
+    const [source] = await tx.select().from(prescriptions).where(eq(prescriptions.id, id)).limit(1).for("share");
     if (!source) return prescriptionNotFound();
     if (source.status === "draft") return fail("conflict", "Finalize this draft before repeating it.");
     // A superseded version holds exactly the content an amendment corrected; never copy it forward.
     if (source.status !== "finalized") {
       return fail("conflict", "This prescription was superseded by a later version; repeat the latest version.");
     }
+    // A correction in progress may change exactly what would be copied; finish or withdraw it first.
+    const [open] = await tx
+      .select({ id: prescriptions.id })
+      .from(prescriptions)
+      .where(and(eq(prescriptions.parentPrescriptionId, source.id), eq(prescriptions.status, "draft")))
+      .limit(1);
+    if (open) return fail("conflict", CORRECTION_IN_PROGRESS);
 
     const [oldVisit] = await tx.select().from(visits).where(eq(visits.id, source.visitId)).limit(1);
     const [patient] = await tx
@@ -473,4 +483,65 @@ export async function repeatPrescription(
     });
     return ok({ prescriptionId: rx.id });
   });
+}
+
+/**
+ * Deletes a draft prescription together with its items and its draft visit: a first-version draft, or an
+ * open amendment (which frees the parent's one-open-amendment slot; the parent itself is never touched).
+ * A finalized or amended version is never deleted. The prescription row is locked first (ADR-0023), so a
+ * concurrent finalize either wins (this then sees "finalized") or finds nothing left to finalize.
+ * Lock order: only the draft row is locked. Finalizing an amendment also locks that child first (then the
+ * parent), and amend locks only the parent, so no deadlock pair is introduced.
+ */
+export async function discardDraft(
+  ctx: ServiceContext,
+  id: string,
+): Promise<Result<{ patientId: string; parentPrescriptionId: string | null }>> {
+  if (!can(ctx.role, "rx.draft")) return fail("forbidden", "Only doctors can discard prescriptions.");
+  if (!isUuid(id)) return prescriptionNotFound();
+
+  try {
+    return await withTenant(
+      ctx.tenantId,
+      async (tx): Promise<Result<{ patientId: string; parentPrescriptionId: string | null }>> => {
+        const [rx] = await tx.select().from(prescriptions).where(eq(prescriptions.id, id)).limit(1).for("update");
+        if (!rx) return prescriptionNotFound();
+        if (rx.status !== "draft") return fail("immutable", DRAFT_ONLY);
+
+        const [visit] = await tx
+          .select({ patientId: visits.patientId })
+          .from(visits)
+          .where(eq(visits.id, rx.visitId))
+          .limit(1);
+        const [{ value: itemCount }] = await tx
+          .select({ value: count() })
+          .from(prescriptionItems)
+          .where(eq(prescriptionItems.prescriptionId, id));
+
+        // The items go with the prescription (rx_items_prescription_fk cascades); the triggers allow it
+        // because the prescription is a draft.
+        await tx.delete(prescriptions).where(eq(prescriptions.id, id));
+        // The draft visit goes too, unless another prescription still uses it (one per visit today).
+        const [{ value: others }] = await tx
+          .select({ value: count() })
+          .from(prescriptions)
+          .where(eq(prescriptions.visitId, rx.visitId));
+        if (others === 0) await tx.delete(visits).where(eq(visits.id, rx.visitId));
+
+        await recordAudit(tx, ctx, {
+          action: "prescription.draft_discarded",
+          entityType: "prescription",
+          entityId: id,
+          before: rx.parentPrescriptionId
+            ? { version: rx.version, itemCount, parentPrescriptionId: rx.parentPrescriptionId }
+            : { version: rx.version, itemCount },
+        });
+        return ok({ patientId: visit.patientId, parentPrescriptionId: rx.parentPrescriptionId });
+      },
+    );
+  } catch (error) {
+    // A visit that is no longer a draft refuses the delete (23000); the whole transaction rolled back.
+    if (pgErrorInfo(error).code === "23000") return fail("immutable", DRAFT_ONLY);
+    throw error;
+  }
 }
