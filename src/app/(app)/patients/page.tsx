@@ -65,6 +65,11 @@ export default async function PatientsPage({
             <Link href="/patients/new">New patient</Link>
           </Button>
         ) : null}
+        {can(session.role, "patient.import") && !showArchived ? (
+          <Button asChild variant="outline">
+            <Link href="/patients/import">Import from CSV</Link>
+          </Button>
+        ) : null}
         {can(session.role, "patient.archive") ? (
           <Link className="text-sm underline" href={showArchived ? "/patients" : "/patients?archived=1"}>
             {showArchived ? "Back to the active list" : "Show archived"}
