@@ -293,6 +293,36 @@ describe("render snapshot schema", () => {
     expect(parseRenderSnapshot(value)).toEqual(value);
   });
 
+  it("accepts every value the write side can save (snapshot limits >= write-side limits)", () => {
+    const text = (n: number) => "x".repeat(n);
+    const cases: Array<[string, number, (n: number) => RenderSnapshot]> = [
+      ["patient name 120", 120, (n) => snapshot({ patient: { name: text(n) } })],
+      ["allergy entry 80", 80, (n) => snapshot({ patient: { allergies: [text(n)] } })],
+      ["clinic name 120", 120, (n) => snapshot({ clinic: { name: text(n) } })],
+      ["clinic phone 80", 80, (n) => snapshot({ clinic: { phone: text(n) } })],
+      ["clinic email 120", 120, (n) => snapshot({ clinic: { email: text(n) } })],
+      ["footer line 600", 600, (n) => snapshot({ clinic: { footerLines: [text(n)] } })],
+      ["doctor name 120", 120, (n) => snapshot({ doctor: { name: text(n) } })],
+      ["qualifications 200", 200, (n) => snapshot({ doctor: { qualifications: text(n) } })],
+      ["designation 200", 200, (n) => snapshot({ doctor: { designation: text(n) } })],
+      ["registration 40", 40, (n) => snapshot({ doctor: { registrationNo: text(n) } })],
+      ["council 120", 120, (n) => snapshot({ doctor: { registrationCouncil: text(n) } })],
+    ];
+    for (const [label, limit, build] of cases) {
+      expect(parseRenderSnapshot(build(limit)), label).not.toBeNull();
+    }
+    const twentyAllergies = snapshot({ patient: { allergies: Array.from({ length: 20 }, () => text(80)) } });
+    expect(parseRenderSnapshot(twentyAllergies)).not.toBeNull();
+    const fourFooterLines = snapshot({ clinic: { footerLines: Array.from({ length: 4 }, () => text(150)) } });
+    expect(parseRenderSnapshot(fourFooterLines)).not.toBeNull();
+  });
+
+  it("bounds the clinic phone at 200 characters", () => {
+    expect(parseRenderSnapshot(snapshot({ clinic: { phone: "9".repeat(80) } }))).not.toBeNull();
+    expect(parseRenderSnapshot(snapshot({ clinic: { phone: "9".repeat(200) } }))).not.toBeNull();
+    expect(parseRenderSnapshot(snapshot({ clinic: { phone: "9".repeat(201) } }))).toBeNull();
+  });
+
   it("accepts what toISOString writes and valid ids", () => {
     const id = "01927f3e-5b6a-7c2d-8e1f-0a1b2c3d4e5f"; // a UUIDv7
     const value = snapshot({ clinic: { logoAssetId: id }, doctor: { signatureAssetId: id } });

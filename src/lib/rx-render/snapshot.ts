@@ -2,7 +2,12 @@ import { z } from "zod";
 import { isCalendarDate, isValidTimeZone } from "./format";
 import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES } from "./types";
 
-/** Limits match the write-side validation (names 120-200, free text 5,000, bounded lists). */
+/**
+ * Snapshot limits must be >= every write-side limit (patient, clinic and doctor validation), so
+ * anything that can be saved can also be frozen and printed. They are deliberately looser than the
+ * write side (names 200, lines 200, free text 5,000, bounded lists); tests/unit/rx-labels.test.ts
+ * pins this against the write-side numbers. Raise a snapshot limit before raising a write-side one.
+ */
 const name = z.string().max(200);
 const line = z.string().max(200);
 const freeText = z.string().max(5000);
@@ -23,7 +28,7 @@ export const renderSnapshotSchema = z.object({
   clinic: z.object({
     name,
     addressLines: z.array(line).max(10),
-    phone: z.string().max(40).nullable(),
+    phone: line.nullable(),
     email: z.string().max(254).nullable(),
     footerLines: z.array(freeText).max(10),
     logoAssetId: assetId,
