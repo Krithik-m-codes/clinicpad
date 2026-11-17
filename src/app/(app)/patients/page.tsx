@@ -28,8 +28,9 @@ function parseOffset(value: RawParam): number {
   return Math.min(Number(raw), MAX_OFFSET);
 }
 
-function pageHref(q: string | undefined, offset: number): string {
+function pageHref(q: string | undefined, offset: number, archived: boolean): string {
   const params = new URLSearchParams();
+  if (archived) params.set("archived", "1");
   if (q) params.set("q", q);
   if (offset > 0) params.set("offset", String(offset));
   const query = params.toString();
@@ -39,7 +40,7 @@ function pageHref(q: string | undefined, offset: number): string {
 export default async function PatientsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: RawParam; offset?: RawParam }>;
+  searchParams: Promise<{ q?: RawParam; offset?: RawParam; archived?: RawParam; notice?: RawParam }>;
 }) {
   const session = await requireSession();
   if (!can(session.role, "patient.read")) redirect("/dashboard");
@@ -47,8 +48,9 @@ export default async function PatientsPage({
   const params = await searchParams;
   const q = firstParam(params.q);
   const offset = parseOffset(params.offset);
+  const showArchived = firstParam(params.archived) === "1" && can(session.role, "patient.archive");
   // Ask for one extra row to learn whether a next page exists.
-  const result = await searchPatients(session, { q, limit: PAGE_SIZE + 1, offset });
+  const result = await searchPatients(session, { q, limit: PAGE_SIZE + 1, offset, archived: showArchived });
   const fetched = result.ok ? result.value : [];
   const rows = fetched.slice(0, PAGE_SIZE);
   const hasNext = fetched.length > PAGE_SIZE;
@@ -57,20 +59,32 @@ export default async function PatientsPage({
   return (
     <div className="space-y-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Patients</h1>
+        <h1 className="text-2xl font-semibold">{showArchived ? "Archived patients" : "Patients"}</h1>
         {can(session.role, "patient.write") ? (
           <Button asChild>
             <Link href="/patients/new">New patient</Link>
           </Button>
         ) : null}
+        {can(session.role, "patient.archive") ? (
+          <Link className="text-sm underline" href={showArchived ? "/patients" : "/patients?archived=1"}>
+            {showArchived ? "Back to the active list" : "Show archived"}
+          </Link>
+        ) : null}
       </header>
 
       <form method="get" className="flex max-w-md gap-2" role="search">
+        {showArchived ? <input type="hidden" name="archived" value="1" /> : null}
         <Input name="q" defaultValue={q ?? ""} placeholder="Search name, phone, or patient number" aria-label="Search patients" />
         <Button type="submit" variant="outline">
           Search
         </Button>
       </form>
+
+      {firstParam(params.notice) === "archived" ? (
+        <p role="status" className="rounded-md border bg-muted/40 p-3 text-sm">
+          Patient archived. The owner can restore them from Show archived.
+        </p>
+      ) : null}
 
       {!result.ok ? <p className="text-sm text-destructive">{result.message}</p> : null}
 
@@ -80,7 +94,9 @@ export default async function PatientsPage({
             ? "No more patients."
             : q
               ? "No patients match that search."
-              : "No patients yet. Register your first patient to get started."}
+              : showArchived
+                ? "No archived patients."
+                : "No patients yet. Register your first patient to get started."}
         </p>
       ) : null}
 
@@ -121,12 +137,12 @@ export default async function PatientsPage({
           <span className="flex gap-2">
             {offset > 0 ? (
               <Button asChild variant="outline" size="sm">
-                <Link href={pageHref(q, Math.max(0, offset - PAGE_SIZE))}>Previous</Link>
+                <Link href={pageHref(q, Math.max(0, offset - PAGE_SIZE), showArchived)}>Previous</Link>
               </Button>
             ) : null}
             {hasNext ? (
               <Button asChild variant="outline" size="sm">
-                <Link href={pageHref(q, offset + PAGE_SIZE)}>Next</Link>
+                <Link href={pageHref(q, offset + PAGE_SIZE, showArchived)}>Next</Link>
               </Button>
             ) : null}
           </span>

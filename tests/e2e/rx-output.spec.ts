@@ -39,7 +39,7 @@ async function registerPatient(page: Page, name: string): Promise<string> {
 
 async function startDraft(page: Page, patientUrl: string): Promise<string> {
   await page.goto(patientUrl);
-  await page.getByRole("button", { name: /new prescription/i }).click();
+  await page.getByRole("button", { name: "New prescription", exact: true }).click();
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
   await waitForEditor(page);
   return page.url();

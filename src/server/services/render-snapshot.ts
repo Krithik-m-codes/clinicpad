@@ -1,4 +1,4 @@
-﻿import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { ageLabel } from "@/lib/domain/age";
 import { clinics, doctors, patients } from "@/server/db/schema";
 import type { TenantTx } from "@/server/db/tenant";

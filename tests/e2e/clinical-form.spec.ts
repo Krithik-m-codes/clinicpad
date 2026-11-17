@@ -16,7 +16,7 @@ async function newDraft(page: Page, patientName: string): Promise<string> {
   await page.getByLabel("Name").fill(patientName);
   await page.getByRole("button", { name: /register patient/i }).click();
   await expect(page.getByRole("heading", { name: patientName })).toBeVisible({ timeout: 15_000 });
-  await page.getByRole("button", { name: /new prescription/i }).click();
+  await page.getByRole("button", { name: "New prescription", exact: true }).click();
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible({ timeout: 15_000 });
   await waitForEditor(page);
   return page.url();

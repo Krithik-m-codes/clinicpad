@@ -20,7 +20,7 @@ test("write, autosave, finalize, amend, and repeat a prescription", async ({ pag
   await expect(page.getByRole("heading", { name: "Ravi Sharma" })).toBeVisible();
 
   // Start a draft. The allergy is on the prescription screen, where the doctor chooses medicines.
-  await page.getByRole("button", { name: /new prescription/i }).click();
+  await page.getByRole("button", { name: "New prescription", exact: true }).click();
   await expect(page).toHaveURL(/\/prescriptions\/[0-9a-f-]{36}$/);
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
   await expect(page.getByText("Allergies: Penicillin")).toBeVisible();
@@ -79,8 +79,8 @@ test("write, autosave, finalize, amend, and repeat a prescription", async ({ pag
   await page.getByRole("link", { name: "Ravi Sharma" }).click();
   await expect(page.getByRole("link", { name: "Rx #1 v1" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Rx #1 v2" })).toBeVisible();
-  await expect(page.getByRole("listitem").filter({ hasText: "Rx #1 v1" })).toContainText("amended");
-  await expect(page.getByRole("listitem").filter({ hasText: "Rx #1 v2" })).toContainText("finalized");
+  await expect(page.getByRole("listitem").filter({ hasText: "Rx #1 v1" })).toContainText("Superseded");
+  await expect(page.getByRole("listitem").filter({ hasText: "Rx #1 v2" })).toContainText("Finalized");
 
   // A superseded version offers neither amend nor repeat.
   await page.getByRole("link", { name: "Rx #1 v1" }).click();
@@ -104,7 +104,7 @@ test("finalize keeps edits autosave has not sent yet, and hostile text stays ine
   await page.getByLabel("Name").fill("Unsaved Edits");
   await page.getByRole("button", { name: /register patient/i }).click();
   await expect(page.getByRole("heading", { name: "Unsaved Edits" })).toBeVisible();
-  await page.getByRole("button", { name: /new prescription/i }).click();
+  await page.getByRole("button", { name: "New prescription", exact: true }).click();
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
   await expect(page.getByText("No known allergies recorded")).toBeVisible();
   await waitForEditor(page);
@@ -142,7 +142,7 @@ test("a reception user can read but not write prescriptions", async ({ page }) =
   await page.getByRole("button", { name: /register patient/i }).click();
   await expect(page.getByRole("heading", { name: "Reception Registered" })).toBeVisible();
   const patientUrl = page.url();
-  await page.getByRole("button", { name: /new prescription/i }).click();
+  await page.getByRole("button", { name: "New prescription", exact: true }).click();
   await waitForEditor(page);
   await page.getByLabel("Medicine name").first().fill("Ibuprofen");
   await page.getByRole("button", { name: /^finalize$/i }).click();
@@ -150,7 +150,7 @@ test("a reception user can read but not write prescriptions", async ({ page }) =
   const rxUrl = page.url();
 
   await page.goto(patientUrl);
-  await page.getByRole("button", { name: /new prescription/i }).click();
+  await page.getByRole("button", { name: "New prescription", exact: true }).click();
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
   const draftUrl = page.url();
 
@@ -172,7 +172,7 @@ test("a reception user can read but not write prescriptions", async ({ page }) =
   await page.getByRole("link", { name: "Reception Registered" }).click();
   await expect(page.getByRole("heading", { name: "Reception Registered" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Rx #1 v1" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /new prescription/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New prescription", exact: true })).toHaveCount(0);
 });
 
 test("an accountant cannot open a prescription", async ({ page }) => {
@@ -182,7 +182,7 @@ test("an accountant cannot open a prescription", async ({ page }) => {
   await page.goto("/patients/new");
   await page.getByLabel("Name").fill("Hidden Patient");
   await page.getByRole("button", { name: /register patient/i }).click();
-  await page.getByRole("button", { name: /new prescription/i }).click();
+  await page.getByRole("button", { name: "New prescription", exact: true }).click();
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
   const rxUrl = page.url();
 
@@ -203,7 +203,7 @@ test("discard a draft and withdraw an amendment", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Discard Case" })).toBeVisible();
 
   // An unwanted draft: Discard asks first; "Keep it" changes nothing; confirming returns to the patient.
-  await page.getByRole("button", { name: /new prescription/i }).click();
+  await page.getByRole("button", { name: "New prescription", exact: true }).click();
   await waitForEditor(page);
   await page.getByLabel("Medicine name").first().fill("Unwanted");
   await page.getByRole("button", { name: "Discard draft" }).click();
@@ -215,7 +215,7 @@ test("discard a draft and withdraw an amendment", async ({ page }) => {
   await expect(page.getByText("No prescriptions yet.")).toBeVisible();
 
   // A finalized prescription and a correction that is withdrawn: the original stays and can be amended again.
-  await page.getByRole("button", { name: /new prescription/i }).click();
+  await page.getByRole("button", { name: "New prescription", exact: true }).click();
   await waitForEditor(page);
   await page.getByLabel("Medicine name").first().fill("Kept Medicine");
   await page.getByRole("button", { name: /^finalize$/i }).click();

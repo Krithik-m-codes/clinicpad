@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, ilike, isNull, like, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, isNotNull, isNull, like, or } from "drizzle-orm";
 import { fail, invalidFrom, ok, type Ok, type Result, type ServiceError } from "@/lib/result";
 import { can } from "@/lib/domain/permissions";
 import { normalizePhone } from "@/lib/domain/phone";
@@ -142,15 +142,17 @@ export async function createPatient(
  */
 export async function searchPatients(
   ctx: ServiceContext,
-  opts: { q?: string; limit?: number; offset?: number } = {},
+  opts: { q?: string; limit?: number; offset?: number; archived?: boolean } = {},
 ): Promise<Result<PatientListItem[]>> {
   if (!can(ctx.role, "patient.read")) return fail("forbidden", "You cannot view patients.");
+  // The archived list is the owner's restore screen (patient.archive).
+  if (opts.archived && !can(ctx.role, "patient.archive")) return fail("forbidden", "Only the clinic owner can see archived patients.");
 
   const term = (opts.q ?? "").trim().slice(0, MAX_QUERY_LENGTH);
   if (term.includes("\u0000")) return ok([]);
   const limit = clampInt(opts.limit, 1, MAX_LIMIT, DEFAULT_LIMIT);
   const offset = clampInt(opts.offset, 0, MAX_OFFSET, 0);
-  const conditions = [isNull(patients.deletedAt)];
+  const conditions = [opts.archived ? isNotNull(patients.deletedAt) : isNull(patients.deletedAt)];
   if (term) {
     const matchers = [ilike(patients.name, `%${escapeLike(term)}%`)];
     if (/^[\d\s+()-]+$/.test(term)) {
@@ -177,14 +179,20 @@ export async function searchPatients(
   return ok(rows);
 }
 
-export async function getPatient(ctx: ServiceContext, id: string): Promise<Result<PatientRecord>> {
+/** An active patient; with includeArchived, also an archived one, but only for roles that may archive (the owner). */
+export async function getPatient(
+  ctx: ServiceContext,
+  id: string,
+  opts: { includeArchived?: boolean } = {},
+): Promise<Result<PatientRecord>> {
   if (!can(ctx.role, "patient.read")) return fail("forbidden", "You cannot view patients.");
   if (!isUuid(id)) return notFound();
+  const withArchived = opts.includeArchived === true && can(ctx.role, "patient.archive");
   const [row] = await withTenant(ctx.tenantId, (tx) =>
     tx
       .select()
       .from(patients)
-      .where(and(eq(patients.id, id), isNull(patients.deletedAt)))
+      .where(withArchived ? eq(patients.id, id) : and(eq(patients.id, id), isNull(patients.deletedAt)))
       .limit(1),
   );
   return row ? ok(row) : notFound();
@@ -262,6 +270,22 @@ export async function archivePatient(ctx: ServiceContext, id: string): Promise<R
       .returning({ id: patients.id });
     if (archived.length === 0) return notFound();
     await recordAudit(tx, ctx, { action: "patient.archived", entityType: "patient", entityId: id });
+    return ok(null);
+  });
+}
+
+/** Brings an archived patient back into search and the active list. Owner only (patient.archive). */
+export async function unarchivePatient(ctx: ServiceContext, id: string): Promise<Result<null>> {
+  if (!can(ctx.role, "patient.archive")) return fail("forbidden", "Only the clinic owner can restore patients.");
+  if (!isUuid(id)) return notFound();
+  return withTenant(ctx.tenantId, async (tx) => {
+    const restored = await tx
+      .update(patients)
+      .set({ deletedAt: null })
+      .where(and(eq(patients.id, id), isNotNull(patients.deletedAt)))
+      .returning({ id: patients.id });
+    if (restored.length === 0) return notFound();
+    await recordAudit(tx, ctx, { action: "patient.unarchived", entityType: "patient", entityId: id });
     return ok(null);
   });
 }
