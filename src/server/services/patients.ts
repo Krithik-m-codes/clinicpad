@@ -5,8 +5,10 @@ import { normalizePhone } from "@/lib/domain/phone";
 import { sameName } from "@/lib/domain/names";
 import { isUuid } from "@/lib/domain/ids";
 import { patients } from "@/server/db/schema";
-import { withTenant } from "@/server/db/tenant";
-import { patientInputSchema, type PatientInput } from "@/server/validation/patient";
+import { withTenant, type TenantTx } from "@/server/db/tenant";
+import { DOB_FUTURE_MESSAGE, patientInputSchema, type PatientInput } from "@/server/validation/patient";
+import { clinicLocalDate } from "@/lib/domain/clinic-date";
+import { clinicTimeZoneIn } from "./clinic";
 import type { ServiceContext } from "./context";
 import { allocateNumber } from "./numbering";
 import { recordAudit } from "./audit";
@@ -45,6 +47,12 @@ const LIST_COLUMNS = {
   dob: patients.dob,
   createdAt: patients.createdAt,
 };
+
+/** A DOB after today on the clinic's own calendar is refused (the Zod bound is only UTC+14). */
+async function dobInClinicFuture(tx: TenantTx, tenantId: string, dob: string | null): Promise<boolean> {
+  if (!dob) return false;
+  return dob > clinicLocalDate(new Date(), await clinicTimeZoneIn(tx, tenantId));
+}
 
 const notFound = () => fail("not_found", "Patient not found.");
 
@@ -88,6 +96,7 @@ export async function createPatient(
   const columns = toColumns(input);
 
   return withTenant(ctx.tenantId, async (tx): Promise<CreatePatientResult> => {
+    if (await dobInClinicFuture(tx, ctx.tenantId, columns.dob)) return fail("invalid", DOB_FUTURE_MESSAGE, "dob");
     if (columns.phoneNormalized && !opts.allowDuplicate) {
       const matches = await tx
         .select({ id: patients.id, patientNo: patients.patientNo, name: patients.name, phone: patients.phone })
@@ -200,6 +209,7 @@ export async function updatePatient(
   const next = toColumns(parsed.data);
 
   return withTenant(ctx.tenantId, async (tx) => {
+    if (await dobInClinicFuture(tx, ctx.tenantId, next.dob)) return fail("invalid", DOB_FUTURE_MESSAGE, "dob");
     const [existing] = await tx
       .select()
       .from(patients)

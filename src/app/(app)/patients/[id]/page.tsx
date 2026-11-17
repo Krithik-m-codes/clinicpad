@@ -5,6 +5,8 @@ import { can } from "@/lib/domain/permissions";
 import { ageLabel } from "@/lib/domain/age";
 import { getPatient } from "@/server/services/patients";
 import { updatePatientAction } from "@/server/actions/patients";
+import { clinicLocalDate } from "@/lib/domain/clinic-date";
+import { getClinicTimeZone } from "@/server/services/clinic";
 import { PatientForm } from "@/components/patients/patient-form";
 import { AllergyBanner } from "@/components/patients/allergy-banner";
 import { listPrescriptionsForPatient } from "@/server/services/prescriptions";
@@ -29,7 +31,8 @@ export default async function PatientPage({
   const result = await getPatient(session, id);
   if (!result.ok) notFound();
   const p = result.value;
-  const age = p.dob ? ageLabel(p.dob, new Date()) : "";
+  const today = clinicLocalDate(new Date(), await getClinicTimeZone(session));
+  const age = p.dob ? ageLabel(p.dob, today) : "";
   const canWrite = can(session.role, "patient.write");
   const history = can(session.role, "rx.read") ? await listPrescriptionsForPatient(session, p.id) : null;
 

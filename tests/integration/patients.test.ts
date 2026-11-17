@@ -9,6 +9,7 @@ import {
   searchPatients,
   updatePatient,
 } from "@/server/services/patients";
+import { clinicLocalDate } from "@/lib/domain/clinic-date";
 import { newId } from "@/lib/domain/ids";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
@@ -28,13 +29,6 @@ async function create(t: TestTenant, name: string, phone?: string, extra: Record
   const result = await createPatient(t.as("reception"), { name, phone, ...extra }, { allowDuplicate: true });
   if (!result.ok) throw new Error(`setup failed: ${result.message}`);
   return result.value;
-}
-
-/** Calendar date in UTC, offset by whole days from today. */
-function utcDate(offsetDays: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + offsetDays);
-  return d.toISOString().slice(0, 10);
 }
 
 describe("createPatient", () => {
@@ -71,12 +65,15 @@ describe("createPatient", () => {
     expect((await createPatient(A.as("owner"), { name: "Boundary Person", dob: "1900-01-01" })).ok).toBe(true);
   });
 
-  it("rejects a date of birth after today but accepts today (UTC)", async () => {
-    const future = await createPatient(A.as("owner"), { name: "Future Person", dob: utcDate(1) });
+  it("rejects a date of birth after today on the clinic's calendar but accepts today", async () => {
+    // createTestTenant's clinic uses the default zone, Asia/Kolkata.
+    const today = clinicLocalDate(new Date(), "Asia/Kolkata");
+    const tomorrow = new Date(Date.parse(`${today}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    const future = await createPatient(A.as("owner"), { name: "Future Person", dob: tomorrow });
     expect(future).toMatchObject({ ok: false, code: "invalid", field: "dob" });
     expect(future.ok === false && future.message).toMatch(/future/i);
 
-    expect((await createPatient(A.as("owner"), { name: "Newborn Person", dob: utcDate(0) })).ok).toBe(true);
+    expect((await createPatient(A.as("owner"), { name: "Newborn Person", dob: today })).ok).toBe(true);
   });
 
   it("accepts a real leap day and rejects a non-existent one", async () => {

@@ -4,6 +4,8 @@ import { requireSession } from "@/server/auth/session";
 import { can } from "@/lib/domain/permissions";
 import { ageLabel } from "@/lib/domain/age";
 import { searchPatients } from "@/server/services/patients";
+import { clinicLocalDate } from "@/lib/domain/clinic-date";
+import { getClinicTimeZone } from "@/server/services/clinic";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -50,7 +52,7 @@ export default async function PatientsPage({
   const fetched = result.ok ? result.value : [];
   const rows = fetched.slice(0, PAGE_SIZE);
   const hasNext = fetched.length > PAGE_SIZE;
-  const now = new Date();
+  const today = clinicLocalDate(new Date(), await getClinicTimeZone(session));
 
   return (
     <div className="space-y-4">
@@ -103,7 +105,7 @@ export default async function PatientsPage({
                     </Link>
                   </td>
                   <td className="p-3">{p.phone ?? "—"}</td>
-                  <td className="p-3">{p.dob ? ageLabel(p.dob, now) || "—" : "—"}</td>
+                  <td className="p-3">{p.dob ? ageLabel(p.dob, today) || "—" : "—"}</td>
                 </tr>
               ))}
             </tbody>

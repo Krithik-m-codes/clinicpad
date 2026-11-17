@@ -1,11 +1,15 @@
-import { and, asc, eq } from "drizzle-orm";
+﻿import { and, asc, eq } from "drizzle-orm";
 import { ageLabel } from "@/lib/domain/age";
 import { clinics, doctors, patients } from "@/server/db/schema";
 import type { TenantTx } from "@/server/db/tenant";
 import { fail, ok, type Result } from "@/lib/result";
-import { DEFAULT_TIME_ZONE, isValidTimeZone } from "@/lib/rx-render/format";
+import { DEFAULT_TIME_ZONE } from "@/lib/rx-render/format";
 import { parseRenderSnapshot, type RenderSnapshot } from "@/lib/rx-render/snapshot";
 import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES, pickOption } from "@/lib/rx-render/types";
+import { clinicLocalDate } from "@/lib/domain/clinic-date";
+
+// Moved to src/lib/domain/clinic-date.ts (Plan 1D); re-exported for existing importers.
+export { clinicLocalDate };
 
 export type SnapshotSources = {
   /** The caller's tenant (from the session). Every read here filters on it, on top of row-level security. */
@@ -47,14 +51,6 @@ export async function primaryClinic(tx: TenantTx, tenantId: string, lock = false
     .limit(1);
   const [row] = await (lock ? query.for("update") : query);
   return row ?? null;
-}
-
-/** "YYYY-MM-DD" for `at` on the calendar of `timeZone` (the clinic's own day, not UTC's). */
-export function clinicLocalDate(at: Date, timeZone: string | null | undefined): string {
-  const zone = isValidTimeZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
-  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(at);
-  const part = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
 /**

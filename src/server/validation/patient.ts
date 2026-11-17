@@ -1,10 +1,13 @@
 import { z } from "zod";
+import { latestCalendarDate } from "@/lib/domain/clinic-date";
 import { normalizePhone } from "@/lib/domain/phone";
 import { blankToUndefined, cleanInput, hasNoNul, NUL_MESSAGE, optionalText } from "./text";
 
 const EARLIEST_DOB = "1900-01-01";
 
-/** YYYY-MM-DD for a real calendar date between 1900-01-01 and today (UTC calendar date). */
+export const DOB_FUTURE_MESSAGE = "Date of birth cannot be in the future";
+
+/** YYYY-MM-DD for a real calendar date between 1900-01-01 and the latest calendar date anywhere (see DOB_FUTURE_MESSAGE). */
 const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Use the format YYYY-MM-DD")
@@ -13,7 +16,10 @@ const isoDate = z
     return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
   }, "Enter a real date")
   .refine((v) => v >= EARLIEST_DOB, "Date of birth cannot be before 1900-01-01")
-  .refine((v) => v <= new Date().toISOString().slice(0, 10), "Date of birth cannot be in the future");
+  // Structural bound only (no clinic known here): nothing after the latest calendar date on Earth. The services
+  // apply the clinic's own day (createPatient, updatePatient, the CSV import), so a baby born today in India
+  // can be registered at 00:30 IST.
+  .refine((v) => v <= latestCalendarDate(new Date()), DOB_FUTURE_MESSAGE);
 
 /** Accepts "a, b" from a form or ["a", "b"] from code. */
 const list = z.preprocess(
