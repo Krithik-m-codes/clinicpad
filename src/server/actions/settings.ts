@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireSession, type SessionContext } from "@/server/auth/session";
 import { IMAGE_LIMITS } from "@/lib/domain/image";
+import { setClinicSharing } from "@/server/services/clinic";
 import { setClinicLogo, setDoctorSignature, updateClinicPad, updateDoctorProfile } from "@/server/services/pad-settings";
 
 export type SettingsFormState = { error?: string; field?: string; saved?: boolean; values?: Record<string, string> };
@@ -105,6 +106,15 @@ export async function removeSignatureAction(): Promise<SettingsFormState> {
     const result = await setDoctorSignature(session, null);
     if (!result.ok) return { error: result.message };
     revalidatePath("/settings/profile");
+    return { saved: true };
+  });
+}
+
+export async function saveSharingAction(_prev: SettingsFormState, formData: FormData): Promise<SettingsFormState> {
+  return asSession("saveSharingAction", async (session) => {
+    const result = await setClinicSharing(session, formData.get("sharingEnabled") === "on");
+    if (!result.ok) return { error: result.message, field: result.field };
+    revalidatePath("/settings");
     return { saved: true };
   });
 }

@@ -17,6 +17,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
+import { shareLinks } from "./sharing";
 import type { Investigation, Vitals } from "../../../lib/domain/rx-options";
 import { patientImports } from "./imports";
 import { branches, doctors, tenants } from "./tenancy";
@@ -337,6 +338,8 @@ export const prescriptionOutputs = pgTable(
     htmlSha256: text("html_sha256").notNull(),
     // Presentation (templates, labels, CSS, fonts) is not frozen; the renderer version that drew this output is.
     rendererVersion: text("renderer_version"),
+    /** Set only for kind 'shared_pdf': the link the patient opened (no actor then). */
+    shareLinkId: uuid("share_link_id"),
     createdAt: createdAt(),
   },
   (t) => [
@@ -346,7 +349,14 @@ export const prescriptionOutputs = pgTable(
       foreignColumns: [prescriptions.tenantId, prescriptions.id],
     }).onDelete("cascade"),
     index("rx_outputs_prescription_idx").on(t.tenantId, t.prescriptionId, t.createdAt),
-    check("rx_outputs_kind_check", sql`kind in ('pdf_download', 'browser_print')`),
+    index("rx_outputs_share_link_idx").on(t.tenantId, t.shareLinkId),
+    check("rx_outputs_kind_check", sql`kind in ('pdf_download', 'browser_print', 'shared_pdf')`),
+    check("rx_outputs_share_link_check", sql`(kind = 'shared_pdf') = (share_link_id is not null)`),
+    foreignKey({
+      name: "rx_outputs_share_link_fk",
+      columns: [t.tenantId, t.shareLinkId],
+      foreignColumns: [shareLinks.tenantId, shareLinks.id],
+    }),
     check("rx_outputs_paper_size_check", sql`paper_size in ('A4', 'A5')`),
     check("rx_outputs_page_count_check", sql`page_count is null or page_count between 1 and 50`),
     check("rx_outputs_byte_size_check", sql`byte_size is null or byte_size >= 0`),

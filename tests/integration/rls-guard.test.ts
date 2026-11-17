@@ -6,7 +6,10 @@ import { adminDb } from "@/server/db/admin";
  * Policies on tenant tables that are NOT scoped by app.tenant_id, as "table.policy" -> reason. Keep this list
  * short and justified: every other policy on a table with a tenant_id must compare it with the session tenant.
  */
-const NON_TENANT_POLICIES: Record<string, string> = {};
+const NON_TENANT_POLICIES: Record<string, string> = {
+  "share_links.share_link_by_token":
+    "The public link route reads one row by the SHA-256 of its token to learn the tenant (Plan 1D decision 7); SELECT only, clinicpad_app only.",
+};
 
 type TableRow = { table_name: string; rls: boolean; forced: boolean };
 type PolicyRow = { table_name: string; policy: string; cmd: string; qual: string | null; with_check: string | null };
@@ -101,5 +104,16 @@ describe("row-level security across the whole schema", () => {
                (select relforcerowsecurity from pg_class where oid = ${`public.${table}`}::regclass) as forced`);
       expect(row, table).toEqual({ sel: true, ins: false, upd: false, del: false, forced: true });
     }
+  });
+
+  it("keeps the share-token policy SELECT-only, for the application role, keyed on the token hash", async () => {
+    const [p] = await adminDb.execute<{ cmd: string; roles: string[]; qual: string | null; with_check: string | null }>(sql`
+      select cmd::text as cmd, roles::text[] as roles, qual, with_check from pg_policies
+       where schemaname = 'public' and tablename = 'share_links' and policyname = 'share_link_by_token'`);
+    expect(p).toMatchObject({ cmd: "SELECT", roles: ["clinicpad_app"], with_check: null });
+    expect(p.qual).toContain("app.share_token_hash");
+    expect(p.qual).not.toContain("app.tenant_id");
+    // An unset or empty hash must match nothing: the comparison is against nullif(setting, '').
+    expect(p.qual).toMatch(/NULLIF\(current_setting\('app\.share_token_hash'::text, true\), ''::text\)/i);
   });
 });

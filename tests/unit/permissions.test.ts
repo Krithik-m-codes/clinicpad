@@ -79,6 +79,8 @@ describe("role x action matrix", () => {
     "rx.draft": ["owner", "doctor"],
     "rx.finalize": ["owner", "doctor"],
     "rx.amend": ["owner", "doctor"],
+    "consent.capture": ["owner", "doctor", "reception"],
+    "rx.share": ["owner", "doctor", "reception"],
     "catalogue.read": ["owner", "doctor", "nurse", "pharmacist"],
     "catalogue.write": ["owner", "doctor"],
     "settings.clinic": ["owner"],
@@ -92,6 +94,15 @@ describe("role x action matrix", () => {
 
   it.each(cells)("%s on %s is %s", (role, action, expected) => {
     expect(can(role, action)).toBe(expected);
+  });
+});
+
+describe("sharing permissions", () => {
+  it("lets owners, doctors and reception record consent and share; never nurses, pharmacists or accountants", () => {
+    for (const action of ["consent.capture", "rx.share"] as const) {
+      for (const role of ["owner", "doctor", "reception"]) expect(can(role, action)).toBe(true);
+      for (const role of ["nurse", "pharmacist", "accountant", "mystery"]) expect(can(role, action)).toBe(false);
+    }
   });
 });
 

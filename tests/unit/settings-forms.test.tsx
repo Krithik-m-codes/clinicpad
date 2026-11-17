@@ -2,11 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ClinicPadForm } from "@/components/settings/clinic-pad-form";
 import { DoctorProfileForm } from "@/components/settings/doctor-profile-form";
+import { SharingForm } from "@/components/settings/sharing-form";
 import { ImageUploadForm } from "@/components/settings/image-upload-form";
 import type { SettingsFormState } from "@/server/actions/settings";
 import type { ClinicPadView, DoctorProfileView } from "@/server/services/pad-settings";
 
-const actions = vi.hoisted(() => ({ saveClinicPadAction: vi.fn(), saveDoctorProfileAction: vi.fn() }));
+const actions = vi.hoisted(() => ({ saveClinicPadAction: vi.fn(), saveDoctorProfileAction: vi.fn(), saveSharingAction: vi.fn() }));
 vi.mock("@/server/actions/settings", () => actions);
 
 const CLINIC: ClinicPadView = {
@@ -173,5 +174,19 @@ describe("ImageUploadForm status messages", () => {
     const message = screen.getByRole("alert");
     expect(input.getAttribute("aria-describedby")).toBe(message.id);
     expect(message.id).not.toBe("");
+  });
+});
+
+describe("SharingForm", () => {
+  it("sends the switch state and confirms the save", async () => {
+    actions.saveSharingAction.mockResolvedValue({ saved: true } satisfies SettingsFormState);
+    render(<SharingForm enabled={false} />);
+    fireEvent.click(screen.getByRole("checkbox"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save sharing" }));
+    });
+    const formData = actions.saveSharingAction.mock.calls[0][1] as FormData;
+    expect(formData.get("sharingEnabled")).toBe("on");
+    await waitFor(() => expect(screen.getByText("Saved.")).toBeInTheDocument());
   });
 });

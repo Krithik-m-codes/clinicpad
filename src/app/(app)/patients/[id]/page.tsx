@@ -8,6 +8,8 @@ import { getClinicTimeZone } from "@/server/services/clinic";
 import { listPatientPrescriptions } from "@/server/services/patient-history";
 import { archivePatientAction, restorePatientAction, updatePatientAction } from "@/server/actions/patients";
 import { startPrescriptionAction } from "@/server/actions/prescriptions";
+import { getSharingConsent } from "@/server/services/consent";
+import { ConsentCard } from "@/components/patients/consent-card";
 import { PatientForm } from "@/components/patients/patient-form";
 import { AllergyBanner } from "@/components/patients/allergy-banner";
 import { PrescriptionHistory } from "@/components/patients/prescription-history";
@@ -36,6 +38,8 @@ export default async function PatientPage({ params, searchParams }: { params: Pr
   const age = p.dob ? ageLabel(p.dob, today) : "";
   const canWrite = can(session.role, "patient.write") && !archived;
   const history = can(session.role, "rx.read") ? await listPatientPrescriptions(session, p.id, search) : null;
+
+  const consent = await getSharingConsent(session, p.id);
 
   return (
     <div className="space-y-6">
@@ -96,6 +100,10 @@ export default async function PatientPage({ params, searchParams }: { params: Pr
           </dl>
         </section>
       )}
+
+      {consent.ok ? (
+        <ConsentCard patientId={p.id} consent={consent.value} canCapture={can(session.role, "consent.capture")} archived={archived} timeZone={timeZone} />
+      ) : null}
 
       {history?.ok ? <PrescriptionHistory patientId={p.id} page={history.value} canRepeat={!archived && can(session.role, "rx.draft")} /> : null}
 

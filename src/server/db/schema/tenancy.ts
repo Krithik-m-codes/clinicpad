@@ -112,6 +112,8 @@ export const clinics = pgTable(
     rxPaperSize: text("rx_paper_size").notNull().default("A4"),
     rxLabels: text("rx_labels").notNull().default("en"),
     logoAssetId: uuid("logo_asset_id"),
+    /** Sharing by link (WhatsApp, email) is off until the owner turns it on (Plan 1D). Turning it off kills every link of the clinic. */
+    sharingEnabled: boolean("sharing_enabled").notNull().default(false),
     createdAt: createdAt(),
   },
   (t) => [

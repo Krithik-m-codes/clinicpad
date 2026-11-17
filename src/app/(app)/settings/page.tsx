@@ -5,9 +5,11 @@ import { can } from "@/lib/domain/permissions";
 import { withTenant } from "@/server/db/tenant";
 import { tenants } from "@/server/db/schema";
 import { primaryClinic } from "@/server/services/render-snapshot";
+import { getClinicSharing } from "@/server/services/clinic";
 import { getClinicPad } from "@/server/services/pad-settings";
 import { removeLogoAction, uploadLogoAction } from "@/server/actions/settings";
 import { ClinicPadForm } from "@/components/settings/clinic-pad-form";
+import { SharingForm } from "@/components/settings/sharing-form";
 import { ImageUploadForm } from "@/components/settings/image-upload-form";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +25,7 @@ export default async function SettingsPage() {
     return { tenant, clinic: await primaryClinic(tx, session.tenantId) };
   });
   const pad = await getClinicPad(session);
+  const sharing = await getClinicSharing(session);
 
   const rows: [string, string | undefined][] = [
     ["Clinic (pad name)", data.clinic?.name],
@@ -65,6 +68,13 @@ export default async function SettingsPage() {
       ) : (
         <p className="text-sm text-destructive">{pad.message}</p>
       )}
+
+      {sharing.ok ? (
+        <section className="space-y-3">
+          <h2 className="text-lg font-medium">Sharing</h2>
+          <SharingForm enabled={sharing.value.enabled} />
+        </section>
+      ) : null}
 
       <p className="text-sm">
         <Link className="underline" href="/settings/profile">

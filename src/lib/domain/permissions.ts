@@ -7,6 +7,8 @@ const MATRIX = {
   "rx.draft": ["owner", "doctor"],
   "rx.finalize": ["owner", "doctor"],
   "rx.amend": ["owner", "doctor"],
+  "consent.capture": ["owner", "doctor", "reception"],
+  "rx.share": ["owner", "doctor", "reception"],
   "catalogue.read": ["owner", "doctor", "nurse", "pharmacist"],
   "catalogue.write": ["owner", "doctor"],
   "settings.clinic": ["owner"],
