@@ -18,9 +18,17 @@ type HaltStatus = Extract<AutosaveStatus, { state: "invalid" | "conflict" | "loc
 /** Thrown by a save function for failures that should be retried (for example a signed-out session). */
 export class RetryableSaveError extends Error {}
 
+/** Internal: a save that did not settle within `saveTimeoutMs`. Treated as a retryable, ambiguous failure. */
+class SaveTimeoutError extends Error {}
+
 export const OFFLINE_MESSAGE =
   "Not saved yet: no connection. Your changes are kept on this page and will be retried.";
+export const TIMEOUT_MESSAGE =
+  "Not saved yet: the server did not answer. Your changes are kept on this page and will be retried.";
 export const SIGNED_OUT_MESSAGE = "You were signed out. Sign in again in another tab; saving will resume.";
+/** Shown instead of the server's conflict text when a conflict follows a timeout or network error. */
+export const AMBIGUOUS_CONFLICT_MESSAGE =
+  "Your last save may have gone through. Keep your version or load the saved one.";
 
 export type AutosaverOptions<T> = {
   initial: T;
@@ -31,18 +39,40 @@ export type AutosaverOptions<T> = {
   debounceMs?: number;
   maxWaitMs?: number;
   maxRetryMs?: number;
+  /** A save that has not settled after this long counts as a retryable failure (default 30 000 ms). */
+  saveTimeoutMs?: number;
 };
 
 export type Autosaver<T> = {
+  /** Records the latest snapshot. Snapshots must be treated as immutable after this call. */
   update(snapshot: T): void;
+  /**
+   * Waits for the in-flight save and then saves what is left. It can resolve while changes are
+   * still unsaved: when the engine is halted (conflict, locked, invalid), held, retrying after a
+   * failure, paused by `exclusive`, or after its 5-round cap. Check `hasUnsavedChanges()`.
+   */
   flush(): Promise<void>;
   retryNow(): void;
   /** After a conflict: save the local copy over the newer server version (an explicit user choice). */
   overwrite(): void;
-  /** Runs fn with the latest snapshot while automatic saving is paused (finalize uses this). */
+  /**
+   * Runs fn with the latest snapshot while automatic saving is paused (finalize uses this). Only one
+   * exclusive call may run at a time: a second call rejects with an Error ("already running").
+   * If fn returns `revision: null` nothing is marked saved and automatic saving stays held (no timer
+   * fires, new edits are only recorded) until the caller resumes it with `retryNow()`, `flush()` or
+   * `overwrite()`.
+   */
   exclusive<R>(fn: (snapshot: T, baseRevision: number) => Promise<{ revision: number | null; savedAt?: string; value: R }>): Promise<R>;
   hasUnsavedChanges(): boolean;
+  /**
+   * Teardown that keeps edits safe: stops timers, never emits a status again, and, unless halted
+   * (conflict, locked, invalid) or held, sends ONE final best-effort save of the latest snapshot
+   * (after the in-flight save if there is one). Its outcome is ignored. `hasUnsavedChanges()` stays
+   * truthful until that save settles.
+   */
   dispose(): void;
+  /** Teardown that drops everything: nothing more is sent and nothing counts as unsaved. */
+  discard(): void;
 };
 
 /**
@@ -55,6 +85,7 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
   const debounceMs = options.debounceMs ?? 800;
   const maxWaitMs = options.maxWaitMs ?? 5_000;
   const maxRetryMs = options.maxRetryMs ?? 30_000;
+  const saveTimeoutMs = options.saveTimeoutMs ?? 30_000;
 
   let latest = options.initial;
   let revision = options.initialRevision;
@@ -66,7 +97,11 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
   let retryMs = 0;
   let halt: HaltStatus | null = null;
   let paused = 0;
+  let exclusiveActive = false;
+  let held = false; // an exclusive call returned no revision: wait for the caller
+  let ambiguous = false; // the last failure may still have committed on the server
   let disposed = false;
+  let discarded = false;
 
   const emit = (status: AutosaveStatus) => {
     if (!disposed) options.onStatus(status);
@@ -99,11 +134,11 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
     if (dirtySince === null) dirtySince = Date.now();
     if (retryMs > 0) return; // keep showing "retrying"; the retry sends the latest snapshot
     emit({ state: "pending" });
-    if (inFlight !== null || paused > 0) return; // re-checked when the current save finishes
+    if (held || inFlight !== null || paused > 0) return; // re-checked when the current save finishes
     schedule(debounceDelay());
   }
 
-  function apply(outcome: SaveOutcome, seq: number): void {
+  function apply(outcome: SaveOutcome, seq: number, doubt: boolean): void {
     switch (outcome.kind) {
       case "saved":
         revision = outcome.revision;
@@ -121,7 +156,11 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
         emit(halt);
         return;
       case "conflict":
-        halt = { state: "conflict", message: outcome.message, currentRevision: outcome.currentRevision };
+        halt = {
+          state: "conflict",
+          message: doubt ? AMBIGUOUS_CONFLICT_MESSAGE : outcome.message,
+          currentRevision: outcome.currentRevision,
+        };
         emit(halt);
         return;
       case "locked":
@@ -131,38 +170,82 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
     }
   }
 
+  /** Runs one save call, failing it if it has not settled in time. A late answer is ignored. */
+  function saveWithTimeout(snapshot: T, base: number): Promise<SaveOutcome> {
+    return new Promise<SaveOutcome>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new SaveTimeoutError()), saveTimeoutMs);
+      let call: Promise<SaveOutcome>;
+      try {
+        call = options.save(snapshot, base);
+      } catch (error) {
+        clearTimeout(timeout);
+        reject(error);
+        return;
+      }
+      call.then(
+        (outcome) => {
+          clearTimeout(timeout);
+          resolve(outcome);
+        },
+        (error: unknown) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+      );
+    });
+  }
+
   async function send(snapshot: T, seq: number): Promise<void> {
+    const doubt = ambiguous;
     try {
-      const outcome = await options.save(snapshot, revision);
+      const outcome = await saveWithTimeout(snapshot, revision);
       retryMs = 0;
-      apply(outcome, seq);
+      ambiguous = false; // the server answered, so we know where we stand
+      apply(outcome, seq, doubt);
     } catch (error) {
       retryMs = retryMs === 0 ? 1_000 : Math.min(retryMs * 2, maxRetryMs);
-      const message = error instanceof RetryableSaveError && error.message ? error.message : OFFLINE_MESSAGE;
+      // A RetryableSaveError is an answer from the server; a timeout or network error is not.
+      if (!(error instanceof RetryableSaveError)) ambiguous = true;
+      const message =
+        error instanceof RetryableSaveError && error.message
+          ? error.message
+          : error instanceof SaveTimeoutError
+            ? TIMEOUT_MESSAGE
+            : OFFLINE_MESSAGE;
       emit({ state: "retrying", message, retryInMs: retryMs });
+    }
+  }
+
+  /** Marks a save in flight BEFORE announcing it, so a status handler that flushes cannot start a second one. */
+  async function runSave(announce: boolean): Promise<void> {
+    const snapshot = latest;
+    const seq = editSeq;
+    dirtySince = null;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    inFlight = gate;
+    if (announce) emit({ state: "saving" });
+    try {
+      await send(snapshot, seq);
+    } finally {
+      if (inFlight === gate) inFlight = null;
+      release();
     }
   }
 
   async function attempt(): Promise<void> {
     if (disposed || halt || paused > 0 || inFlight !== null || !unsaved()) return;
     clearTimer();
-    const snapshot = latest;
-    const seq = editSeq;
-    dirtySince = null;
-    emit({ state: "saving" });
-    const run = send(snapshot, seq);
-    inFlight = run;
-    try {
-      await run;
-    } finally {
-      inFlight = null;
-    }
-    if (disposed || halt || paused > 0) return;
+    await runSave(true);
+    if (disposed || halt || paused > 0 || held) return;
     if (retryMs > 0) schedule(retryMs);
     else if (unsaved()) schedule(debounceDelay());
   }
 
   async function flush(): Promise<void> {
+    held = false;
     for (let round = 0; round < 5; round += 1) {
       if (inFlight !== null) await inFlight;
       if (disposed || halt || paused > 0 || !unsaved()) return;
@@ -174,6 +257,7 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
 
   function retryNow(): void {
     if (disposed || halt || paused > 0 || inFlight !== null || !unsaved()) return;
+    held = false;
     retryMs = 0;
     void attempt();
   }
@@ -182,6 +266,7 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
     if (disposed || halt?.state !== "conflict") return;
     revision = halt.currentRevision;
     halt = null;
+    held = false;
     savedSeq = -1; // force a save of the local copy even if nothing changed since the conflict
     void attempt();
   }
@@ -189,6 +274,8 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
   async function exclusive<R>(
     fn: (snapshot: T, baseRevision: number) => Promise<{ revision: number | null; savedAt?: string; value: R }>,
   ): Promise<R> {
+    if (exclusiveActive) throw new Error("An exclusive save is already running.");
+    exclusiveActive = true;
     paused += 1;
     clearTimer();
     try {
@@ -199,14 +286,39 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
         revision = result.revision;
         savedSeq = seq;
         retryMs = 0;
+        ambiguous = false;
         halt = null;
+        held = false;
         emit(unsaved() ? { state: "pending" } : { state: "saved", savedAt: result.savedAt ?? new Date().toISOString() });
+      } else {
+        held = true; // do not let autosave fire against a draft that may now be finalized
       }
       return result.value;
     } finally {
       paused -= 1;
-      if (!disposed && paused === 0 && !halt && unsaved()) schedule(retryMs > 0 ? retryMs : debounceDelay());
+      exclusiveActive = false;
+      if (!disposed && paused === 0 && !halt && !held && unsaved()) schedule(retryMs > 0 ? retryMs : debounceDelay());
     }
+  }
+
+  async function finalSave(): Promise<void> {
+    if (inFlight !== null) await inFlight;
+    if (discarded || halt || held || paused > 0 || !unsaved()) return;
+    await runSave(false);
+  }
+
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    clearTimer();
+    if (halt || held || paused > 0 || !unsaved()) return;
+    void finalSave();
+  }
+
+  function discard(): void {
+    discarded = true;
+    disposed = true;
+    clearTimer();
   }
 
   return {
@@ -215,11 +327,9 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
     retryNow,
     overwrite,
     exclusive,
-    hasUnsavedChanges: () => !disposed && (unsaved() || inFlight !== null),
-    dispose: () => {
-      disposed = true;
-      clearTimer();
-    },
+    hasUnsavedChanges: () => !discarded && (unsaved() || inFlight !== null),
+    dispose,
+    discard,
   };
 }
 
@@ -228,15 +338,24 @@ export type SaveResponseLike =
   | { ok: true; revision: number; savedAt: string }
   | { ok: false; code: string; message: string; field?: string; currentRevision?: number };
 
+/**
+ * Only the codes that can never succeed on a retry stop saving (`locked`, `conflict`, `invalid`).
+ * Everything else (`unauthenticated`, `internal`, and any code this client does not know) is
+ * retryable: an unknown code must never end saving or count as saved.
+ */
 export function outcomeFromResponse(res: SaveResponseLike): SaveOutcome {
   if (res.ok) return { kind: "saved", revision: res.revision, savedAt: res.savedAt };
   if (res.code === "unauthenticated") throw new RetryableSaveError(SIGNED_OUT_MESSAGE);
-  if (res.code === "conflict" && typeof res.currentRevision === "number") {
-    return { kind: "conflict", currentRevision: res.currentRevision, message: res.message };
+  if (res.code === "conflict") {
+    return typeof res.currentRevision === "number"
+      ? { kind: "conflict", currentRevision: res.currentRevision, message: res.message }
+      : { kind: "locked", message: res.message }; // a conflict without a revision: already finalized
   }
   if (res.code === "invalid") {
     return res.field ? { kind: "invalid", message: res.message, field: res.field } : { kind: "invalid", message: res.message };
   }
-  // immutable, forbidden, not_found, or a conflict without a revision (already finalized).
-  return { kind: "locked", message: res.message };
+  if (res.code === "immutable" || res.code === "forbidden" || res.code === "not_found") {
+    return { kind: "locked", message: res.message };
+  }
+  throw new RetryableSaveError(res.message);
 }
