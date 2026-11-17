@@ -14,7 +14,62 @@ import {
   startPrescription,
 } from "@/server/services/prescriptions";
 import { newId } from "@/lib/domain/ids";
+import postgres from "postgres";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
+
+const connectionString = process.env.ADMIN_DATABASE_URL ?? process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+if (!connectionString) throw new Error("ADMIN_DATABASE_URL, DIRECT_URL, or DATABASE_URL is required");
+
+const DRAFT_ONLY_MESSAGE = "Only a draft can be discarded. A finalized prescription is kept; amend it instead.";
+const PENDING = Symbol("still pending");
+
+async function settledWithin(promise: Promise<unknown>, ms: number): Promise<"settled" | typeof PENDING> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof PENDING>((resolve) => {
+    timer = setTimeout(() => resolve(PENDING), ms);
+  });
+  try {
+    return await Promise.race([promise.then(() => "settled" as const, () => "settled" as const), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Locks a prescription row FOR UPDATE on its own connection and keeps the transaction open until `release` is
+ * called; `finish` then runs inside that same transaction right before it commits. A safety net ends the holder
+ * if the test body fails or hangs, so a bug fails a test instead of hanging the suite.
+ */
+async function holdRowLock(id: string, finish: (tx: postgres.TransactionSql) => Promise<unknown>) {
+  const client = postgres(connectionString!, { max: 1, prepare: false });
+  let release!: () => void;
+  let aborted = false;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  let markReady!: () => void;
+  const ready = new Promise<void>((resolve) => (markReady = resolve));
+  const done = client.begin(async (tx) => {
+    await tx`set local idle_in_transaction_session_timeout = '30s'`;
+    await tx`select id from prescriptions where id = ${id} for update`;
+    markReady();
+    await gate;
+    if (aborted) throw new Error("holder aborted"); // rolls the transaction back
+    await finish(tx);
+  });
+  done.catch(() => undefined); // surfaced through `commit`
+  return {
+    ready,
+    commit: async () => {
+      release();
+      await done;
+    },
+    dispose: async () => {
+      aborted = true;
+      release();
+      await done.catch(() => undefined);
+      await client.end({ timeout: 5 });
+    },
+  };
+}
 
 let A: TestTenant;
 let B: TestTenant;
@@ -103,14 +158,20 @@ describe("discardDraft", () => {
     expect(JSON.stringify(event)).not.toContain(reason);
   });
 
-  it("never deletes a finalized or amended version", async () => {
+  it("never deletes a finalized or amended version, its items, or its visit", async () => {
     const original = await finalized();
     const amended = await amendPrescription(doctor(), { prescriptionId: original, reason: "Correct the dose" });
     if (!amended.ok) throw new Error(amended.message);
     expect(await finalizePrescription(doctor(), amended.value.prescriptionId)).toMatchObject({ ok: true });
 
+    const visitIds = new Map<string, string>();
     for (const id of [original, amended.value.prescriptionId]) {
-      expect(await discardDraft(doctor(), id)).toMatchObject({ ok: false, code: "immutable" });
+      const [row] = await adminDb.select({ visitId: prescriptions.visitId }).from(prescriptions).where(eq(prescriptions.id, id));
+      visitIds.set(id, row.visitId);
+    }
+    for (const id of [original, amended.value.prescriptionId]) {
+      expect(await discardDraft(doctor(), id)).toEqual({ ok: false, code: "immutable", message: DRAFT_ONLY_MESSAGE });
+      expect(await rowsOf(id, visitIds.get(id)!)).toEqual({ rx: 1, items: 1, visit: 1 });
     }
     expect(await getPrescription(doctor(), original)).toMatchObject({ ok: true, value: { status: "amended" } });
     expect(await getPrescription(doctor(), amended.value.prescriptionId)).toMatchObject({
@@ -125,9 +186,25 @@ describe("discardDraft", () => {
     expect(await rowsOf(id, visitId)).toEqual({ rx: 1, items: 1, visit: 1 });
   });
 
-  it("lets an owner discard", async () => {
-    const { id } = await draftWithItem();
+  it("lets an owner discard, and the rows are really gone", async () => {
+    const { id, visitId } = await draftWithItem();
+    expect(await rowsOf(id, visitId)).toEqual({ rx: 1, items: 1, visit: 1 });
     expect(await discardDraft(A.as("owner"), id)).toMatchObject({ ok: true });
+    expect(await rowsOf(id, visitId)).toEqual({ rx: 0, items: 0, visit: 0 });
+  });
+
+  it("refuses a corrupt state (draft prescription on a finalized visit) without claiming a prescription is kept", async () => {
+    const { id, visitId } = await draftWithItem();
+    // Only the status flip is allowed on a visit, and it is allowed while the prescription is still a draft.
+    await adminDb.update(visits).set({ status: "finalized", finalizedAt: new Date() }).where(eq(visits.id, visitId));
+
+    expect(await discardDraft(doctor(), id)).toEqual({
+      ok: false,
+      code: "immutable",
+      message: "This prescription cannot be discarded.",
+    });
+    // The whole transaction rolled back.
+    expect(await rowsOf(id, visitId)).toEqual({ rx: 1, items: 1, visit: 1 });
   });
 
   it("hides other clinics' drafts, and treats malformed and unknown ids as not found", async () => {
@@ -152,6 +229,51 @@ describe("discardDraft", () => {
         expect(await rowsOf(id, visitId)).toEqual({ rx: 0, items: 0, visit: 0 });
         expect(await rxCounter()).toBe(before);
       }
+    }
+  });
+});
+
+describe("discardDraft and finalizePrescription wait for the row lock (deterministic)", () => {
+  it("a discard that waits behind a finalize sees the finalized status and deletes nothing", async () => {
+    const { id, visitId } = await draftWithItem();
+    const holder = await holdRowLock(id, async (tx) => {
+      const rxNo = 900_000 + Math.floor(Math.random() * 90_000);
+      await tx`update prescriptions set status = 'finalized', rx_no = ${rxNo}, finalized_at = now() where id = ${id}`;
+      await tx`update visits set status = 'finalized', finalized_at = now() where id = ${visitId}`;
+    });
+    try {
+      await holder.ready;
+      const discard = discardDraft(doctor(), id);
+      expect(await settledWithin(discard, 600), "the discard must wait for the row lock").toBe(PENDING);
+
+      await holder.commit();
+      // The status check (not the trigger) answers: the message is the draft-only one, not the corrupt-state one.
+      expect(await discard).toEqual({ ok: false, code: "immutable", message: DRAFT_ONLY_MESSAGE });
+      expect(await rowsOf(id, visitId)).toEqual({ rx: 1, items: 1, visit: 1 });
+      expect(await getPrescription(doctor(), id)).toMatchObject({ ok: true, value: { status: "finalized" } });
+    } finally {
+      await holder.dispose();
+    }
+  });
+
+  it("a finalize that waits behind a discard finds nothing, and burns no Rx number", async () => {
+    const { id, visitId } = await draftWithItem();
+    const before = await rxCounter();
+    const holder = await holdRowLock(id, async (tx) => {
+      await tx`delete from prescriptions where id = ${id}`;
+      await tx`delete from visits where id = ${visitId}`;
+    });
+    try {
+      await holder.ready;
+      const finalize = finalizePrescription(doctor(), id);
+      expect(await settledWithin(finalize, 600), "the finalize must wait for the row lock").toBe(PENDING);
+
+      await holder.commit();
+      expect(await finalize).toMatchObject({ ok: false, code: "not_found" });
+      expect(await rowsOf(id, visitId)).toEqual({ rx: 0, items: 0, visit: 0 });
+      expect(await rxCounter()).toBe(before);
+    } finally {
+      await holder.dispose();
     }
   });
 });

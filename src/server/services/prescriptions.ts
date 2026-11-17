@@ -283,6 +283,7 @@ export async function listPrescriptionsForPatient(
 
 const IMMUTABLE_MESSAGE = "This prescription is finalized and cannot be changed.";
 const DRAFT_ONLY = "Only a draft can be discarded. A finalized prescription is kept; amend it instead.";
+const DISCARD_REFUSED = "This prescription cannot be discarded.";
 const CORRECTION_IN_PROGRESS = "A correction of this prescription is in progress; finish or withdraw it first.";
 const AMENDMENT_IN_PROGRESS = "An amendment is already in progress.";
 const OPEN_AMENDMENT_INDEX = "prescriptions_one_open_amendment";
@@ -490,8 +491,11 @@ export async function repeatPrescription(
  * open amendment (which frees the parent's one-open-amendment slot; the parent itself is never touched).
  * A finalized or amended version is never deleted. The prescription row is locked first (ADR-0023), so a
  * concurrent finalize either wins (this then sees "finalized") or finds nothing left to finalize.
- * Lock order: only the draft row is locked. Finalizing an amendment also locks that child first (then the
- * parent), and amend locks only the parent, so no deadlock pair is introduced.
+ * Lock order: only the draft row is locked, never the parent. Finalizing an amendment locks that child first
+ * (then the parent), so a discard and a finalize of the same child serialize on the child. Amend locks the
+ * parent and only reads the child with a plain select, which is safe against a pending discard: it either
+ * sees the open child and returns early, or finds the slot free after the discard commits. Repeat takes
+ * FOR SHARE on the source and never locks a child. No deadlock pair is introduced.
  */
 export async function discardDraft(
   ctx: ServiceContext,
@@ -540,8 +544,9 @@ export async function discardDraft(
       },
     );
   } catch (error) {
-    // A visit that is no longer a draft refuses the delete (23000); the whole transaction rolled back.
-    if (pgErrorInfo(error).code === "23000") return fail("immutable", DRAFT_ONLY);
+    // A draft prescription on a visit that is not a draft (a corrupt state) refuses the delete (23000); the
+    // whole transaction rolled back. Do not claim a finalized prescription is kept: it is not that case.
+    if (pgErrorInfo(error).code === "23000") return fail("immutable", DISCARD_REFUSED);
     throw error;
   }
 }
