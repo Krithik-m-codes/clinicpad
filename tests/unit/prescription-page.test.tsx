@@ -185,6 +185,60 @@ describe("prescription page print panel and notices", () => {
     expect(screen.getByText(/This copy prints without a registration number/)).toBeInTheDocument();
   });
 
+  it("uses plural wording when two details are missing from a finalized copy", async () => {
+    mocks.getPrescription.mockResolvedValue(finalizedView("finalized"));
+    const doc = printable({ registrationNo: null });
+    doc.value.document.snapshot.doctor.name = " ";
+    mocks.loadRxDocument.mockResolvedValue(doc);
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByText(/prints without a doctor's name and a registration number: they were missing from the doctor profile/)).toBeInTheDocument();
+  });
+
+  it("uses plural wording for two profile gaps before finalizing", async () => {
+    mocks.getPrescription.mockResolvedValue(draftView(null));
+    mocks.getPadReadiness.mockResolvedValue({ ok: true, value: { missing: ["doctorName", "registrationNo"] } });
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByText(/missing your printed name and your registration number\. .* print without them\./)).toBeInTheDocument();
+  });
+
+  it("links the version an amendment replaces", async () => {
+    mocks.getPrescription.mockResolvedValue(draftView("00000000-0000-4000-8000-000000000009"));
+    mocks.getVersionLinks.mockResolvedValue({ ok: true, value: { supersededBy: null, replaces: { id: "v1-id", version: 1 } } });
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByText(/Replaces/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "version 1" })).toHaveAttribute("href", "/prescriptions/v1-id");
+  });
+
+  it("formats the output count and last-printed time in the clinic timezone", async () => {
+    mocks.getPrescription.mockResolvedValue(finalizedView("finalized"));
+    const doc = printable();
+    doc.value.document.snapshot.clinic.timezone = "America/New_York";
+    mocks.loadRxDocument.mockResolvedValue(doc);
+    mocks.listPrescriptionOutputs.mockResolvedValue({ ok: true, value: { count: 1, lastAt: new Date("2026-11-12T02:30:00.000Z") } });
+    const first = render(await PrescriptionPage({ params }));
+    expect(screen.getByText(/Printed or downloaded 1 time, last on 11 Nov 2026/)).toBeInTheDocument();
+    first.unmount();
+
+    mocks.listPrescriptionOutputs.mockResolvedValue({ ok: true, value: { count: 3, lastAt: null } });
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByText("Printed or downloaded 3 times.")).toBeInTheDocument();
+  });
+
+  it("falls back to the default timezone when the document cannot be loaded", async () => {
+    mocks.getPrescription.mockResolvedValue(finalizedView("finalized"));
+    mocks.listPrescriptionOutputs.mockResolvedValue({ ok: true, value: { count: 1, lastAt: new Date("2026-11-12T02:30:00.000Z") } });
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByText(/last on 12 Nov 2026/)).toBeInTheDocument();
+  });
+
+  it("still renders when an independent read throws", async () => {
+    mocks.getPrescription.mockResolvedValue(finalizedView("finalized"));
+    mocks.getVersionLinks.mockRejectedValue(new Error("db down"));
+    mocks.listPrescriptionOutputs.mockRejectedValue(new Error("db down"));
+    render(await PrescriptionPage({ params }));
+    expect(screen.getByRole("button", { name: "Print" })).toBeInTheDocument();
+  });
+
   it.each(["reception", "nurse", "pharmacist"])("marks a draft as not a prescription for %s and offers only a preview", async (role) => {
     mocks.session.role = role;
     mocks.getPrescription.mockResolvedValue(draftView(null));

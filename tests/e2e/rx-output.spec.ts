@@ -56,6 +56,15 @@ async function finalizeDraft(page: Page, drug: string, heading: RegExp): Promise
 
 test("print and download a finalized prescription; a reprint keeps the finalized details", async ({ page }) => {
   test.setTimeout(180_000);
+  test.skip(!(await gotenbergUp()), "needs the Gotenberg PDF service (the service-down path is a unit test)");
+  // The init script runs in every frame, including the hidden print frame, and counts print() calls on the top window.
+  await page.addInitScript(() => {
+    const top = window.top as unknown as { __printCalls?: number };
+    top.__printCalls = top.__printCalls ?? 0;
+    window.print = () => {
+      top.__printCalls = (top.__printCalls ?? 0) + 1;
+    };
+  });
   clinics.push(await registerClinic(page, "rxout"));
   await completeProfile(page);
   const patientUrl = await registerPatient(page, "Asha <b>Rao</b>");
@@ -63,31 +72,26 @@ test("print and download a finalized prescription; a reprint keeps the finalized
   const rxUrl = await finalizeDraft(page, "Paracetamol", /Rx #1/);
   await expect(page.getByText("Not printed or downloaded yet.")).toBeVisible();
 
-  // Print: the hidden frame loads the pad and the browser's print() is called.
+  // Print: the hidden frame loads the pad and the browser's print() is called exactly once.
   const [printed] = await Promise.all([
     page.waitForResponse((r) => r.url().includes("/document?purpose=print")),
     page.getByRole("button", { name: "Print", exact: true }).click(),
   ]);
   expect(printed.status()).toBe(200);
-  const frame = page.frameLocator('iframe[title="Prescription print frame"]');
-  await expect(frame.locator("body")).toContainText("MMC/2026/0042");
-  await expect(frame.locator("body")).toContainText("Asha <b>Rao</b>");
-  await expect(frame.locator("script")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __printCalls?: number }).__printCalls ?? 0)).toBe(1);
+  await expect(page.getByText(/could not be prepared for printing/)).toHaveCount(0);
+  // The frame is removed once printing is done; what it printed is what the print route serves.
+  await expect(page.locator('iframe[title="Prescription print frame"]')).toHaveCount(0);
+  await expect(page.getByText(/Printed or downloaded 1 time,/)).toBeVisible();
 
-  const up = await gotenbergUp();
-  if (up) {
-    const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Download PDF" }).click()]);
-    expect(download.suggestedFilename()).toBe("Rx-1-v1.pdf");
-    const file = await download.path();
-    expect((await readFile(file)).subarray(0, 5).toString("latin1")).toBe("%PDF-");
-  } else {
-    await page.getByRole("button", { name: "Download PDF" }).click();
-    // getByText, not getByRole("alert"): Next's route announcer is an alert region too.
-    await expect(page.getByText(/PDF service is not available right now/)).toBeVisible();
-  }
-
-  await page.reload();
-  await expect(page.getByText(up ? /Printed or downloaded 2 times/ : /Printed or downloaded 1 time,/)).toBeVisible();
+  const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Download PDF" }).click()]);
+  expect(download.suggestedFilename()).toBe("Rx-1-v1.pdf");
+  expect((await readFile(await download.path())).subarray(0, 5).toString("latin1")).toBe("%PDF-");
+  await expect(page.getByText(/Printed or downloaded 2 times,/)).toBeVisible();
+  const printMarkup = await (await page.request.get(`${rxUrl}/document?purpose=print`)).text();
+  expect(printMarkup).toContain("MMC/2026/0042");
+  expect(printMarkup).toContain("Asha &lt;b&gt;Rao&lt;/b&gt;");
+  expect(printMarkup).not.toContain("<script");
 
   // Rename the patient; the finalized pad and the page header keep the name it was finalized with.
   await page.goto(patientUrl);
@@ -137,7 +141,7 @@ test("a draft previews with a watermark, cannot be printed, warns about a missin
   await page.goto(draftUrl);
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toHaveCount(0);
   await expect(page.getByText(/could not be found/i)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Preview pad" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Preview pad" })).toHaveCount(0);
 });
 
 test("a superseded version is marked, stays printable, and offers no repeat or amendment", async ({ page }) => {

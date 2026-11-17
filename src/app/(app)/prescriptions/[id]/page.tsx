@@ -44,13 +44,20 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
   const isDraft = rx.status === "draft";
   // Clinical content is editable only by roles with rx.draft (owner, doctor); everyone else reads.
   const canEdit = isDraft && can(session.role, "rx.draft");
-  // Independent reads, in parallel. A failed one only drops its notice; it never fails the page.
+  // Independent reads, in parallel. A failed or thrown one only drops its notice; it never fails the page.
+  const settle = async <T,>(read: Promise<T> | null): Promise<T | null> => {
+    try {
+      return await read;
+    } catch {
+      return null;
+    }
+  };
   const [favourites, links, readiness, outputs, printable] = await Promise.all([
-    canEdit ? listFavourites(session) : null,
-    getVersionLinks(session, rx.id),
-    canEdit ? getPadReadiness(session) : null,
-    isDraft ? null : listPrescriptionOutputs(session, rx.id),
-    isDraft ? null : loadRxDocument(session, rx.id, { withAssets: false }),
+    settle(canEdit ? listFavourites(session) : null),
+    settle(getVersionLinks(session, rx.id)),
+    settle(canEdit ? getPadReadiness(session) : null),
+    settle(isDraft ? null : listPrescriptionOutputs(session, rx.id)),
+    settle(isDraft ? null : loadRxDocument(session, rx.id, { withAssets: false })),
   ]);
   // A finalized version shows the record as finalized (ADR-0032). The allergy banner stays live on purpose:
   // it is a safety prompt for whoever acts on the prescription today.
@@ -92,12 +99,12 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
         isDraft={isDraft}
         canEdit={canEdit}
         fileName={pdfFileName(rx)}
-        supersededBy={links.ok ? links.value.supersededBy : null}
-        replaces={links.ok ? links.value.replaces : null}
+        supersededBy={links?.ok ? links.value.supersededBy : null}
+        replaces={links?.ok ? links.value.replaces : null}
         missingProfile={readiness?.ok ? readiness.value.missing : []}
         printedWithout={printedWithout}
         outputs={outputs?.ok ? outputs.value : null}
-        timeZone={frozen?.clinic.timezone ?? "Asia/Kolkata"}
+        timeZone={printable?.ok ? printable.value.document.snapshot.clinic.timezone : "Asia/Kolkata"}
       />
 
       {canEdit ? (

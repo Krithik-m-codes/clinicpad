@@ -53,7 +53,7 @@ function ProfileWarning({ missing }: { missing: ProfileGap[] }) {
   return (
     <div role="note" className={warn}>
       Your doctor profile is missing {gaps.map((gap) => GAP_TEXT[gap]).join(" and ")}. Prescriptions you finalize now will print
-      without it.{" "}
+      without {gaps.length > 1 ? "them" : "it"}.{" "}
       <Link className="font-medium underline" href="/settings/profile">
         Complete your profile
       </Link>
@@ -91,7 +91,7 @@ export function RxOutputPanel(p: RxOutputPanelProps) {
       {p.isDraft && p.canEdit ? <ProfileWarning missing={p.missingProfile} /> : null}
       {p.printedWithout.length > 0 ? (
         <div role="note" className={warn}>
-          {`This copy prints without ${p.printedWithout.map((gap) => PRINT_GAP_TEXT[gap]).join(" and ")}: the doctor profile lacked it when the prescription was finalized.`}
+          {`This copy prints without ${p.printedWithout.map((gap) => PRINT_GAP_TEXT[gap]).join(" and ")}: ${p.printedWithout.length > 1 ? "they were missing from" : "it was missing from"} the doctor profile when the prescription was finalized.`}
         </div>
       ) : null}
       {p.isDraft ? (
