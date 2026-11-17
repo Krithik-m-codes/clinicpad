@@ -1,19 +1,28 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requireSession } from "@/server/auth/session";
+import { can } from "@/lib/domain/permissions";
 import { withTenant } from "@/server/db/tenant";
-import { clinics, tenants } from "@/server/db/schema";
+import { tenants } from "@/server/db/schema";
+import { primaryClinic } from "@/server/services/render-snapshot";
+import { getClinicPad } from "@/server/services/pad-settings";
+import { removeLogoAction, uploadLogoAction } from "@/server/actions/settings";
+import { ClinicPadForm } from "@/components/settings/clinic-pad-form";
+import { ImageUploadForm } from "@/components/settings/image-upload-form";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  const { tenantId, role } = await requireSession();
-  if (role !== "owner") redirect("/dashboard");
+  const session = await requireSession();
+  if (!can(session.role, "settings.clinic")) {
+    redirect(can(session.role, "settings.profile") ? "/settings/profile" : "/dashboard");
+  }
 
-  const data = await withTenant(tenantId, async (tx) => {
+  const data = await withTenant(session.tenantId, async (tx) => {
     const [tenant] = await tx.select().from(tenants).limit(1);
-    const [clinic] = await tx.select().from(clinics).limit(1);
-    return { tenant, clinic };
+    return { tenant, clinic: await primaryClinic(tx, session.tenantId) };
   });
+  const pad = await getClinicPad(session);
 
   const rows: [string, string | undefined][] = [
     ["Clinic", data.tenant?.name],
@@ -24,7 +33,7 @@ export default async function SettingsPage() {
   ];
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-3xl space-y-8">
       <h1 className="text-2xl font-semibold">Clinic settings</h1>
       <dl className="divide-y rounded-lg border">
         {rows.map(([label, value]) => (
@@ -34,6 +43,34 @@ export default async function SettingsPage() {
           </div>
         ))}
       </dl>
+
+      {pad.ok ? (
+        <>
+          <section className="space-y-3">
+            <h2 className="text-lg font-medium">Prescription pad</h2>
+            <ClinicPadForm initial={pad.value} />
+          </section>
+          <section className="space-y-3">
+            <h2 className="text-lg font-medium">Logo</h2>
+            <ImageUploadForm
+              label="Clinic logo"
+              hint="PNG or JPEG, up to 512 KB and 2000 x 2000 pixels. Printed at the top of every page."
+              current={pad.value.logo}
+              upload={uploadLogoAction}
+              remove={removeLogoAction}
+            />
+          </section>
+        </>
+      ) : (
+        <p className="text-sm text-destructive">{pad.message}</p>
+      )}
+
+      <p className="text-sm">
+        <Link className="underline" href="/settings/profile">
+          Edit your doctor profile
+        </Link>{" "}
+        (name, qualifications, registration number, signature).
+      </p>
     </div>
   );
 }

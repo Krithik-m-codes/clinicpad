@@ -26,4 +26,10 @@ describe("Sidebar", () => {
     render(<Sidebar role="mystery" clinicName="Sunrise" />);
     expect(screen.queryAllByRole("link")).toHaveLength(0);
   });
+
+  it("gives doctors their profile but not clinic settings", () => {
+    render(<Sidebar role="doctor" clinicName="Sunrise" />);
+    expect(screen.getByRole("link", { name: /my profile/i })).toHaveAttribute("href", "/settings/profile");
+    expect(screen.queryByRole("link", { name: /^settings$/i })).not.toBeInTheDocument();
+  });
 });
