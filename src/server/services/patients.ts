@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, ilike, isNotNull, isNull, like, or } from "drizzle-orm";
+import { revokeActiveLinksForPatient } from "./share-revocation";
 import { fail, invalidFrom, ok, type Ok, type Result, type ServiceError } from "@/lib/result";
 import { can } from "@/lib/domain/permissions";
 import { normalizePhone } from "@/lib/domain/phone";
@@ -269,7 +270,9 @@ export async function archivePatient(ctx: ServiceContext, id: string): Promise<R
       .where(and(eq(patients.id, id), isNull(patients.deletedAt)))
       .returning({ id: patients.id });
     if (archived.length === 0) return notFound();
-    await recordAudit(tx, ctx, { action: "patient.archived", entityType: "patient", entityId: id });
+    // The UPDATE above locked the patient row, so no link can be created for this patient meanwhile (decision 13).
+    const revokedLinks = await revokeActiveLinksForPatient(tx, ctx.tenantId, id, "patient_archived", ctx.userId);
+    await recordAudit(tx, ctx, { action: "patient.archived", entityType: "patient", entityId: id, after: { revokedLinks } });
     return ok(null);
   });
 }
