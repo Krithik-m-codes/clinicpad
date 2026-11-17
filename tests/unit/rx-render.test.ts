@@ -351,6 +351,17 @@ describe("determinism and the PDF footer", () => {
     expect(footer).not.toContain("Asha");
     expect(checkSelfContained(footer)).toEqual({ ok: true });
   });
+
+  it("sizes the footer to the full page width so the Rx number and the page number sit at opposite edges", () => {
+    // Found by reading the real Gotenberg PDF: without these two rules Chromium shrink-wraps the footer
+    // and prints "Rx 12 v1Page 1 of 7" at the left edge. Re-verified with PyMuPDF word positions (see ADR-0034).
+    for (const paperSize of ["A4", "A5"] as const) {
+      const doc = withLayout(documentFixture(), { paperSize });
+      const footer = footerTemplate(doc, render(doc).paper);
+      expect(footer, paperSize).toContain("html,body{margin:0;padding:0;width:100%}");
+      expect(footer, paperSize).toContain(".f{width:100%;box-sizing:border-box;display:flex;justify-content:space-between;");
+    }
+  });
 });
 
 const URDU = "لگائیں"; // Arabic-script text (6 code points)

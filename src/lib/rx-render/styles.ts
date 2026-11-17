@@ -60,7 +60,9 @@ export function documentCss(def: TemplateDefinition, paper: PaperSpec): string {
     `.slot{font-weight:700}`,
     `.med-name{font-weight:700}`,
     `.sos{color:#b91c1c;font-weight:700;font-size:.85em}`,
-    `.meds-slots .c-med{width:34%}.meds-slots .c-slot{width:6%}.meds-slots .c-food{width:14%}.meds-slots .c-freq{width:28%}`,
+    `.meds-slots .c-med{width:30%}.meds-slots .c-slot{width:8.5%}.meds-slots .c-food{width:13%}.meds-slots .c-freq{width:23%}`,
+  // The four dose-slot headings must stay whole words (on A5 bilingual "Night" and "Noon" used to split mid-word).
+  `.meds-slots thead tr+tr th{font-size:.8em;padding:1mm .4mm;overflow-wrap:normal;word-break:normal}`,
     `.meds-pattern .c-med{width:30%}.meds-pattern .c-dose{width:12%}.meds-pattern .c-when{width:12%}.meds-pattern .c-food{width:13%}.meds-pattern .c-dur{width:15%}.meds-pattern .c-rem{width:18%}`,
     `.meds-topical .c-med{width:32%}.meds-topical .c-how{width:30%}.meds-topical .c-dur{width:14%}.meds-topical .c-ins{width:24%}`,
     `.tests{margin:.5mm 0 0;padding-left:5mm}`,

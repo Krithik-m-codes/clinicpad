@@ -104,13 +104,17 @@ ${snapshotNote(c)}
   return { format: "html", html: page.value, footerHtml: footerTemplate(c.doc, c.paper), paper: c.paper, title };
 }
 
-/** Gotenberg's Chromium footer: page numbers and the Rx number only (no user text, system font is fine). */
+/**
+ * Gotenberg's Chromium footer: page numbers and the Rx number only (no user text, system font is fine).
+ * Chromium lays a footer out in a shrink-to-fit frame: without `html{width:100%}` and a border-box `.f` the
+ * two spans sit side by side at the left ("Rx 12 v1Page 1 of 7") instead of at both edges.
+ */
 export function footerTemplate(doc: RxDocument, paper: PaperSpec): string {
   const no = printedRxNo(doc);
   const version = positive(doc.version) ? ` v${doc.version}` : "";
   const id = no !== null ? `Rx ${no}${version}` : "Draft";
   const side = `${paper.marginMm.left}mm`;
-  return `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;width:100%;font-family:sans-serif;font-size:7pt;color:#555}.f{display:flex;justify-content:space-between;padding:0 ${side}}</style></head><body><div class="f"><span>${id}</span><span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span></div></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;width:100%}body{font-family:sans-serif;font-size:7pt;color:#555}.f{width:100%;box-sizing:border-box;display:flex;justify-content:space-between;padding:0 ${side}}</style></head><body><div class="f"><span>${id}</span><span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span></div></body></html>`;
 }
 
 /** An embedded PNG/JPEG, or null when the asset is not what it claims to be. The data URL is a plain attribute string. */
