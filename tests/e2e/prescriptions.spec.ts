@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { cleanupClinic, registerClinic, setRole, type Clinic } from "./helpers";
+import { cleanupClinic, registerClinic, setRole, waitForEditor, type Clinic } from "./helpers";
 
 const clinics: Clinic[] = [];
 
@@ -7,7 +7,8 @@ test.afterAll(async () => {
   for (const c of clinics) await cleanupClinic(c.email);
 });
 
-test("write, save, finalize, amend, and repeat a prescription", async ({ page }) => {
+test("write, autosave, finalize, amend, and repeat a prescription", async ({ page }) => {
+  test.setTimeout(180_000);
   clinics.push(await registerClinic(page, "rx"));
 
   // A patient to prescribe for.
@@ -23,44 +24,53 @@ test("write, save, finalize, amend, and repeat a prescription", async ({ page })
   await expect(page).toHaveURL(/\/prescriptions\/[0-9a-f-]{36}$/);
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
   await expect(page.getByText("Allergies: Penicillin")).toBeVisible();
+  await waitForEditor(page);
 
   // Finalizing an empty draft is refused with a message.
   await page.getByRole("button", { name: /^finalize$/i }).click();
   await expect(page.getByText(/at least one medicine/i)).toBeVisible();
 
-  // Fill and save.
+  // Fill the form; autosave does the rest.
   await page.getByLabel("Chief complaint").fill("Fever for 2 days");
-  await page.getByLabel("Diagnosis").fill("Viral fever");
+  const diagnosis = page.getByLabel("Diagnosis", { exact: true });
+  await diagnosis.fill("Viral fever");
+  await diagnosis.press("Enter");
   await page.getByLabel("Medicine name").first().fill("Paracetamol");
-  await page.getByLabel("Dose").first().fill("1 tablet");
-  await page.getByLabel("Timing").first().fill("TDS");
-  await page.getByLabel("Days").first().fill("3");
+  await page.getByLabel("Dose", { exact: true }).first().fill("1 tablet");
+  await page.getByRole("button", { name: "Schedule 1-1-1" }).first().click();
+  await page.getByLabel("Duration", { exact: true }).first().fill("3");
   await page.getByRole("button", { name: /add medicine/i }).click();
   await page.getByLabel("Medicine name").nth(1).fill("Cetirizine");
-  await page.getByRole("button", { name: /save draft/i }).click();
-  await expect(page.getByText(/^Saved at/)).toBeVisible();
+  await expect(page.getByText(/all changes saved/i)).toBeVisible({ timeout: 15_000 });
 
   // The draft survives a reload.
   await page.reload();
+  await waitForEditor(page);
   await expect(page.getByLabel("Chief complaint")).toHaveValue("Fever for 2 days");
+  await expect(page.getByRole("button", { name: "Remove Viral fever" })).toBeVisible();
   await expect(page.getByLabel("Medicine name").nth(1)).toHaveValue("Cetirizine");
+  await expect(page.getByLabel("Morning dose").first()).toHaveValue("1");
 
-  // Finalize -> read-only view with an Rx number.
+  // Finalize -> read-only view with an Rx number; the allergy stays visible.
   await page.getByRole("button", { name: /^finalize$/i }).click();
   await expect(page.getByRole("heading", { name: /Rx #1/ })).toBeVisible();
-  await expect(page.getByText("Paracetamol")).toBeVisible();
+  await expect(page.getByRole("cell", { name: /Paracetamol/ })).toBeVisible();
+  await expect(page.getByRole("cell", { name: /1-1-1/ })).toBeVisible();
   await expect(page.getByText("Allergies: Penicillin")).toBeVisible();
   await expect(page.getByRole("button", { name: /^finalize$/i })).toHaveCount(0);
 
-  // Amend needs a reason.
+  // Amend needs a reason and copies the clinical content.
   await page.getByRole("button", { name: /start amendment/i }).click();
   await expect(page.getByText(/at least 5 characters/i)).toBeVisible();
   await page.getByLabel("Reason for amendment").fill("Dose was wrong");
   await page.getByRole("button", { name: /start amendment/i }).click();
   await expect(page.getByRole("heading", { name: /draft amendment/i })).toBeVisible();
   await expect(page.getByText("Dose was wrong")).toBeVisible();
+  await waitForEditor(page);
+  await expect(page.getByLabel("Morning dose").first()).toHaveValue("1");
 
-  await page.getByLabel("Dose").first().fill("2 tablets");
+  // Finalize straight after an edit: the pending edit is included.
+  await page.getByLabel("Dose", { exact: true }).first().fill("2 tablets");
   await page.getByRole("button", { name: /^finalize$/i }).click();
   await expect(page.getByRole("heading", { name: /Rx #1 v2/ })).toBeVisible();
   await expect(page.getByText(/2 tablets/)).toBeVisible();
@@ -83,10 +93,11 @@ test("write, save, finalize, amend, and repeat a prescription", async ({ page })
   await page.getByRole("link", { name: "Rx #1 v2" }).click();
   await page.getByRole("button", { name: /repeat as new prescription/i }).click();
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
+  await waitForEditor(page);
   await expect(page.getByLabel("Medicine name").first()).toHaveValue("Paracetamol");
 });
 
-test("finalize keeps edits that were never saved, and hostile text stays inert", async ({ page }) => {
+test("finalize keeps edits autosave has not sent yet, and hostile text stays inert", async ({ page }) => {
   clinics.push(await registerClinic(page, "rxunsaved"));
 
   await page.goto("/patients/new");
@@ -96,8 +107,9 @@ test("finalize keeps edits that were never saved, and hostile text stays inert",
   await page.getByRole("button", { name: /new prescription/i }).click();
   await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
   await expect(page.getByText("No known allergies recorded")).toBeVisible();
+  await waitForEditor(page);
 
-  // Finalize straight away, without pressing Save draft first.
+  // Finalize straight away, before the autosave debounce fires.
   const hostile = "<img src=x onerror=alert(1)>";
   await page.getByLabel("Medicine name").first().fill(hostile);
   await page.getByLabel("Advice").fill("Rest <b>well</b>");
@@ -120,19 +132,27 @@ test("a malformed or unknown prescription id is a clean not-found", async ({ pag
 });
 
 test("a reception user can read but not write prescriptions", async ({ page }) => {
+  test.setTimeout(120_000);
   const clinic = await registerClinic(page, "rxperm");
   clinics.push(clinic);
 
-  // The owner drafts a prescription and finalizes it, then is demoted to reception.
+  // The owner finalizes one prescription and leaves a second one as a draft, then is demoted to reception.
   await page.goto("/patients/new");
   await page.getByLabel("Name").fill("Reception Registered");
   await page.getByRole("button", { name: /register patient/i }).click();
   await expect(page.getByRole("heading", { name: "Reception Registered" })).toBeVisible();
+  const patientUrl = page.url();
   await page.getByRole("button", { name: /new prescription/i }).click();
+  await waitForEditor(page);
   await page.getByLabel("Medicine name").first().fill("Ibuprofen");
   await page.getByRole("button", { name: /^finalize$/i }).click();
   await expect(page.getByRole("heading", { name: /Rx #1/ })).toBeVisible();
   const rxUrl = page.url();
+
+  await page.goto(patientUrl);
+  await page.getByRole("button", { name: /new prescription/i }).click();
+  await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
+  const draftUrl = page.url();
 
   // Roles are re-read per request, so a direct role change takes effect immediately.
   await setRole(clinic.email, "reception");
@@ -142,6 +162,12 @@ test("a reception user can read but not write prescriptions", async ({ page }) =
   await expect(page.getByText("Ibuprofen")).toBeVisible();
   await expect(page.getByRole("button", { name: /start amendment/i })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /repeat as new prescription/i })).toHaveCount(0);
+
+  // A draft is readable, but has no editor and no Finalize.
+  await page.goto(draftUrl);
+  await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
+  await expect(page.getByLabel("Medicine name")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^finalize$/i })).toHaveCount(0);
 
   await page.getByRole("link", { name: "Reception Registered" }).click();
   await expect(page.getByRole("heading", { name: "Reception Registered" })).toBeVisible();

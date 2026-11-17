@@ -3,11 +3,12 @@ import { notFound } from "next/navigation";
 import { requireSession } from "@/server/auth/session";
 import { can } from "@/lib/domain/permissions";
 import { getPrescription } from "@/server/services/prescriptions";
-import { amendAction, repeatAction, saveDraftAction } from "@/server/actions/prescriptions";
+import { listFavourites } from "@/server/services/catalogue";
+import { amendAction, repeatAction } from "@/server/actions/prescriptions";
 import { AllergyBanner } from "@/components/patients/allergy-banner";
-import { DraftEditor, type EditorInitial } from "@/components/rx/draft-editor";
 import { AmendForm } from "@/components/rx/amend-form";
-import { ReadOnlyView } from "@/components/rx/read-only-view";
+import { ClinicalEditor } from "@/components/rx/clinical-editor";
+import { PrescriptionReadOnly } from "@/components/rx/prescription-view";
 import { RepeatForm } from "@/components/rx/repeat-form";
 
 export const dynamic = "force-dynamic";
@@ -18,10 +19,25 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
 
   // Forbidden, malformed, unknown and foreign ids all look the same: a plain not-found.
   const result = await getPrescription(session, id);
+  if (!result.ok && result.code === "conflict") {
+    // A save landed in the middle of the read: not a missing prescription.
+    return (
+      <div className="max-w-xl space-y-3">
+        <h1 className="text-xl font-semibold">This prescription changed while loading</h1>
+        <p className="text-sm text-muted-foreground">It was saved from another window. Refresh to see the latest version.</p>
+        <Link className="underline" href={`/prescriptions/${id}`} prefetch={false}>
+          Refresh
+        </Link>
+      </div>
+    );
+  }
   if (!result.ok) notFound();
   const rx = result.value;
 
   const isDraft = rx.status === "draft";
+  // Clinical content is editable only by roles with rx.draft (owner, doctor); everyone else reads.
+  const canEdit = isDraft && can(session.role, "rx.draft");
+  const favourites = canEdit ? await listFavourites(session) : null;
   const label = rx.rxNo ? `Rx #${rx.rxNo}` : "Prescription";
   const heading = isDraft
     ? rx.version > 1
@@ -29,27 +45,8 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
       : "Draft prescription"
     : `${label}${rx.version > 1 ? ` v${rx.version}` : ""}`;
 
-  const initial: EditorInitial = {
-    visitType: rx.visit.visitType === "follow-up" ? "follow-up" : "new",
-    chiefComplaint: rx.visit.chiefComplaint ?? "",
-    diagnosis: rx.visit.diagnosis.join(", "),
-    advice: rx.visit.advice ?? "",
-    followUpDate: rx.visit.followUpDate ?? "",
-    items: rx.items.map((i) => ({
-      drugName: i.drugName,
-      strength: i.strength ?? "",
-      form: i.form ?? "",
-      route: i.route ?? "",
-      dose: i.dose ?? "",
-      timing: i.timing ?? "",
-      foodRelation: i.foodRelation ?? "",
-      durationDays: i.durationDays?.toString() ?? "",
-      remarks: i.remarks ?? "",
-    })),
-  };
-
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-5xl space-y-6">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">{heading}</h1>
         <p className="text-sm text-muted-foreground">
@@ -67,10 +64,19 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
         ) : null}
       </header>
 
-      {isDraft && can(session.role, "rx.draft") ? (
-        <DraftEditor action={saveDraftAction.bind(null, rx.id)} initial={initial} />
+      {canEdit ? (
+        <ClinicalEditor
+          key={rx.id}
+          prescriptionId={rx.id}
+          visit={rx.visit}
+          items={rx.items}
+          revision={rx.revision}
+          favourites={favourites?.ok ? favourites.value : []}
+          canAddToClinic={can(session.role, "catalogue.write")}
+          canFinalize={can(session.role, "rx.finalize")}
+        />
       ) : (
-        <ReadOnlyView rx={rx} />
+        <PrescriptionReadOnly rx={rx} />
       )}
 
       {!isDraft ? (

@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { execSync } from "node:child_process";
 import postgres from "postgres";
 
 const adminUrl = process.env.ADMIN_DATABASE_URL ?? process.env.DIRECT_URL;
@@ -79,4 +80,21 @@ export async function seedPatients(email: string, count: number): Promise<void> 
       cross join generate_series(1, ${count}::int) as g
       where u.email = ${email}`;
   });
+}
+
+/** The editor's search needs the global catalogue. Seeds it once if this database lacks it. */
+export async function ensureCatalogue(): Promise<void> {
+  const seeded = await withAdminSql(async (sql) => {
+    const rows = await sql<{ n: number }[]>`select count(*)::int as n from global_medicines where name_key = 'dolo 650mg'`;
+    return rows[0].n > 0;
+  });
+  if (!seeded) execSync("npm run db:seed:catalogue", { stdio: "inherit" });
+}
+
+/**
+ * The clinical editor is disabled until it has hydrated (text typed into server-rendered inputs
+ * would be lost). Wait for it before typing.
+ */
+export async function waitForEditor(page: Page): Promise<void> {
+  await expect(page.getByLabel("Chief complaint")).toBeEditable({ timeout: 15_000 });
 }
