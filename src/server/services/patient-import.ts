@@ -15,30 +15,39 @@ import { recordAudit, recordAuditMany } from "./audit";
 import { clinicTimeZoneIn } from "./clinic";
 import type { ServiceContext } from "./context";
 import { allocateNumbers } from "./numbering";
+import { analyse, chunks, importRowKey } from "./patient-import-analysis";
 import {
-  analyse,
   buildReport,
   canFill,
-  chunks,
+  checkTokenOf,
+  dobAgrees,
   emptyTotals,
+  fingerprintOf,
+  genderAgrees,
+  MAX_STALE_LISTED,
   type Analysed,
   type CommitSummary,
   type ImportDecision,
   type ImportReport,
-} from "./patient-import-analysis";
+} from "./patient-import-report";
 import { toPatientColumns } from "./patients";
 
-export type { CommitSummary, DuplicateMatch, ImportDecision, ImportReport, ImportRowReport, ImportTotals } from "./patient-import-analysis";
-export { importRowKey, NEW_ROW_PREVIEW } from "./patient-import-analysis";
+export type { CommitSummary, DuplicateMatch, ImportDecision, ImportReport, ImportRowReport, ImportTotals } from "./patient-import-report";
+export { NEW_ROW_PREVIEW, STALE_REASON } from "./patient-import-report";
+export { importRowKey };
 
 const FORBIDDEN = "Only the clinic owner can import patients.";
 const NO_FILE = "Choose a CSV file first.";
 const FILE_CHANGED = "The file changed since it was checked. Check it again before importing.";
 const CONCURRENT = "Patients changed while importing. Check the file again.";
 const BAD_DECISIONS = "The duplicate choices are not valid. Check the file again.";
+const MAPPING_CHANGED = "The column choices changed since the file was checked. Check it again before importing.";
+const ROW_NUMBER = /^\d{1,6}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
 
+const fingerprintsSchema = z.record(z.string().regex(ROW_NUMBER), z.string().regex(HEX64)).refine((d) => Object.keys(d).length <= IMPORT_LIMITS.maxRows);
 const decisionsSchema = z
-  .record(z.string().regex(/^\d{1,6}$/), z.enum(["skip", "create", "fill"]))
+  .record(z.string().regex(ROW_NUMBER), z.enum(["skip", "create", "fill"]))
   .refine((d) => Object.keys(d).length <= IMPORT_LIMITS.maxRows);
 
 function loadTable(bytes: Uint8Array): Result<{ table: ImportTable; sha256: string }> {
@@ -68,7 +77,7 @@ export async function dryRunPatientImport(ctx: ServiceContext, file: { bytes: Ui
   const mapping = mappingFor(rawMapping, table);
   if (!mapping.ok) return mapping;
   if (mapping.value.name === null) {
-    return ok({ fileSha256: sha256, headers: table.headers, mapping: mapping.value, ageColumns: [], needsName: true, totals: emptyTotals(), rows: [] });
+    return ok({ fileSha256: sha256, checkToken: checkTokenOf(sha256, mapping.value), headers: table.headers, mapping: mapping.value, ageColumns: [], needsName: true, totals: emptyTotals(), rows: [] });
   }
   return withTenant(ctx.tenantId, async (tx) => {
     const today = clinicLocalDate(new Date(), await clinicTimeZoneIn(tx, ctx.tenantId));
@@ -78,7 +87,10 @@ export async function dryRunPatientImport(ctx: ServiceContext, file: { bytes: Ui
 
 type FillPlan = { patientId: string; set: Partial<typeof patients.$inferInsert>; changedFields: string[] };
 
-/** Only empty details of the matched patient are filled; nothing that is already recorded is ever overwritten. */
+/**
+ * Only empty details of the matched patient are filled; nothing that is already recorded is ever overwritten. Nothing
+ * is filled when the recorded birth date or gender contradicts the row (re-checked here, under the row lock).
+ */
 async function planFill(tx: TenantTx, tenantId: string, patientId: string, input: PatientInput): Promise<FillPlan> {
   const plan: FillPlan = { patientId, set: {}, changedFields: [] };
   const [current] = await tx
@@ -86,8 +98,9 @@ async function planFill(tx: TenantTx, tenantId: string, patientId: string, input
     .from(patients)
     .where(and(eq(patients.tenantId, tenantId), eq(patients.id, patientId), isNull(patients.deletedAt)))
     .limit(1)
-    .for("update");
+    .for("no key update");
   if (!current) return plan;
+  if (!dobAgrees(current.dob, input.dob) || !genderAgrees(current.gender, input.gender)) return plan;
   const next = toPatientColumns(input);
   if (!current.dob && next.dob) {
     plan.set.dob = next.dob;
@@ -122,7 +135,7 @@ async function planFill(tx: TenantTx, tenantId: string, patientId: string, input
 export async function commitPatientImport(
   ctx: ServiceContext,
   file: { bytes: Uint8Array },
-  input: { mapping: unknown; decisions: unknown; expectedSha256: unknown },
+  input: { mapping: unknown; decisions: unknown; expectedSha256: unknown; checkToken: unknown; fingerprints: unknown },
 ): Promise<Result<CommitSummary>> {
   if (!can(ctx.role, "patient.import")) return fail("forbidden", FORBIDDEN);
   const loaded = loadTable(file.bytes);
@@ -131,8 +144,10 @@ export async function commitPatientImport(
   if (input.expectedSha256 !== sha256) return fail("conflict", FILE_CHANGED, "file");
   const mapping = mappingFor(input.mapping ?? {}, table);
   if (!mapping.ok) return mapping;
+  if (input.checkToken !== checkTokenOf(sha256, mapping.value)) return fail("conflict", MAPPING_CHANGED, "mapping");
   const decisions = decisionsSchema.safeParse(input.decisions ?? {});
-  if (!decisions.success) return fail("invalid", BAD_DECISIONS, "decisions");
+  const fingerprints = fingerprintsSchema.safeParse(input.fingerprints ?? {});
+  if (!decisions.success || !fingerprints.success) return fail("invalid", BAD_DECISIONS, "decisions");
   const choice = (row: number): ImportDecision => decisions.data[String(row)] ?? "skip";
 
   try {
@@ -141,13 +156,24 @@ export async function commitPatientImport(
       const today = clinicLocalDate(new Date(), await clinicTimeZoneIn(tx, ctx.tenantId));
       const rows = await analyse(tx, ctx.tenantId, table, mapping.value, today);
 
-      const toCreate = rows.filter(
-        (r): r is Extract<Analysed, { status: "new" | "duplicate" }> =>
-          r.status === "new" || (r.status === "duplicate" && !r.exactRepeat && choice(r.row) === "create"),
-      );
+      // A choice was made against what the row matched at check time. If the matches changed since (reception
+      // registered someone in between), the choice is not applied: the row is skipped and reported.
+      const staleRows: number[] = [];
+      const toCreate: Extract<Analysed, { status: "new" | "duplicate" }>[] = [];
       const plans: FillPlan[] = [];
       for (const r of rows) {
-        if (r.status === "duplicate" && canFill(r) && choice(r.row) === "fill") plans.push(await planFill(tx, ctx.tenantId, r.matches[0].id, r.input));
+        const expected = fingerprints.data[String(r.row)];
+        if (r.status === "new") {
+          // It was a duplicate at check time and no longer is: the owner chose without seeing this, so skip.
+          if (expected !== undefined) staleRows.push(r.row);
+          else toCreate.push(r);
+        } else if (r.status === "duplicate") {
+          const changed = expected !== fingerprintOf(r);
+          if (changed && (choice(r.row) !== "skip" || expected === undefined)) staleRows.push(r.row);
+          else if (changed) continue;
+          else if (!r.exactRepeat && choice(r.row) === "create") toCreate.push(r);
+          else if (canFill(r) && choice(r.row) === "fill") plans.push(await planFill(tx, ctx.tenantId, r.matches[0].id, r.input));
+        }
       }
       const fills = plans.filter((p) => p.changedFields.length > 0);
       const alreadyImported = rows.filter((r) => r.status === "already_imported").length;
@@ -194,8 +220,8 @@ export async function commitPatientImport(
         await tx.update(patients).set(plan.set).where(and(eq(patients.tenantId, ctx.tenantId), eq(patients.id, plan.patientId)));
         await recordAudit(tx, ctx, { action: "patient.updated", entityType: "patient", entityId: plan.patientId, after: { changedFields: plan.changedFields, importId: job.id } });
       }
-      const summary = { created: toCreate.length, filled: fills.length, skipped, alreadyImported, invalid };
-      await recordAudit(tx, ctx, { action: "patient_import.committed", entityType: "patient_import", entityId: job.id, after: { rowCount: rows.length, ...summary } });
+      const summary = { created: toCreate.length, filled: fills.length, skipped, alreadyImported, invalid, staleRows: staleRows.slice(0, MAX_STALE_LISTED), staleCount: staleRows.length };
+      await recordAudit(tx, ctx, { action: "patient_import.committed", entityType: "patient_import", entityId: job.id, after: { rowCount: rows.length, created: toCreate.length, filled: fills.length, skipped, alreadyImported, invalid, staleCount: staleRows.length } });
       return ok({
         importId: job.id,
         ...summary,
@@ -204,8 +230,10 @@ export async function commitPatientImport(
       });
     });
   } catch (error) {
-    // The advisory lock serializes imports; a unique violation means someone else wrote the same rows anyway.
-    if (pgErrorInfo(error).code === "23505") return fail("conflict", CONCURRENT);
+    // The advisory lock serializes imports; a clash on the row key means a writer outside it stored the same rows.
+    // Any other unique violation (the patient number, say) is a real fault and must not be dressed up as a retry.
+    const info = pgErrorInfo(error);
+    if (info.code === "23505" && info.constraint === "patients_import_row_key_uq") return fail("conflict", CONCURRENT);
     throw error;
   }
 }

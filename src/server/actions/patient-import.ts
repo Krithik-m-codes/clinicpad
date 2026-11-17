@@ -55,6 +55,8 @@ export async function commitImportAction(formData: FormData): Promise<CommitStat
       mapping: jsonField(formData, "mapping"),
       decisions: jsonField(formData, "decisions"),
       expectedSha256: formData.get("sha"),
+      checkToken: formData.get("token"),
+      fingerprints: jsonField(formData, "fingerprints"),
     });
     if (!result.ok) return { error: result.message, field: result.field };
     revalidatePath("/patients");

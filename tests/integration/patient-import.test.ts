@@ -11,6 +11,7 @@ import { DECODE_MESSAGES } from "@/lib/import/decode";
 import { IMPORT_LIMITS, IMPORT_MESSAGES } from "@/lib/import/patient-rows";
 import { NUL_MESSAGE } from "@/server/validation/text";
 import { csv, utf16LeFile, utf8BomFile, utf8File } from "../helpers/csv-files";
+import { commitInput } from "../helpers/patient-import";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
 let A: TestTenant;
@@ -25,7 +26,7 @@ async function dryRun(bytes: Uint8Array, mapping?: unknown): Promise<ImportRepor
 
 async function commit(bytes: Uint8Array, decisions: Record<string, string> = {}, mapping?: unknown) {
   const report = await dryRun(bytes, mapping);
-  return commitPatientImport(owner(), { bytes }, { mapping: report.mapping, decisions, expectedSha256: report.fileSha256 });
+  return commitPatientImport(owner(), { bytes }, commitInput(report, decisions));
 }
 
 async function counter(tenantId: string): Promise<number> {
@@ -48,7 +49,7 @@ describe("who may import", () => {
     const bytes = utf8File(csv(["name", "Role Test"]));
     for (const role of ["doctor", "reception", "nurse", "pharmacist", "accountant"]) {
       expect(await dryRunPatientImport(A.as(role), { bytes })).toMatchObject({ ok: false, code: "forbidden" });
-      expect(await commitPatientImport(A.as(role), { bytes }, { mapping: null, decisions: {}, expectedSha256: "x" })).toMatchObject({ ok: false, code: "forbidden" });
+      expect(await commitPatientImport(A.as(role), { bytes }, { mapping: null, decisions: {}, expectedSha256: "x", checkToken: "x", fingerprints: {} })).toMatchObject({ ok: false, code: "forbidden" });
     }
   });
 });
@@ -65,7 +66,7 @@ describe("the sample template", () => {
     expect(report.mapping).toEqual({ name: 0, phone: 1, dob: 2, gender: 3, address: 4, allergies: 5, notes: 6 });
     expect(report.rows.map((r) => r.status === "new" && r.dob)).toEqual(["1990-08-15", "1985-01-20", null]);
 
-    const done = await commitPatientImport(owner(), { bytes }, { mapping: report.mapping, decisions: {}, expectedSha256: report.fileSha256 });
+    const done = await commitPatientImport(owner(), { bytes }, commitInput(report));
     expect(done).toMatchObject({ ok: true, value: { created: 3, filled: 0, skipped: 0, alreadyImported: 0, invalid: 0 } });
     if (!done.ok) return;
     expect(done.value.firstPatientNo).toBe(before.value.patientNo + 1);
@@ -89,7 +90,7 @@ describe("the sample template", () => {
     const lastNo = await counter(A.tenantId);
     const report = await dryRun(bytes);
     expect(report.totals).toMatchObject({ new: 0, alreadyImported: 3 });
-    const done = await commitPatientImport(owner(), { bytes }, { mapping: report.mapping, decisions: {}, expectedSha256: report.fileSha256 });
+    const done = await commitPatientImport(owner(), { bytes }, commitInput(report));
     expect(done).toMatchObject({ ok: true, value: { created: 0, alreadyImported: 3, firstPatientNo: null } });
     expect(await counter(A.tenantId)).toBe(lastNo);
   });
@@ -99,7 +100,7 @@ describe("two commits at once (a double-click, or two tabs)", () => {
   it("creates each patient once: the second waits for the first and finds its rows", async () => {
     const bytes = utf8File(csv(["name,phone", "Twin One,9000000101", "Twin Two,9000000102"]));
     const report = await dryRun(bytes);
-    const input = { mapping: report.mapping, decisions: {}, expectedSha256: report.fileSha256 };
+    const input = commitInput(report);
     const [first, second] = await Promise.all([commitPatientImport(owner(), { bytes }, input), commitPatientImport(owner(), { bytes }, input)]);
     const created = [first, second].map((r) => (r.ok ? r.value.created : -1)).sort();
     expect(created).toEqual([0, 2]);
@@ -130,7 +131,7 @@ describe("duplicates", () => {
     expect(report.totals).toMatchObject({ rows: 3, duplicate: 3, new: 0 });
     const [meera, kiran, repeat] = report.rows;
     expect(meera).toMatchObject({ row: 2, status: "duplicate", canFill: true, canCreate: true, duplicateOfRow: null });
-    expect(meera.status === "duplicate" && meera.matches).toEqual([{ patientNo: expect.any(Number), name: "Meera Shah", sameName: true }]);
+    expect(meera.status === "duplicate" && meera.matches).toEqual([{ patientNo: expect.any(Number), name: "Meera Shah", sameName: true, dob: null, gender: "unknown" }]);
     expect(kiran).toMatchObject({ row: 3, status: "duplicate", canFill: false, canCreate: true, duplicateOfRow: 2 });
     expect(repeat).toMatchObject({ row: 4, status: "duplicate", canFill: false, canCreate: false, duplicateOfRow: 2 });
   });
@@ -170,7 +171,7 @@ describe("duplicates", () => {
     const report = await dryRun(bytes);
     expect(report.totals.new).toBe(1);
     await createPatient(A.as("reception"), { name: "Late Comer", phone: "9000011111" });
-    const done = await commitPatientImport(owner(), { bytes }, { mapping: report.mapping, decisions: {}, expectedSha256: report.fileSha256 });
+    const done = await commitPatientImport(owner(), { bytes }, commitInput(report));
     expect(done).toMatchObject({ ok: true, value: { created: 0, skipped: 1 } });
   });
 });
@@ -243,16 +244,16 @@ describe("mapping, decisions and the file fingerprint", () => {
     const bytes = utf8File(csv(["name", "Fingerprint Person"]));
     const report = await dryRun(bytes);
     const changed = utf8File(csv(["name", "Fingerprint Persons"]));
-    expect(await commitPatientImport(owner(), { bytes: changed }, { mapping: report.mapping, decisions: {}, expectedSha256: report.fileSha256 })).toMatchObject({
+    expect(await commitPatientImport(owner(), { bytes: changed }, commitInput(report))).toMatchObject({
       ok: false,
       code: "conflict",
     });
-    expect(await commitPatientImport(owner(), { bytes }, { mapping: { name: 5 }, decisions: {}, expectedSha256: report.fileSha256 })).toMatchObject({
+    expect(await commitPatientImport(owner(), { bytes }, { ...commitInput(report), mapping: { name: 5 } })).toMatchObject({
       ok: false,
       code: "invalid",
       field: "mapping",
     });
-    expect(await commitPatientImport(owner(), { bytes }, { mapping: report.mapping, decisions: { "2": "merge" }, expectedSha256: report.fileSha256 })).toMatchObject({
+    expect(await commitPatientImport(owner(), { bytes }, commitInput(report, { "2": "merge" }))).toMatchObject({
       ok: false,
       code: "invalid",
       field: "decisions",

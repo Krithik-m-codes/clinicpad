@@ -3,62 +3,26 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { nameKey, sameName } from "@/lib/domain/names";
 import { normalizePhone } from "@/lib/domain/phone";
 import { invalidFrom } from "@/lib/result";
-import { ageColumns, IMPORT_FIELDS, type ColumnMapping, type ImportField } from "@/lib/import/patient-columns";
+import { IMPORT_FIELDS, type ColumnMapping, type ImportField } from "@/lib/import/patient-columns";
 import { rowValues, type ImportTable } from "@/lib/import/patient-rows";
 import { patients } from "@/server/db/schema";
 import type { TenantTx } from "@/server/db/tenant";
-import { DOB_FUTURE_MESSAGE, patientInputSchema, type PatientInput } from "@/server/validation/patient";
+import { DOB_FUTURE_MESSAGE, patientInputSchema } from "@/server/validation/patient";
+import { dobAgrees, type Analysed, type Invalid, type Match, type Prepared } from "./patient-import-report";
 
 // Classification of an import file against the clinic's patients (reads only). Used by the dry-run and the commit.
 
-export type ImportDecision = "skip" | "create" | "fill";
-export type DuplicateMatch = { patientNo: number | null; name: string; sameName: boolean };
-export type ImportRowReport =
-  | { row: number; status: "new"; name: string; dob: string | null }
-  | { row: number; status: "already_imported"; name: string }
-  | { row: number; status: "duplicate"; name: string; matches: DuplicateMatch[]; duplicateOfRow: number | null; canFill: boolean; canCreate: boolean }
-  | { row: number; status: "invalid"; field: ImportField | "row"; message: string; cells: string[] };
-export type ImportTotals = { rows: number; new: number; duplicate: number; alreadyImported: number; invalid: number };
-export type ImportReport = {
-  fileSha256: string;
-  headers: string[];
-  mapping: ColumnMapping;
-  /** Unmapped age columns: shown as "not imported" (a birth date is never invented from an age). */
-  ageColumns: string[];
-  /** No name column recognised: the owner must choose one; nothing was analysed. */
-  needsName: boolean;
-  totals: ImportTotals;
-  /** Every problem, every duplicate, every already-imported row, and the first NEW_ROW_PREVIEW new rows. */
-  rows: ImportRowReport[];
-};
-export type CommitSummary = {
-  importId: string;
-  created: number;
-  filled: number;
-  skipped: number;
-  alreadyImported: number;
-  invalid: number;
-  firstPatientNo: number | null;
-  lastPatientNo: number | null;
-};
-
-export const NEW_ROW_PREVIEW = 20;
-const MAX_MATCHES = 3;
 const CHUNK = 500;
+/** Echoed cells of a problem row are capped; a 2,000-character cell must not travel back to the browser. */
+const ECHO_CHARS = 200;
+const MAX_SOFT_MATCHES = 20;
 
-type Prepared = { row: number; input: PatientInput; phone: string | null; key: string };
-type Match = DuplicateMatch & { id: string };
-type Invalid = { row: number; status: "invalid"; field: ImportField | "row"; message: string; cells: string[] };
-export type Analysed =
-  | (Prepared & { status: "new" })
-  | (Prepared & { status: "already_imported" })
-  | (Prepared & { status: "duplicate"; matches: Match[]; duplicateOfRow: number | null; exactRepeat: boolean })
-  | Invalid;
-type Duplicate = Extract<Analysed, { status: "duplicate" }>;
-
+const clip = (cell: string) => {
+  const chars = [...cell];
+  return chars.length > ECHO_CHARS ? chars.slice(0, ECHO_CHARS).join("") : cell;
+};
 const FIELD_NAMES = new Set<string>(IMPORT_FIELDS);
 const asField = (field: string | undefined): ImportField | "row" => (field !== undefined && FIELD_NAMES.has(field) ? (field as ImportField) : "row");
-export const canFill = (r: Duplicate) => r.duplicateOfRow === null && r.matches.length === 1 && r.matches[0].sameName;
 
 export function chunks<T>(items: readonly T[]): T[][] {
   const out: T[][] = [];
@@ -74,7 +38,7 @@ export function importRowKey(name: string, phone: string | null, dob: string | n
 
 /** One row through the Excel repairs, the patient form's own schema, and the clinic-day DOB rule. */
 function prepare(record: { row: number; cells: string[] }, mapping: ColumnMapping, today: string): Prepared | Invalid {
-  const invalid = (field: ImportField | "row", message: string): Invalid => ({ row: record.row, status: "invalid", field, message, cells: record.cells });
+  const invalid = (field: ImportField | "row", message: string): Invalid => ({ row: record.row, status: "invalid", field, message, cells: record.cells.map(clip) });
   const values = rowValues(record.cells, mapping);
   if (!values.ok) return invalid(values.field, values.message);
   const parsed = patientInputSchema.safeParse(values.values);
@@ -102,16 +66,32 @@ export async function analyse(tx: TenantTx, tenantId: string, table: ImportTable
     for (const r of rows) if (r.key) imported.add(r.key);
   }
 
+  const columns = { id: patients.id, patientNo: patients.patientNo, name: patients.name, dob: patients.dob, gender: patients.gender };
   const byPhone = new Map<string, Omit<Match, "sameName">[]>();
   for (const phones of chunks([...new Set(valid.map((r) => r.phone).filter((p): p is string => p !== null))])) {
     const rows = await tx
-      .select({ id: patients.id, patientNo: patients.patientNo, name: patients.name, phone: patients.phoneNormalized })
+      .select({ ...columns, phone: patients.phoneNormalized })
       .from(patients)
       .where(and(eq(patients.tenantId, tenantId), isNull(patients.deletedAt), inArray(patients.phoneNormalized, phones)))
       .orderBy(desc(patients.createdAt), desc(patients.id));
-    for (const r of rows) {
-      if (!r.phone) continue;
-      byPhone.set(r.phone, [...(byPhone.get(r.phone) ?? []), { id: r.id, patientNo: r.patientNo, name: r.name }]);
+    for (const { phone, ...match } of rows) {
+      if (phone) byPhone.set(phone, [...(byPhone.get(phone) ?? []), match]);
+    }
+  }
+
+  // Soft matches: the same name with an equal or empty date of birth, whatever the phone. Without them a re-import
+  // with a corrected column mapping (or a row with no phone) would create everyone a second time. The clinic's whole
+  // patient list is read once (five narrow columns) because names have no indexed comparison key.
+  const byName = new Map<string, Omit<Match, "sameName">[]>();
+  if (valid.length > 0) {
+    const all = await tx
+      .select(columns)
+      .from(patients)
+      .where(and(eq(patients.tenantId, tenantId), isNull(patients.deletedAt)))
+      .orderBy(desc(patients.createdAt), desc(patients.id));
+    for (const p of all) {
+      const key = nameKey(p.name);
+      if (key !== "") byName.set(key, [...(byName.get(key) ?? []), p]);
     }
   }
 
@@ -124,47 +104,15 @@ export async function analyse(tx: TenantTx, tenantId: string, table: ImportTable
     const phoneRepeatOf = r.phone !== null ? (firstByPhone.get(r.phone) ?? null) : null;
     if (repeatOf === null) firstByKey.set(r.key, r.row);
     if (r.phone !== null && phoneRepeatOf === null) firstByPhone.set(r.phone, r.row);
-    const matches = (r.phone !== null ? (byPhone.get(r.phone) ?? []) : []).map((m) => ({ ...m, sameName: sameName(m.name, r.input.name) }));
+    const byPhoneMatches = (r.phone !== null ? (byPhone.get(r.phone) ?? []) : []).map((m): Match => ({ ...m, sameName: sameName(m.name, r.input.name) }));
+    const seen = new Set(byPhoneMatches.map((m) => m.id));
+    const soft = (byName.get(nameKey(r.input.name)) ?? [])
+      .filter((m) => !seen.has(m.id) && dobAgrees(m.dob, r.input.dob))
+      .slice(0, MAX_SOFT_MATCHES)
+      .map((m): Match => ({ ...m, sameName: true }));
+    const matches = [...byPhoneMatches, ...soft];
     const duplicateOfRow = repeatOf ?? phoneRepeatOf;
     if (matches.length === 0 && duplicateOfRow === null) return { ...r, status: "new" };
     return { ...r, status: "duplicate", matches, duplicateOfRow, exactRepeat: repeatOf !== null };
   });
 }
-
-export function emptyTotals(): ImportTotals {
-  return { rows: 0, new: 0, duplicate: 0, alreadyImported: 0, invalid: 0 };
-}
-
-export function buildReport(sha256: string, table: ImportTable, mapping: ColumnMapping, rows: Analysed[]): ImportReport {
-  const totals = { ...emptyTotals(), rows: rows.length };
-  const out: ImportRowReport[] = [];
-  let preview = 0;
-  for (const r of rows) {
-    if (r.status === "invalid") {
-      totals.invalid += 1;
-      out.push(r);
-    } else if (r.status === "already_imported") {
-      totals.alreadyImported += 1;
-      out.push({ row: r.row, status: r.status, name: r.input.name });
-    } else if (r.status === "duplicate") {
-      totals.duplicate += 1;
-      out.push({
-        row: r.row,
-        status: "duplicate",
-        name: r.input.name,
-        matches: r.matches.slice(0, MAX_MATCHES).map((m) => ({ patientNo: m.patientNo, name: m.name, sameName: m.sameName })),
-        duplicateOfRow: r.duplicateOfRow,
-        canFill: canFill(r),
-        canCreate: !r.exactRepeat,
-      });
-    } else {
-      totals.new += 1;
-      if (preview < NEW_ROW_PREVIEW) {
-        preview += 1;
-        out.push({ row: r.row, status: "new", name: r.input.name, dob: r.input.dob ?? null });
-      }
-    }
-  }
-  return { fileSha256: sha256, headers: table.headers, mapping, ageColumns: ageColumns(table.headers, mapping), needsName: false, totals, rows: out };
-}
-
