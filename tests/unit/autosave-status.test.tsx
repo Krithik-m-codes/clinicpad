@@ -38,7 +38,20 @@ describe("AutosaveStatusBar", () => {
 
   it("explains a rejected save", () => {
     setup({ state: "invalid", message: "Pulse must be at most 250", field: "vitals" });
-    expect(screen.getByRole("alert")).toHaveTextContent("Not saved: Pulse must be at most 250");
+    expect(screen.getByRole("alert")).toHaveTextContent("Pulse must be at most 250");
+  });
+
+  it("says everything since the last save is unsaved, with the time and where the problem is", () => {
+    setup({ state: "invalid", message: "Keep this to at most 60 characters", field: "items", path: "items.2.dose", savedAt: "2026-11-12T04:30:00.000Z" });
+    const text = screen.getByRole("alert").textContent ?? "";
+    expect(text).toMatch(/^Nothing since \d{1,2}:\d{2}.* is saved/);
+    expect(text).toContain("Keep this to at most 60 characters");
+    expect(text).toContain("(medicines 3 \u00b7 dose)");
+  });
+
+  it("names the whole draft when there has been no save yet", () => {
+    setup({ state: "invalid", message: "Pulse must be at most 250", field: "vitals" });
+    expect(screen.getByRole("alert")).toHaveTextContent(/^Nothing since you opened this draft is saved/);
   });
 
   it("offers reload or keep-mine on a conflict", () => {

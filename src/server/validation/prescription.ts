@@ -216,12 +216,15 @@ export const draftInputSchema = z.object({
 });
 
 /** Why a finalized prescription is being amended. Stored on the new version, so it is free text. */
-export const amendReasonSchema = z
-  .string()
-  .trim()
-  .min(5, "Give a reason of at least 5 characters")
-  .max(500, "Keep the reason under 500 characters")
-  .refine(hasNoNul, NUL_MESSAGE);
+export const amendReasonSchema = z.preprocess(
+  cleanInput,
+  z
+    .string()
+    .trim()
+    .min(5, "Give a reason of at least 5 characters")
+    .max(500, "Keep the reason under 500 characters")
+    .refine(hasNoNul, NUL_MESSAGE),
+);
 
 export type DraftInput = z.output<typeof draftInputSchema>;
 export type DraftItemInput = z.output<typeof prescriptionItemSchema>;

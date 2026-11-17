@@ -156,7 +156,7 @@ export function medicineFrom(source: MedicineLike, key: string = newKey()): Edit
 /** Picking a catalogue hit fills the name; a favourite also fills its saved dosing. */
 export function applyHit(current: EditorMedicine, hit: MedicineHit): EditorMedicine {
   if (hit.favourite) return medicineFrom(hit.favourite, current.key);
-  return { ...current, drugName: hit.name, genericName: hit.genericName ?? "" };
+  return { ...current, drugName: hit.name, genericName: hit.genericName ?? current.genericName };
 }
 
 export function applySchedulePreset(m: EditorMedicine, pattern: string): EditorMedicine {

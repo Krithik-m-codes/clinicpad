@@ -927,3 +927,116 @@ describe("outcomeFromResponse", () => {
     expect(() => outcomeFromResponse({ ok: false, code: "unauthenticated", message: "m" })).toThrow(SIGNED_OUT_MESSAGE);
   });
 });
+
+describe("final fix wave: halt details", () => {
+  it("an invalid halt carries the field path and the time of the last good save", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].resolve(saved(1));
+    await settle();
+    h.saver.update({ text: "bad" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[1].resolve({ kind: "invalid", message: "Dose is too long", field: "items", path: "items.2.dose" });
+    await settle();
+    expect(h.last()).toEqual({
+      state: "invalid",
+      message: "Dose is too long",
+      field: "items",
+      path: "items.2.dose",
+      savedAt: "2026-11-12T10:00:01.000Z",
+    });
+  });
+
+  it("passes the path of an invalid response through", () => {
+    expect(outcomeFromResponse({ ok: false, code: "invalid", message: "m", field: "items", path: "items.0.dose" })).toEqual({
+      kind: "invalid",
+      message: "m",
+      field: "items",
+      path: "items.0.dose",
+    });
+  });
+
+  it("an exclusive call that reports a conflict puts the engine into the conflict halt", async () => {
+    const h = harness();
+    const value = await h.saver.exclusive(async () => ({
+      revision: null,
+      conflict: { currentRevision: 7, message: "Changed elsewhere" },
+      value: "finalize conflicted",
+    }));
+    expect(value).toBe("finalize conflicted");
+    expect(h.last()).toEqual({ state: "conflict", message: "Changed elsewhere", currentRevision: 7 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.calls).toHaveLength(0);
+
+    // "Keep my version" saves the local copy on top of the newer revision.
+    h.saver.overwrite();
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].base).toBe(7);
+  });
+
+  it("a conflict reported after the exclusive save was accepted still halts, on the accepted revision first", async () => {
+    const h = harness();
+    await h.saver.exclusive(async () => ({
+      revision: 3,
+      conflict: { currentRevision: 9, message: "Changed elsewhere" },
+      value: "x",
+    }));
+    expect(h.last()).toMatchObject({ state: "conflict", currentRevision: 9 });
+    h.saver.update({ text: "later" });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.calls).toHaveLength(0); // halted: edits stay local until the doctor chooses
+  });
+});
+
+describe("wouldLoseEditsOnLeave", () => {
+  it("is false while edits are merely pending or in flight (dispose sends them)", async () => {
+    const h = harness();
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
+    h.saver.update({ text: "a" });
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
+  });
+
+  it("is true when halted by invalid, conflict or locked, and false again after the problem is fixed", async () => {
+    const h = harness();
+    h.saver.update({ text: "bad" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].resolve({ kind: "invalid", message: "m" });
+    await settle();
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(true);
+    h.saver.update({ text: "fixed" }); // an edit lifts an invalid halt
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[1].resolve({ kind: "conflict", currentRevision: 3, message: "c" });
+    await settle();
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(true);
+    h.saver.discard();
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
+  });
+
+  it("is true while saves keep failing, and false once nothing is unsaved", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].reject(new Error("offline"));
+    await settle();
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    h.calls[1].resolve(saved(1));
+    await settle();
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
+  });
+
+  it("is true while held by an exclusive call that gave no revision", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].resolve(saved(1));
+    await settle();
+    h.saver.update({ text: "b" });
+    await h.saver.exclusive(async () => ({ revision: null, value: "unknown" }));
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(true);
+  });
+});

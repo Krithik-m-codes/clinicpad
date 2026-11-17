@@ -1,7 +1,7 @@
 export type SaveOutcome =
   | { kind: "saved"; revision: number; savedAt: string }
   | { kind: "conflict"; currentRevision: number; message: string }
-  | { kind: "invalid"; message: string; field?: string }
+  | { kind: "invalid"; message: string; field?: string; path?: string }
   | { kind: "locked"; message: string };
 
 export type AutosaveStatus =
@@ -9,7 +9,7 @@ export type AutosaveStatus =
   | { state: "pending" }
   | { state: "saving" }
   | { state: "retrying"; message: string; retryInMs: number }
-  | { state: "invalid"; message: string; field?: string }
+  | { state: "invalid"; message: string; field?: string; path?: string; savedAt?: string }
   | { state: "conflict"; message: string; currentRevision: number }
   | { state: "locked"; message: string };
 
@@ -43,6 +43,17 @@ export type AutosaverOptions<T> = {
   saveTimeoutMs?: number;
 };
 
+/**
+ * What an exclusive call reports. `conflict` (the server's newer revision) puts the engine into the
+ * conflict halt, so the doctor gets the Keep / Load choice instead of a dead end.
+ */
+export type ExclusiveResult<R> = {
+  revision: number | null;
+  savedAt?: string;
+  conflict?: { currentRevision: number; message: string };
+  value: R;
+};
+
 export type Autosaver<T> = {
   /** Records the latest snapshot. Snapshots must be treated as immutable after this call. */
   update(snapshot: T): void;
@@ -62,8 +73,14 @@ export type Autosaver<T> = {
    * fires, new edits are only recorded) until the caller resumes it with `retryNow()`, `flush()` or
    * `overwrite()`.
    */
-  exclusive<R>(fn: (snapshot: T, baseRevision: number) => Promise<{ revision: number | null; savedAt?: string; value: R }>): Promise<R>;
+  exclusive<R>(fn: (snapshot: T, baseRevision: number) => Promise<ExclusiveResult<R>>): Promise<R>;
   hasUnsavedChanges(): boolean;
+  /**
+   * True when leaving the page now would lose edits: something is unsaved AND the unmount save
+   * (`dispose()`) would not send it, because the engine is halted (conflict, locked, invalid), held,
+   * or failing to reach the server. Plain pending or in-flight saves are not at risk.
+   */
+  wouldLoseEditsOnLeave(): boolean;
   /**
    * Teardown that keeps edits safe: stops timers, never emits a status again, and, unless halted
    * (conflict, locked, invalid) or held, sends ONE final best-effort save of the latest snapshot
@@ -102,6 +119,7 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
   let ambiguous = false; // the last failure may still have committed on the server
   let disposed = false;
   let discarded = false;
+  let lastSavedAt: string | null = null; // when the server last confirmed a save (shown with an invalid halt)
 
   const emit = (status: AutosaveStatus) => {
     if (!disposed) options.onStatus(status);
@@ -143,6 +161,7 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
       case "saved":
         revision = outcome.revision;
         savedSeq = seq;
+        lastSavedAt = outcome.savedAt;
         emit(unsaved() ? { state: "pending" } : { state: "saved", savedAt: outcome.savedAt });
         return;
       case "invalid":
@@ -150,9 +169,13 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
           emit({ state: "pending" }); // a newer snapshot is waiting and may be fine
           return;
         }
-        halt = outcome.field
-          ? { state: "invalid", message: outcome.message, field: outcome.field }
-          : { state: "invalid", message: outcome.message };
+        halt = {
+          state: "invalid",
+          message: outcome.message,
+          ...(outcome.field ? { field: outcome.field } : {}),
+          ...(outcome.path ? { path: outcome.path } : {}),
+          ...(lastSavedAt ? { savedAt: lastSavedAt } : {}),
+        };
         emit(halt);
         return;
       case "conflict":
@@ -275,7 +298,7 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
   }
 
   async function exclusive<R>(
-    fn: (snapshot: T, baseRevision: number) => Promise<{ revision: number | null; savedAt?: string; value: R }>,
+    fn: (snapshot: T, baseRevision: number) => Promise<ExclusiveResult<R>>,
   ): Promise<R> {
     if (exclusiveActive) throw new Error("An exclusive save is already running.");
     exclusiveActive = true;
@@ -294,6 +317,7 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
       if (result.revision !== null) {
         revision = result.revision;
         savedSeq = seq;
+        if (result.savedAt) lastSavedAt = result.savedAt;
         retryMs = 0;
         ambiguous = false;
         halt = null;
@@ -301,6 +325,11 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
         emit(unsaved() ? { state: "pending" } : { state: "saved", savedAt: result.savedAt ?? new Date().toISOString() });
       } else {
         held = true; // do not let autosave fire against a draft that may now be finalized
+      }
+      if (result.conflict) {
+        // The server has a newer revision than the one this editor built on: offer Keep / Load.
+        halt = { state: "conflict", message: result.conflict.message, currentRevision: result.conflict.currentRevision };
+        emit(halt);
       }
       return result.value;
     } finally {
@@ -337,6 +366,7 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
     overwrite,
     exclusive,
     hasUnsavedChanges: () => !discarded && (unsaved() || inFlight !== null),
+    wouldLoseEditsOnLeave: () => !discarded && !disposed && unsaved() && (halt !== null || held || retryMs > 0),
     dispose,
     discard,
   };
@@ -345,7 +375,7 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
 /** Matches Task 7's AutosaveResponse without importing server code. */
 export type SaveResponseLike =
   | { ok: true; revision: number; savedAt: string }
-  | { ok: false; code: string; message: string; field?: string; currentRevision?: number };
+  | { ok: false; code: string; message: string; field?: string; path?: string; currentRevision?: number };
 
 /**
  * Only the codes that can never succeed on a retry stop saving (`locked`, `conflict`, `invalid`).
@@ -361,7 +391,12 @@ export function outcomeFromResponse(res: SaveResponseLike): SaveOutcome {
       : { kind: "locked", message: res.message }; // a conflict without a revision: already finalized
   }
   if (res.code === "invalid") {
-    return res.field ? { kind: "invalid", message: res.message, field: res.field } : { kind: "invalid", message: res.message };
+    return {
+      kind: "invalid",
+      message: res.message,
+      ...(res.field ? { field: res.field } : {}),
+      ...(res.path ? { path: res.path } : {}),
+    };
   }
   if (res.code === "immutable" || res.code === "forbidden" || res.code === "not_found") {
     return { kind: "locked", message: res.message };

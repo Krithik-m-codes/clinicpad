@@ -15,6 +15,25 @@ function time(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+const PATH_LABELS: Record<string, string> = { items: "medicines", investigations: "tests" };
+
+/** "items.2.dose" becomes "medicines 3 \u00b7 dose": list positions are counted from 1, as the doctor sees them. */
+export function describePath(path: string): string {
+  const parts: string[] = [];
+  for (const segment of path.split(".")) {
+    if (/^\d+$/.test(segment) && parts.length > 0) parts[parts.length - 1] += ` ${Number(segment) + 1}`;
+    else parts.push(PATH_LABELS[segment] ?? segment);
+  }
+  return parts.join(" \u00b7 ");
+}
+
+/** The server refuses a whole snapshot for one bad field, so everything since the last save is unsaved. */
+function invalidText(status: Extract<AutosaveStatus, { state: "invalid" }>): string {
+  const since = status.savedAt ? time(status.savedAt) : "you opened this draft";
+  const where = status.path ? ` (${describePath(status.path)})` : "";
+  return `Nothing since ${since} is saved \u2014 ${status.message}${where}`;
+}
+
 /** Always tells the truth: "saved" only after the server confirmed the latest snapshot. */
 export function AutosaveStatusBar({ status, onRetry, onOverwrite, onReload }: Props) {
   switch (status.state) {
@@ -48,7 +67,7 @@ export function AutosaveStatusBar({ status, onRetry, onOverwrite, onReload }: Pr
     case "invalid":
       return (
         <p role="alert" className="text-sm text-destructive">
-          Not saved: {status.message}
+          {invalidText(status)}
         </p>
       );
     case "conflict": {

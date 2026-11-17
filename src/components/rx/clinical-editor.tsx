@@ -25,6 +25,8 @@ import { InvestigationsSection } from "./investigations-section";
 import { MedicinesSection } from "./medicines-section";
 import { COULD_NOT_CONFIRM_MESSAGE, isUnknownOutcome, useAutosave } from "./use-autosave";
 import { useFavourites } from "./use-favourites";
+import { useOnline } from "./use-online";
+import { useOutcomeRecheck } from "./use-outcome-recheck";
 import { VitalsSection } from "./vitals-section";
 
 const selectClass = "flex h-11 w-full rounded-md border-2 border-gray-200 bg-white px-3 text-sm";
@@ -59,6 +61,7 @@ export function ClinicalEditor({
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const autosave = useAutosave(prescriptionId, initialState.current, revision);
   const { update } = autosave;
+  const online = useOnline();
 
   // Every edit produces a new state object; each one reaches the autosaver exactly once.
   useEffect(() => {
@@ -76,6 +79,13 @@ export function ClinicalEditor({
       mounted.current = false;
     };
   }, []);
+  const recheckOutcome = useOutcomeRecheck({
+    flush: autosave.flush,
+    hasUnsavedChanges: autosave.hasUnsavedChanges,
+    refresh: router.refresh,
+    setMessage: setFinalizeError,
+    mounted,
+  });
 
   const set = <K extends keyof EditorState>(key: K, value: EditorState[K]) =>
     setState((s) => ({ ...s, [key]: value }));
@@ -120,15 +130,14 @@ export function ClinicalEditor({
         router.refresh(); // the page re-renders as the read-only finalized view
         return;
       }
-      // A failure without a revision leaves autosave held; flush releases the hold even if the engine halted meanwhile.
-      if (typeof res.revision !== "number") void autosave.flush();
       if (isUnknownOutcome(res.code)) {
-        // The server may have finalized before the answer was lost: re-read it. If the draft is gone
-        // the page swaps this editor for the finalized view; otherwise the message stays.
+        // The server may have finalized before the answer was lost: re-read it once that is possible.
         setFinalizeError(COULD_NOT_CONFIRM_MESSAGE);
-        router.refresh();
+        await recheckOutcome();
         return;
       }
+      // A failure without a revision leaves autosave held; flush releases the hold even if the engine halted meanwhile.
+      if (typeof res.revision !== "number") void autosave.flush();
       setFinalizeError(res.message);
       // Already finalized (for example from another window): show the finalized view.
       if (res.code === "immutable" || (res.code === "conflict" && typeof res.currentRevision !== "number")) {
@@ -228,6 +237,9 @@ export function ClinicalEditor({
           onOverwrite={autosave.overwrite}
           onReload={reload}
         />
+        {!online ? (
+          <p className="text-sm text-amber-800">You are offline. Finalize is unavailable until the connection is back.</p>
+        ) : null}
         {finalizeError ? (
           <p role="alert" className="text-sm text-destructive">
             {finalizeError}
@@ -238,7 +250,7 @@ export function ClinicalEditor({
             Save now
           </Button>
           {canFinalize ? (
-            <Button type="button" disabled={finalizing || blocked} onClick={() => void finalize()}>
+            <Button type="button" disabled={finalizing || blocked || !online} onClick={() => void finalize()}>
               {finalizing ? "Finalizing…" : "Finalize"}
             </Button>
           ) : null}

@@ -8,6 +8,7 @@ export type ActionFailure = {
   code: string;
   message: string;
   field?: string;
+  path?: string;
   currentRevision?: number;
 };
 export type AutosaveResponse = { ok: true; revision: number; savedAt: string } | ActionFailure;
@@ -26,9 +27,10 @@ const BAD_REVISION: ActionFailure = {
   field: "baseRevision",
 };
 
-function failure(result: { code: string; message: string; field?: string; currentRevision?: number }): ActionFailure {
+function failure(result: { code: string; message: string; field?: string; path?: string; currentRevision?: number }): ActionFailure {
   const out: ActionFailure = { ok: false, code: result.code, message: result.message };
   if (result.field) out.field = result.field;
+  if (result.path) out.path = result.path;
   if (typeof result.currentRevision === "number") out.currentRevision = result.currentRevision;
   return out;
 }

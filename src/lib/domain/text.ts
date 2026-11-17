@@ -10,7 +10,8 @@ function isControl(code: number): boolean {
  *
  * Removed: zero-width space (200B), soft hyphen (00AD), BOM / zero-width no-break space
  * (FEFF), word joiner (2060), bidi embeddings and overrides (202A-202E), bidi isolates
- * (2066-2069), and C1 controls (0080-009F; 0085 is handled as a line break before this runs).
+ * (2066-2069), direction marks (200E, 200F, 061C), invisible math operators (2061-2064),
+ * Mongolian vowel separator (180E), the Unicode tag block (E0000-E007F), and C1 controls (0080-009F; 0085 is handled as a line break before this runs).
  *
  * Deliberately kept: ZWJ (200D) and ZWNJ (200C). Devanagari conjuncts need them.
  */
@@ -20,6 +21,12 @@ function isInvisible(code: number): boolean {
     code === 0x00ad ||
     code === 0xfeff ||
     code === 0x2060 ||
+    code === 0x200e || // left-to-right mark
+    code === 0x200f || // right-to-left mark
+    code === 0x061c || // Arabic letter mark
+    (code >= 0x2061 && code <= 0x2064) || // invisible function application, times, separator, plus
+    code === 0x180e || // Mongolian vowel separator
+    (code >= 0xe0000 && code <= 0xe007f) || // Unicode tag characters (astral)
     (code >= 0x202a && code <= 0x202e) ||
     (code >= 0x2066 && code <= 0x2069) ||
     (code >= 0x0080 && code <= 0x009f)
@@ -46,9 +53,10 @@ export function cleanText(value: string): string {
     .replace(/[\u0085\u2028\u2029]/g, "\n")
     .replace(/\r\n?/g, "\n");
   let out = "";
-  for (let i = 0; i < normalized.length; i += 1) {
-    const code = normalized.charCodeAt(i);
-    if (!isControl(code) && !isInvisible(code)) out += normalized[i];
+  // Iterate by code point so astral characters (tag characters, emoji) are judged whole.
+  for (const char of normalized) {
+    const code = char.codePointAt(0) ?? 0;
+    if (!isControl(code) && !isInvisible(code)) out += char;
   }
   return out;
 }

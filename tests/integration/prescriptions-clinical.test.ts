@@ -251,12 +251,14 @@ describe("saveDraft with the clinical form", () => {
     it("treats case, extra spaces and Unicode composition as the same phrase", async () => {
       const id = await start();
       // "Viral  fever" has two spaces; the last entry is e + combining acute, the first is the precomposed form.
+      expect([..."Cafe\u0301"]).toHaveLength(5); // e + combining acute is two code points
+      expect([..."Caf\u00e9"]).toHaveLength(4);
       await saveDraft(doctor(), id, {
-        diagnosis: ["Viral fever", "viral  FEVER", " Viral\tfever ", "Café", "Café"],
+        diagnosis: ["Viral fever", "viral  FEVER", " Viral\tfever ", "Caf\u00e9", "Cafe\u0301"],
         investigations: [{ name: "Dengue NS1" }, { name: "dengue   ns1" }],
       });
       const rx = await read(id);
-      expect(rx.visit.diagnosis).toEqual(["Viral fever", "Café"]);
+      expect(rx.visit.diagnosis).toEqual(["Viral fever", "Caf\u00e9"]);
       expect(rx.visit.investigations).toEqual([{ name: "Dengue NS1" }]);
     });
 

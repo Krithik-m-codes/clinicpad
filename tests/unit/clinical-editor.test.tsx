@@ -270,3 +270,148 @@ describe("favourites", () => {
     expect(screen.getByRole("button", { name: "Remove favourite DOLO 650MG" })).toBeInTheDocument();
   });
 });
+
+describe("ClinicalEditor connection loss (final fix wave)", () => {
+  const CHECK_LATER = /could not confirm whether this was finalized\. your edits are kept; we will check again when the connection is back/i;
+  const setOnline = (value: boolean) => {
+    vi.spyOn(window.navigator, "onLine", "get").mockReturnValue(value);
+    act(() => {
+      window.dispatchEvent(new Event(value ? "online" : "offline"));
+    });
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("disables Finalize with a visible reason while the browser is offline", async () => {
+    renderEditor();
+    setOnline(false);
+    expect(screen.getByRole("button", { name: /^finalize$/i })).toBeDisabled();
+    expect(screen.getByText(/you are offline/i)).toBeInTheDocument();
+    setOnline(true);
+    expect(screen.getByRole("button", { name: /^finalize$/i })).toBeEnabled();
+    expect(screen.queryByText(/you are offline/i)).not.toBeInTheDocument();
+  });
+
+  it("does not refresh the page when the outcome is unknown and the connection is down; it checks again when back online", async () => {
+    const pending = deferred<unknown>();
+    mocks.finalize.mockReturnValue(pending.promise);
+    renderEditor();
+    type("kept");
+    clickFinalize();
+    await advance(0);
+    setOnline(false);
+    pending.resolve({ ok: false, code: "unreachable", message: "x" });
+    await advance(0);
+
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    expect(screen.getByText(CHECK_LATER)).toBeInTheDocument();
+    expect(screen.queryByText(/reloading/i)).not.toBeInTheDocument();
+
+    setOnline(true);
+    await advance(0);
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops listening for the connection when the editor goes away", async () => {
+    const pending = deferred<unknown>();
+    mocks.finalize.mockReturnValue(pending.promise);
+    const view = renderEditor();
+    clickFinalize();
+    await advance(0);
+    setOnline(false);
+    pending.resolve({ ok: false, code: "internal", message: "x" });
+    await advance(0);
+    view.unmount();
+    setOnline(true);
+    await advance(0);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh while the flush leaves edits unsaved, even when online", async () => {
+    mocks.autosave.mockResolvedValue(CONFLICT);
+    mocks.finalize.mockResolvedValue({ ok: false, code: "internal", message: "x" });
+    renderEditor();
+    type("kept");
+    clickFinalize();
+    await advance(0);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    expect(screen.getByText(CHECK_LATER)).toBeInTheDocument();
+  });
+
+  it("online with a clean flush refreshes straight away", async () => {
+    mocks.finalize.mockResolvedValue({ ok: false, code: "internal", message: "x" });
+    renderEditor();
+    type("kept");
+    clickFinalize();
+    await advance(0);
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ClinicalEditor finalize conflict (final fix wave)", () => {
+  it("a finalize conflict with nothing unsaved offers Keep / Load instead of leaving the doctor stuck", async () => {
+    mocks.finalize.mockResolvedValue(CONFLICT);
+    renderEditor();
+    clickFinalize();
+    await advance(0);
+    expect(screen.getByRole("button", { name: /keep my version/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /reload latest version/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^finalize$/i })).toBeDisabled();
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("ClinicalEditor leaving the page (final fix wave)", () => {
+  const INVALID = { ok: false, code: "invalid", message: "Pulse must be at most 250", field: "vitals" } as const;
+
+  function link() {
+    const a = document.createElement("a");
+    a.setAttribute("href", "/patients/p-1");
+    document.body.append(a);
+    return a;
+  }
+  const clickLink = (a: HTMLAnchorElement) => {
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    a.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+
+  afterEach(() => {
+    document.body.querySelectorAll("a[href='/patients/p-1']").forEach((a) => a.remove());
+  });
+
+  it("does not ask while edits are only pending (unmount sends them)", async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    renderEditor();
+    type("fresh");
+    expect(clickLink(link())).toBe(false);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("asks before leaving when saving is halted, and keeps the page when the doctor cancels", async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    mocks.autosave.mockResolvedValue(INVALID);
+    renderEditor();
+    type("bad");
+    await advance(1000);
+    expect(screen.getByText(/nothing since you opened this draft is saved/i)).toBeInTheDocument();
+    expect(clickLink(link())).toBe(true);
+    expect(confirm).toHaveBeenCalledWith("You have changes that are not saved. Leave anyway?");
+  });
+
+  it("never asks after a successful finalize", async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    mocks.finalize.mockResolvedValue({ ok: true, rxNo: 1 });
+    renderEditor();
+    type("done");
+    clickFinalize();
+    await advance(0);
+    expect(clickLink(link())).toBe(false);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+});

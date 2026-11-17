@@ -142,3 +142,43 @@ test("autosave survives a dropped connection and refuses to overwrite another wi
   await expect(page.getByLabel("Advice")).toHaveValue("Edited in window one");
   await other.close();
 });
+
+test("leaving the page: pending edits are sent on unmount, but a halted draft asks first", async ({ page }) => {
+  test.setTimeout(180_000);
+  const dialogs: string[] = [];
+  page.on("dialog", async (dialog) => {
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+  });
+  clinics.push(await registerClinic(page, "leave"));
+  const url = await newDraft(page, "Leave Patient");
+
+  // (a) A click on the patient link inside the debounce window: no prompt, and the edit is not lost.
+  await page.getByLabel("Advice").fill("Typed just before leaving");
+  await page.getByRole("link", { name: "Leave Patient" }).click();
+  await expect(page.getByRole("heading", { name: "Leave Patient" })).toBeVisible();
+  expect(dialogs).toEqual([]);
+  await expect(async () => {
+    await page.goto(url);
+    await waitForEditor(page);
+    await expect(page.getByLabel("Advice")).toHaveValue("Typed just before leaving", { timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
+
+  // (b) The server refuses the whole snapshot (Celsius typed into a Fahrenheit field): saving halts, and
+  // everything since the last save is unsaved. Leaving must ask first.
+  await page.getByLabel("Advice").fill("Written after the bad value");
+  await page.getByLabel("Temperature (°F)").fill("37.8");
+  await expect(page.getByText(/nothing since .* is saved/i)).toBeVisible({ timeout: 15_000 });
+  dialogs.length = 0;
+  await page.getByRole("link", { name: "Leave Patient" }).click();
+  await expect.poll(() => dialogs.length).toBe(1);
+  expect(dialogs[0]).toBe("You have changes that are not saved. Leave anyway?");
+  expect(page.url()).toBe(url);
+  await expect(page.getByLabel("Advice")).toHaveValue("Written after the bad value");
+
+  page.removeAllListeners("dialog");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("link", { name: "Leave Patient" }).click();
+  await expect(page.getByRole("heading", { name: "Leave Patient" })).toBeVisible();
+  expect(page.url()).not.toBe(url);
+});

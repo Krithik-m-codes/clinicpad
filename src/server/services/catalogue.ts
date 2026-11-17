@@ -236,7 +236,7 @@ export async function saveFavourite(ctx: ServiceContext, raw: unknown): Promise<
     const doctorId = await callerDoctorId(tx, ctx.userId);
     if (doctorId === null) return fail("invalid", NO_DOCTOR_PROFILE, "favourites");
     // Saves for one doctor take turns, so the count below cannot go stale between two concurrent saves.
-    await tx.select({ id: doctors.id }).from(doctors).where(eq(doctors.id, doctorId)).for("update");
+    await tx.select({ id: doctors.id }).from(doctors).where(eq(doctors.id, doctorId)).for("no key update");
     const [existing] = await tx
       .select({ id: medicineFavourites.id })
       .from(medicineFavourites)

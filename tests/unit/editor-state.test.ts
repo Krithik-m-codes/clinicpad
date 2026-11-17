@@ -158,6 +158,12 @@ describe("medicine row helpers", () => {
     });
   });
 
+  it("keeps a typed generic name when the hit has none", () => {
+    const row = { ...emptyMedicine(), genericName: "Paracetamol" };
+    const hit: MedicineHit = { source: "global", id: "g2", name: "CROCIN", genericName: null, favourite: null };
+    expect(applyHit(row, hit)).toMatchObject({ drugName: "CROCIN", genericName: "Paracetamol" });
+  });
+
   it("copies every field of an item or favourite into a row", () => {
     expect(medicineFrom(favourite, "k-fixed")).toEqual({
       key: "k-fixed",

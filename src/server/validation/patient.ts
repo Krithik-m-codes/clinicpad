@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { normalizePhone } from "@/lib/domain/phone";
-import { blankToUndefined, hasNoNul, NUL_MESSAGE, optionalText } from "./text";
+import { blankToUndefined, cleanInput, hasNoNul, NUL_MESSAGE, optionalText } from "./text";
 
 const EARLIEST_DOB = "1900-01-01";
 
@@ -19,16 +19,19 @@ const isoDate = z
 const list = z.preprocess(
   (value) => {
     if (value === undefined || value === null) return [];
-    if (typeof value === "string") return value.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
-    return value;
+    if (typeof value === "string") return value.split(/[,\n]/).map((s) => String(cleanInput(s)).trim()).filter(Boolean);
+    return Array.isArray(value) ? value.map(cleanInput) : value;
   },
   z.array(z.string().trim().min(1).max(80).refine(hasNoNul, NUL_MESSAGE)).max(20),
 );
 
 export const patientInputSchema = z.object({
-  name: z.string().trim().min(2, "Enter the patient's name").max(120).refine(hasNoNul, NUL_MESSAGE),
+  name: z.preprocess(
+    cleanInput,
+    z.string().trim().min(2, "Enter the patient's name").max(120).refine(hasNoNul, NUL_MESSAGE),
+  ),
   phone: z.preprocess(
-    blankToUndefined,
+    (value) => blankToUndefined(cleanInput(value)),
     z
       .string()
       .trim()

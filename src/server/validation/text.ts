@@ -8,9 +8,6 @@ export const NUL_MESSAGE = "Text contains an invalid character";
 export const blankToUndefined = (value: unknown) =>
   typeof value === "string" && value.trim() === "" ? undefined : value;
 
-/** Trimmed, length-limited text without NUL characters; blank means absent. */
-export const optionalText = (max: number) =>
-  z.preprocess(blankToUndefined, z.string().trim().max(max).refine(hasNoNul, NUL_MESSAGE).optional());
 
 /**
  * Plan 1B text cleaning before validation: NFC, CR/CRLF to LF, stray control characters removed
@@ -19,6 +16,10 @@ export const optionalText = (max: number) =>
  */
 export const cleanInput = (value: unknown) =>
   typeof value === "string" && hasNoNul(value) ? cleanText(value) : value;
+
+/** Cleaned (cleanInput), trimmed, length-limited text without NUL characters; blank means absent. */
+export const optionalText = (max: number) =>
+  z.preprocess((value) => blankToUndefined(cleanInput(value)), z.string().trim().max(max).refine(hasNoNul, NUL_MESSAGE).optional());
 
 /** Cleaned, trimmed, length-limited text without NUL; blank (after cleaning) means absent. */
 export const cleanOptionalText = (max: number) =>

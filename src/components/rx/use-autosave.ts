@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createAutosaver, outcomeFromResponse, type Autosaver, type AutosaveStatus } from "@/lib/rx/autosave";
+import { installLeaveGuard } from "./use-leave-guard";
 import { toDraftPayload, type EditorState } from "@/lib/rx/editor-state";
 import { autosaveDraftAction, finalizeDraftAction, type FinalizeResponse } from "@/server/actions/drafts";
 
@@ -9,7 +10,10 @@ import { autosaveDraftAction, finalizeDraftAction, type FinalizeResponse } from 
 export const FINALIZE_TIMEOUT_MS = 45_000;
 /** The server may have finalized even though no answer arrived, so never claim it did not. */
 export const COULD_NOT_CONFIRM_MESSAGE =
-  "Could not confirm that the prescription was finalized. Reloading its current state; if it is still a draft, try again.";
+  "Could not confirm that the prescription was finalized. Your edits are kept; if it is still a draft, try again.";
+/** Shown while the outcome cannot be read yet (offline, or edits that could not be saved). */
+export const CHECK_LATER_MESSAGE =
+  "Could not confirm whether this was finalized. Your edits are kept; we will check again when the connection is back.";
 
 /** Failure codes after which the prescription may or may not have been finalized. */
 export function isUnknownOutcome(code: string): boolean {
@@ -62,6 +66,7 @@ export function useAutosave(prescriptionId: string, initial: EditorState, initia
     saverRef.current = saver;
     setReady(true);
 
+    const timers = finalizeTimers.current;
     const onOnline = () => saver.retryNow();
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!saver.hasUnsavedChanges()) return;
@@ -70,9 +75,12 @@ export function useAutosave(prescriptionId: string, initial: EditorState, initia
     };
     window.addEventListener("online", onOnline);
     window.addEventListener("beforeunload", onBeforeUnload);
+    // Soft navigation (links, back/forward) never fires beforeunload, and a halted engine cannot save on unmount.
+    const removeLeaveGuard = installLeaveGuard(() => saver.wouldLoseEditsOnLeave());
     return () => {
-      for (const timer of finalizeTimers.current) clearTimeout(timer);
-      finalizeTimers.current.clear();
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+      removeLeaveGuard();
       window.removeEventListener("online", onOnline);
       window.removeEventListener("beforeunload", onBeforeUnload);
       // Keep-safe teardown: one last best-effort save when edits are unsaved.
@@ -105,9 +113,18 @@ export function useAutosave(prescriptionId: string, initial: EditorState, initia
         } catch {
           res = { ok: false, code: "unreachable", message: COULD_NOT_CONFIRM_MESSAGE };
         }
-        return res.ok
-          ? { revision: null, value: res }
-          : { revision: typeof res.revision === "number" ? res.revision : null, savedAt: res.savedAt, value: res };
+        if (res.ok) return { revision: null, value: res };
+        // A newer revision on the server: halt in the conflict state so the doctor can keep or load.
+        const conflict =
+          res.code === "conflict" && typeof res.currentRevision === "number"
+            ? { currentRevision: res.currentRevision, message: res.message }
+            : undefined;
+        return {
+          revision: typeof res.revision === "number" ? res.revision : null,
+          savedAt: res.savedAt,
+          ...(conflict ? { conflict } : {}),
+          value: res,
+        };
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message.replace(/\.$/, "") : "unknown reason";
