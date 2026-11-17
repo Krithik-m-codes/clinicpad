@@ -9,9 +9,14 @@ import { amendReasonSchema, draftInputSchema } from "@/server/validation/prescri
 import type { ServiceContext } from "./context";
 import { allocateNumber } from "./numbering";
 import { recordAudit } from "./audit";
+import { buildRenderSnapshot } from "./render-snapshot";
+import { parseRenderSnapshot } from "@/lib/rx-render/snapshot";
 import {
+  AMEND_PRESCRIPTION_COLUMNS,
+  REPEAT_PRESCRIPTION_COLUMNS,
   amendVisitValues,
   clinicalSummary,
+  copiedColumns,
   copyItems,
   itemValues,
   repeatVisitValues,
@@ -34,7 +39,7 @@ export type PrescriptionView = {
   amendmentReason: string | null;
   parentPrescriptionId: string | null;
   finalizedAt: Date | null;
-  /** Read live from the patient row (Plan 1C snapshots it at finalize); allergies are [] when none. */
+  /** Read live from the patient row (allergies are [] when none). The page shows the name frozen in the finalize snapshot for finalized versions (Plan 1C). */
   patient: { id: string; name: string; patientNo: number | null; allergies: string[] };
   visit: ClinicalVisitView;
   items: ItemView[];
@@ -178,22 +183,28 @@ async function readSnapshot(tx: TenantTx, id: string): Promise<Result<Prescripti
   });
 }
 
+/** A revision counter the caller must send back: a non-negative integer. */
+function isRevision(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 /**
- * Saves a full draft snapshot. With `baseRevision` the save succeeds only if the stored
- * draft is still at that revision; otherwise it returns `conflict` with the current
- * revision and changes nothing. The row lock serializes concurrent saves, so of two saves
+ * Saves a full draft snapshot. `baseRevision` (the revision the caller last saw) is required: the save
+ * succeeds only if the stored draft is still at that revision; otherwise it returns `conflict` with the
+ * current revision and changes nothing. The row lock serializes concurrent saves, so of two saves
  * from the same revision exactly one wins and items are never mixed.
  */
 export async function saveDraft(
   ctx: ServiceContext,
   id: string,
   raw: unknown,
-  opts: { baseRevision?: number } = {},
+  opts: { baseRevision: number },
 ): Promise<SaveDraftResult> {
   if (!can(ctx.role, "rx.draft")) return fail("forbidden", "Only doctors can edit prescriptions.");
   if (!isUuid(id)) return prescriptionNotFound();
-  const { baseRevision } = opts;
-  if (baseRevision !== undefined && (!Number.isInteger(baseRevision) || baseRevision < 0)) {
+  // Required by the type; the guard also covers callers that bypass the types (a missing or malformed value).
+  const baseRevision: unknown = (opts as { baseRevision?: unknown } | undefined)?.baseRevision;
+  if (!isRevision(baseRevision)) {
     return fail("invalid", "The draft revision is not valid. Reload the page.", "baseRevision");
   }
   const parsed = draftInputSchema.safeParse(raw);
@@ -217,7 +228,7 @@ export async function saveDraft(
       if (rx.status !== "draft") {
         return fail("immutable", "This prescription is finalized. Amend it to make changes.");
       }
-      if (baseRevision !== undefined && baseRevision !== rx.draftRevision) {
+      if (baseRevision !== rx.draftRevision) {
         return {
           ok: false,
           code: "conflict",
@@ -291,10 +302,15 @@ const OPEN_AMENDMENT_INDEX = "prescriptions_one_open_amendment";
 export async function finalizePrescription(
   ctx: ServiceContext,
   id: string,
-  opts: { expectedRevision?: number } = {},
+  opts: { expectedRevision: number },
 ): Promise<Result<{ rxNo: number; version: number }>> {
   if (!can(ctx.role, "rx.finalize")) return fail("forbidden", "Only doctors can finalize prescriptions.");
   if (!isUuid(id)) return prescriptionNotFound();
+  // Required by the type; the guard also covers callers that bypass the types (a missing or malformed value).
+  const expectedRevision: unknown = (opts as { expectedRevision?: unknown } | undefined)?.expectedRevision;
+  if (!isRevision(expectedRevision)) {
+    return fail("invalid", "The draft revision is not valid. Reload the page.", "expectedRevision");
+  }
 
   try {
     return await withTenant(ctx.tenantId, async (tx): Promise<Result<{ rxNo: number; version: number }>> => {
@@ -306,7 +322,7 @@ export async function finalizePrescription(
       if (!rx) return prescriptionNotFound();
       if (rx.status !== "draft") return fail("conflict", "This prescription is already finalized.");
       // Finalize exactly the revision the doctor saw: a save from another window in between wins.
-      if (opts.expectedRevision !== undefined && rx.draftRevision !== opts.expectedRevision) {
+      if (rx.draftRevision !== expectedRevision) {
         return fail("conflict", "This draft changed after you last saw it. Review it, then finalize again.");
       }
 
@@ -316,6 +332,26 @@ export async function finalizePrescription(
         .where(eq(prescriptionItems.prescriptionId, id));
       if (itemCount === 0) return fail("invalid", "Add at least one medicine before finalizing.", "items");
       const [visit] = await tx.select().from(visits).where(eq(visits.id, rx.visitId)).limit(1);
+      const now = new Date();
+
+      // Plan 1C (ADR-0032): freeze what the printed pad shows. Plain reads under the row lock, no new locks, and
+      // built BEFORE the number is allocated so a failure here burns no Rx number. The finalizing user signs: their
+      // own doctor profile or none, never the visit's doctor. The value is always a concrete, validated object that
+      // the UPDATE below writes unconditionally, so a stale draft-time value can never be frozen.
+      const built = await buildRenderSnapshot(tx, {
+        patientId: visit.patientId,
+        prescriberUserId: ctx.userId,
+        visitDoctorId: visit.doctorId,
+        at: now,
+      });
+      const renderSnapshot = parseRenderSnapshot(built);
+      // An empty patient name means the patient row was not visible (patients.name is NOT NULL).
+      if (!renderSnapshot || renderSnapshot.patient.name === "") {
+        return fail(
+          "invalid",
+          "The patient, clinic, or doctor details cannot be printed as they are. Check the clinic profile and the patient record, then finalize again.",
+        );
+      }
 
       // First versions (no parent) get the next number; amendments must already carry their parent's.
       // An amendment without a number means a corrupt chain: refuse rather than allocate a second number
@@ -329,11 +365,10 @@ export async function finalizePrescription(
       } else {
         rxNo = rx.rxNo;
       }
-      const now = new Date();
 
       await tx
         .update(prescriptions)
-        .set({ status: "finalized", rxNo, finalizedAt: now, finalizedBy: ctx.userId })
+        .set({ status: "finalized", rxNo, finalizedAt: now, finalizedBy: ctx.userId, renderSnapshot })
         .where(eq(prescriptions.id, id));
       // Only status and finalized_at may change on a visit whose prescription is already finalized.
       await tx.update(visits).set({ status: "finalized", finalizedAt: now }).where(eq(visits.id, rx.visitId));
@@ -400,14 +435,15 @@ export async function amendPrescription(
       const [rx] = await tx
         .insert(prescriptions)
         .values({
+          // rxNo and templateVersionId are the only copied columns (AMEND_PRESCRIPTION_COLUMNS); the new
+          // version never inherits the frozen render_snapshot.
+          ...copiedColumns(source, AMEND_PRESCRIPTION_COLUMNS),
           tenantId: ctx.tenantId,
           visitId: newVisit.id,
-          rxNo: source.rxNo,
           version: source.version + 1,
           status: "draft",
           parentPrescriptionId: source.id,
           amendmentReason: reason.data,
-          templateVersionId: source.templateVersionId,
         })
         .returning({ id: prescriptions.id, version: prescriptions.version });
       await copyItems(tx, ctx, source.id, rx.id);
@@ -473,7 +509,14 @@ export async function repeatPrescription(
       .returning({ id: visits.id });
     const [rx] = await tx
       .insert(prescriptions)
-      .values({ tenantId: ctx.tenantId, visitId: newVisit.id, status: "draft", version: 1 })
+      .values({
+        // A repeat carries nothing over from the source prescription (REPEAT_PRESCRIPTION_COLUMNS), least of all its snapshot.
+        ...copiedColumns(source, REPEAT_PRESCRIPTION_COLUMNS),
+        tenantId: ctx.tenantId,
+        visitId: newVisit.id,
+        status: "draft",
+        version: 1,
+      })
       .returning({ id: prescriptions.id });
     await copyItems(tx, ctx, source.id, rx.id);
     await recordAudit(tx, ctx, {

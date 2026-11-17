@@ -3,13 +3,8 @@ import { eq } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
 import { prescriptions, visits } from "@/server/db/schema";
 import { createPatient } from "@/server/services/patients";
-import {
-  amendPrescription,
-  finalizePrescription,
-  getPrescription,
-  saveDraft,
-  startPrescription,
-} from "@/server/services/prescriptions";
+import { amendPrescription, getPrescription, startPrescription } from "@/server/services/prescriptions";
+import { finalizeNow, saveDraftNow } from "../helpers/rx";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
 // The validation layer is replaced with a pass-through so that inputs it would normally refuse reach
@@ -64,9 +59,9 @@ describe("saveDraft database input errors", () => {
 
   it("maps invalid byte sequence (22021) to invalid and keeps the previous draft", async () => {
     const id = await startDraft();
-    expect((await saveDraft(doctor(), id, goodDraft)).ok).toBe(true);
+    expect((await saveDraftNow(doctor(), id, goodDraft)).ok).toBe(true);
 
-    const result = await saveDraft(doctor(), id, { ...goodDraft, advice: `bad${NUL}advice`, items: [{ drugName: "Changed" }] });
+    const result = await saveDraftNow(doctor(), id, { ...goodDraft, advice: `bad${NUL}advice`, items: [{ drugName: "Changed" }] });
     expect(result).toMatchObject({ ok: false, code: "invalid" });
 
     const got = await getPrescription(doctor(), id);
@@ -76,7 +71,7 @@ describe("saveDraft database input errors", () => {
 
   it("maps a NUL inside a text[] column (diagnosis) the same way", async () => {
     const id = await startDraft();
-    expect(await saveDraft(doctor(), id, { ...goodDraft, diagnosis: [`bad${NUL}`] })).toMatchObject({
+    expect(await saveDraftNow(doctor(), id, { ...goodDraft, diagnosis: [`bad${NUL}`] })).toMatchObject({
       ok: false,
       code: "invalid",
     });
@@ -88,9 +83,9 @@ describe("saveDraft database input errors", () => {
   ])("maps a lone surrogate Postgres jsonb rejects (%s) to invalid and keeps the previous draft", async (_name, extra) => {
     expect("\ud800").toHaveLength(1);
     const id = await startDraft();
-    expect((await saveDraft(doctor(), id, goodDraft)).ok).toBe(true);
+    expect((await saveDraftNow(doctor(), id, goodDraft)).ok).toBe(true);
 
-    expect(await saveDraft(doctor(), id, { ...goodDraft, advice: "Changed", ...extra })).toMatchObject({
+    expect(await saveDraftNow(doctor(), id, { ...goodDraft, advice: "Changed", ...extra })).toMatchObject({
       ok: false,
       code: "invalid",
     });
@@ -100,9 +95,9 @@ describe("saveDraft database input errors", () => {
 
   it.each(["0000-01-01", "2026-02-30"])("maps a date Postgres rejects (%s) to invalid on followUpDate", async (date) => {
     const id = await startDraft();
-    expect((await saveDraft(doctor(), id, goodDraft)).ok).toBe(true);
+    expect((await saveDraftNow(doctor(), id, goodDraft)).ok).toBe(true);
 
-    expect(await saveDraft(doctor(), id, { ...goodDraft, followUpDate: date })).toMatchObject({
+    expect(await saveDraftNow(doctor(), id, { ...goodDraft, followUpDate: date })).toMatchObject({
       ok: false,
       code: "invalid",
       field: "followUpDate",
@@ -115,13 +110,13 @@ describe("saveDraft database input errors", () => {
     const id = await startDraft();
     const [rx] = await adminDb.select({ visitId: prescriptions.visitId }).from(prescriptions).where(eq(prescriptions.id, id));
     await adminDb.update(visits).set({ status: "finalized", finalizedAt: new Date() }).where(eq(visits.id, rx.visitId));
-    expect(await saveDraft(doctor(), id, goodDraft)).toMatchObject({ ok: false, code: "immutable" });
+    expect(await saveDraftNow(doctor(), id, goodDraft)).toMatchObject({ ok: false, code: "immutable" });
 
     // An unmapped database error (integer overflow, 22003) must still surface as a thrown error,
     // never as a quiet failure result.
     const id2 = await startDraft();
     await expect(
-      saveDraft(doctor(), id2, { ...goodDraft, items: [{ drugName: "X", durationDays: 2 ** 40 }] }),
+      saveDraftNow(doctor(), id2, { ...goodDraft, items: [{ drugName: "X", durationDays: 2 ** 40 }] }),
     ).rejects.toBeDefined();
   });
 });
@@ -129,8 +124,8 @@ describe("saveDraft database input errors", () => {
 describe("amendPrescription database input errors", () => {
   it("maps a NUL in the reason (22021) to invalid on reason and creates no amendment", async () => {
     const id = await startDraft();
-    expect((await saveDraft(doctor(), id, goodDraft)).ok).toBe(true);
-    expect((await finalizePrescription(doctor(), id)).ok).toBe(true);
+    expect((await saveDraftNow(doctor(), id, goodDraft)).ok).toBe(true);
+    expect((await finalizeNow(doctor(), id)).ok).toBe(true);
 
     const before = await adminDb.select({ id: prescriptions.id }).from(prescriptions).where(eq(prescriptions.tenantId, A.tenantId));
     const result = await amendPrescription(doctor(), { prescriptionId: id, reason: `Wrong${NUL} dose` });

@@ -17,10 +17,19 @@ const pk = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
 const createdAt = () =>
   timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 
-/** Raw bytes (postgres-js returns bytea as a Buffer). */
-const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+/**
+ * Raw bytes. postgres-js returns bytea as a Buffer, but it sends an untyped Buffer parameter as raw text
+ * (a NUL byte, as in any PNG, then fails with 22021), so writes go as bytea hex text (`\x...`).
+ */
+const bytea = customType<{ data: Buffer; driverData: Buffer | string }>({
   dataType() {
     return "bytea";
+  },
+  toDriver(value) {
+    return `\\x${value.toString("hex")}`;
+  },
+  fromDriver(value) {
+    return typeof value === "string" ? Buffer.from(value.replace(/^\\x/, ""), "hex") : value;
   },
 });
 

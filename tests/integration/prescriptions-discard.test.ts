@@ -4,17 +4,10 @@ import { adminDb } from "@/server/db/admin";
 import { withTenant } from "@/server/db/tenant";
 import { auditEvents, prescriptionItems, prescriptions, tenantCounters, visits } from "@/server/db/schema";
 import { createPatient } from "@/server/services/patients";
-import {
-  amendPrescription,
-  discardDraft,
-  finalizePrescription,
-  getPrescription,
-  repeatPrescription,
-  saveDraft,
-  startPrescription,
-} from "@/server/services/prescriptions";
+import { amendPrescription, discardDraft, getPrescription, repeatPrescription, startPrescription } from "@/server/services/prescriptions";
 import { newId } from "@/lib/domain/ids";
 import postgres from "postgres";
+import { finalizeNow, saveDraftNow } from "../helpers/rx";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
 const connectionString = process.env.ADMIN_DATABASE_URL ?? process.env.DIRECT_URL ?? process.env.DATABASE_URL;
@@ -93,7 +86,7 @@ async function draftWithItem(): Promise<{ id: string; visitId: string }> {
   const started = await startPrescription(doctor(), { patientId });
   if (!started.ok) throw new Error(started.message);
   const id = started.value.prescriptionId;
-  const saved = await saveDraft(doctor(), id, { items: [{ drugName: "Paracetamol" }] });
+  const saved = await saveDraftNow(doctor(), id, { items: [{ drugName: "Paracetamol" }] });
   if (!saved.ok) throw new Error(saved.message);
   const [row] = await adminDb.select({ visitId: prescriptions.visitId }).from(prescriptions).where(eq(prescriptions.id, id));
   return { id, visitId: row.visitId };
@@ -101,7 +94,7 @@ async function draftWithItem(): Promise<{ id: string; visitId: string }> {
 
 async function finalized(): Promise<string> {
   const { id } = await draftWithItem();
-  const done = await finalizePrescription(doctor(), id);
+  const done = await finalizeNow(doctor(), id);
   if (!done.ok) throw new Error(done.message);
   return id;
 }
@@ -162,7 +155,7 @@ describe("discardDraft", () => {
     const original = await finalized();
     const amended = await amendPrescription(doctor(), { prescriptionId: original, reason: "Correct the dose" });
     if (!amended.ok) throw new Error(amended.message);
-    expect(await finalizePrescription(doctor(), amended.value.prescriptionId)).toMatchObject({ ok: true });
+    expect(await finalizeNow(doctor(), amended.value.prescriptionId)).toMatchObject({ ok: true });
 
     const visitIds = new Map<string, string>();
     for (const id of [original, amended.value.prescriptionId]) {
@@ -219,7 +212,7 @@ describe("discardDraft", () => {
     for (let round = 0; round < 3; round += 1) {
       const { id, visitId } = await draftWithItem();
       const before = await rxCounter();
-      const [discarded, done] = await Promise.all([discardDraft(doctor(), id), finalizePrescription(doctor(), id)]);
+      const [discarded, done] = await Promise.all([discardDraft(doctor(), id), finalizeNow(doctor(), id)]);
       expect([discarded.ok, done.ok].filter(Boolean)).toHaveLength(1);
       if (done.ok) {
         expect(discarded).toMatchObject({ ok: false, code: "immutable" });
@@ -265,7 +258,7 @@ describe("discardDraft and finalizePrescription wait for the row lock (determini
     });
     try {
       await holder.ready;
-      const finalize = finalizePrescription(doctor(), id);
+      const finalize = finalizeNow(doctor(), id);
       expect(await settledWithin(finalize, 600), "the finalize must wait for the row lock").toBe(PENDING);
 
       await holder.commit();

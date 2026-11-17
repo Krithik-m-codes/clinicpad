@@ -5,13 +5,9 @@ import { adminDb } from "@/server/db/admin";
 import { auditEvents, doctors, prescriptions, visits } from "@/server/db/schema";
 import type { ServiceContext } from "@/server/services/context";
 import { archivePatient, createPatient } from "@/server/services/patients";
-import {
-  getPrescription,
-  listPrescriptionsForPatient,
-  saveDraft,
-  startPrescription,
-} from "@/server/services/prescriptions";
+import { getPrescription, listPrescriptionsForPatient, startPrescription } from "@/server/services/prescriptions";
 import { newId } from "@/lib/domain/ids";
+import { saveDraftNow } from "../helpers/rx";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
 let A: TestTenant;
@@ -89,7 +85,7 @@ describe("startPrescription", () => {
     expect(await visitDoctorId(profileless)).toBeNull();
     const id = await startPrescription(profileless, { patientId });
     if (!id.ok) throw new Error(id.message);
-    expect((await saveDraft(profileless, id.value.prescriptionId, draft())).ok).toBe(true);
+    expect((await saveDraftNow(profileless, id.value.prescriptionId, draft())).ok).toBe(true);
   });
 
   it("returns not_found for unknown, malformed, other-clinic, and archived patients", async () => {
@@ -117,7 +113,7 @@ describe("startPrescription", () => {
 describe("saveDraft", () => {
   it("stores visit fields and items in order, and replaces them on the next save", async () => {
     const id = await start();
-    const saved = await saveDraft(
+    const saved = await saveDraftNow(
       A.as("doctor"),
       id,
       draft([
@@ -137,14 +133,14 @@ describe("saveDraft", () => {
     expect(first.value.items.map((i) => i.drugName)).toEqual(["Paracetamol", "Cetirizine"]);
     expect(first.value.items[0]).toMatchObject({ strength: "500 mg", durationDays: 3 });
 
-    await saveDraft(A.as("doctor"), id, draft([{ drugName: "Azithromycin" }]));
+    await saveDraftNow(A.as("doctor"), id, draft([{ drugName: "Azithromycin" }]));
     const second = await getPrescription(A.as("doctor"), id);
     expect(second.ok && second.value.items.map((i) => i.drugName)).toEqual(["Azithromycin"]);
   });
 
   it("allows saving an empty draft and treats blank strings as absent", async () => {
     const id = await start();
-    const saved = await saveDraft(A.as("doctor"), id, {
+    const saved = await saveDraftNow(A.as("doctor"), id, {
       chiefComplaint: "",
       advice: "",
       followUpDate: "",
@@ -164,7 +160,7 @@ describe("saveDraft", () => {
     [{ visitType: "surgery" }, "visitType"],
   ])("rejects invalid input %j", async (input, field) => {
     const id = await start();
-    expect(await saveDraft(A.as("doctor"), id, input)).toMatchObject({ ok: false, code: "invalid", field });
+    expect(await saveDraftNow(A.as("doctor"), id, input)).toMatchObject({ ok: false, code: "invalid", field });
   });
 
   describe("a NUL character in free text", () => {
@@ -191,9 +187,9 @@ describe("saveDraft", () => {
       ["advice", "advice", (v: string) => ({ advice: v })],
     ])("is refused in %s as invalid and writes nothing", async (_name, field, build) => {
       const id = await start();
-      expect((await saveDraft(A.as("doctor"), id, draft([{ drugName: "Original" }]))).ok).toBe(true);
+      expect((await saveDraftNow(A.as("doctor"), id, draft([{ drugName: "Original" }]))).ok).toBe(true);
 
-      const result = await saveDraft(A.as("doctor"), id, build(`bad${NUL}text`));
+      const result = await saveDraftNow(A.as("doctor"), id, build(`bad${NUL}text`));
       expect(result).toMatchObject({ ok: false, code: "invalid", field });
 
       const got = await getPrescription(A.as("doctor"), id);
@@ -206,8 +202,8 @@ describe("saveDraft", () => {
   describe("follow-up date range", () => {
     it.each(["0000-01-01", "1899-12-31", "2101-01-01", "2026-02-30"])("refuses %s as invalid and writes nothing", async (date) => {
       const id = await start();
-      expect((await saveDraft(A.as("doctor"), id, draft())).ok).toBe(true);
-      expect(await saveDraft(A.as("doctor"), id, { ...draft([{ drugName: "Changed" }]), followUpDate: date })).toMatchObject({
+      expect((await saveDraftNow(A.as("doctor"), id, draft())).ok).toBe(true);
+      expect(await saveDraftNow(A.as("doctor"), id, { ...draft([{ drugName: "Changed" }]), followUpDate: date })).toMatchObject({
         ok: false,
         code: "invalid",
         field: "followUpDate",
@@ -219,7 +215,7 @@ describe("saveDraft", () => {
 
     it.each(["1900-01-01", "2026-12-01", "2100-12-31"])("accepts %s", async (date) => {
       const id = await start();
-      expect((await saveDraft(A.as("doctor"), id, { ...draft(), followUpDate: date })).ok).toBe(true);
+      expect((await saveDraftNow(A.as("doctor"), id, { ...draft(), followUpDate: date })).ok).toBe(true);
       const got = await getPrescription(A.as("doctor"), id);
       expect(got.ok && got.value.visit.followUpDate).toBe(date);
     });
@@ -227,10 +223,10 @@ describe("saveDraft", () => {
 
   it("refuses a finalized prescription as immutable and leaves it untouched", async () => {
     const id = await start();
-    await saveDraft(A.as("doctor"), id, draft());
+    await saveDraftNow(A.as("doctor"), id, draft());
     await adminDb.update(prescriptions).set({ status: "finalized", finalizedAt: new Date() }).where(eq(prescriptions.id, id));
 
-    expect(await saveDraft(A.as("doctor"), id, draft([{ drugName: "Changed" }]))).toMatchObject({
+    expect(await saveDraftNow(A.as("doctor"), id, draft([{ drugName: "Changed" }]))).toMatchObject({
       ok: false,
       code: "immutable",
     });
@@ -245,26 +241,26 @@ describe("saveDraft", () => {
     const [rx] = await adminDb.select({ visitId: prescriptions.visitId }).from(prescriptions).where(eq(prescriptions.id, id));
     await adminDb.update(visits).set({ status: "finalized", finalizedAt: new Date() }).where(eq(visits.id, rx.visitId));
 
-    expect(await saveDraft(A.as("doctor"), id, draft())).toMatchObject({ ok: false, code: "immutable" });
+    expect(await saveDraftNow(A.as("doctor"), id, draft())).toMatchObject({ ok: false, code: "immutable" });
   });
 
   it.each(["reception", "nurse", "accountant", "pharmacist"])("forbids %s from saving a draft", async (role) => {
     const id = await start();
-    expect(await saveDraft(A.as(role), id, draft())).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await saveDraftNow(A.as(role), id, draft())).toMatchObject({ ok: false, code: "forbidden" });
     const got = await getPrescription(A.as("doctor"), id);
     expect(got.ok && got.value.items).toEqual([]);
   });
 
   it.each(["owner", "doctor"])("lets %s save a draft", async (role) => {
     const id = await start();
-    expect((await saveDraft(A.as(role), id, draft())).ok).toBe(true);
+    expect((await saveDraftNow(A.as(role), id, draft())).ok).toBe(true);
   });
 
   it("hides other clinics' drafts, and treats malformed and unknown ids as not found", async () => {
     const id = await start();
-    expect(await saveDraft(B.as("doctor"), id, draft())).toMatchObject({ ok: false, code: "not_found" });
-    expect(await saveDraft(A.as("doctor"), "not-a-uuid", draft())).toMatchObject({ ok: false, code: "not_found" });
-    expect(await saveDraft(A.as("doctor"), newId(), draft())).toMatchObject({ ok: false, code: "not_found" });
+    expect(await saveDraftNow(B.as("doctor"), id, draft())).toMatchObject({ ok: false, code: "not_found" });
+    expect(await saveDraftNow(A.as("doctor"), "not-a-uuid", draft())).toMatchObject({ ok: false, code: "not_found" });
+    expect(await saveDraftNow(A.as("doctor"), newId(), draft())).toMatchObject({ ok: false, code: "not_found" });
   });
 });
 

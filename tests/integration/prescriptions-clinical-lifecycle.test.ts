@@ -4,6 +4,7 @@ import { adminDb } from "@/server/db/admin";
 import { withTenant } from "@/server/db/tenant";
 import { auditEvents, tenantCounters } from "@/server/db/schema";
 import { createPatient } from "@/server/services/patients";
+import type { ServiceContext } from "@/server/services/context";
 import {
   amendPrescription,
   finalizePrescription,
@@ -100,23 +101,29 @@ describe("finalizePrescription with revisions", () => {
     expect(await finalizePrescription(doctor(), id, { expectedRevision: 1 })).toMatchObject({ ok: true });
   });
 
-  it("still finalizes without an expected revision (Plan 1A callers)", async () => {
+  it("requires the revision the doctor saw", async () => {
     const id = await savedDraft();
-    expect((await finalizePrescription(doctor(), id)).ok).toBe(true);
+    // The type makes it required; this proves the runtime guard for callers that bypass the types.
+    const untyped = finalizePrescription as (ctx: ServiceContext, id: string, opts?: unknown) => ReturnType<typeof finalizePrescription>;
+    expect(await untyped(doctor(), id)).toMatchObject({ ok: false, code: "invalid", field: "expectedRevision" });
+    expect(await untyped(doctor(), id, {})).toMatchObject({ ok: false, code: "invalid", field: "expectedRevision" });
+    expect(await untyped(doctor(), id, { expectedRevision: -1 })).toMatchObject({ ok: false, code: "invalid", field: "expectedRevision" });
+    expect(await untyped(doctor(), id, { expectedRevision: 1.5 })).toMatchObject({ ok: false, code: "invalid", field: "expectedRevision" });
+    expect((await read(id)).status).toBe("draft");
   });
 
   it("audits counts and field names, never the clinical text", async () => {
     const id = await finalized();
     const event = (await auditFor(id)).find((e) => e.action === "prescription.finalized");
-    expect(event?.after).toMatchObject({
+    // The whole payload, not a subset: only ids, counts and field names. A new key (or any text) fails this.
+    expect(event?.after).toEqual({
+      rxNo: expect.any(Number),
       version: 1,
       itemCount: 2,
       diagnosisCount: 1,
       investigationCount: 2,
       vitalsRecorded: ["bpDiastolic", "bpSystolic", "pulse", "spo2"],
-    });
-    expect((event?.after as { filledFields: string[] }).filledFields).toEqual(
-      expect.arrayContaining([
+      filledFields: [
         "chiefComplaint",
         "complaints",
         "diagnosis",
@@ -128,8 +135,8 @@ describe("finalizePrescription with revisions", () => {
         "advice",
         "followUpDate",
         "followUpReason",
-      ]),
-    );
+      ],
+    });
     expect(JSON.stringify(event)).not.toContain(secret);
   });
 });
@@ -167,7 +174,28 @@ describe("amendPrescription copies the whole clinical record", () => {
     const done = await finalizePrescription(doctor(), amended.value.prescriptionId, { expectedRevision: 0 });
     expect(done).toMatchObject({ ok: true, value: { version: 2 } });
     const event = (await auditFor(amended.value.prescriptionId)).find((e) => e.action === "prescription.amended");
-    expect(event?.after).toMatchObject({ version: 2, parentPrescriptionId: id, itemCount: 2, investigationCount: 2 });
+    expect(event?.after).toEqual({
+      rxNo: expect.any(Number),
+      version: 2,
+      parentPrescriptionId: id,
+      itemCount: 2,
+      diagnosisCount: 1,
+      investigationCount: 2,
+      vitalsRecorded: ["bpDiastolic", "bpSystolic", "pulse", "spo2"],
+      filledFields: [
+        "chiefComplaint",
+        "complaints",
+        "diagnosis",
+        "medicalHistory",
+        "drugHistory",
+        "examinationNotes",
+        "vitals",
+        "investigations",
+        "advice",
+        "followUpDate",
+        "followUpReason",
+      ],
+    });
     expect(JSON.stringify(event)).not.toContain(secret);
   });
 });

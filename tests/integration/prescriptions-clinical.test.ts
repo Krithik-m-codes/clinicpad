@@ -1,11 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { ServiceContext } from "@/server/services/context";
 import { createPatient } from "@/server/services/patients";
-import {
-  finalizePrescription,
-  getPrescription,
-  saveDraft,
-  startPrescription,
-} from "@/server/services/prescriptions";
+import { getPrescription, saveDraft, startPrescription } from "@/server/services/prescriptions";
+import { finalizeNow, saveDraftNow } from "../helpers/rx";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
 let A: TestTenant;
@@ -86,7 +83,7 @@ async function read(id: string) {
 describe("saveDraft with the clinical form", () => {
   it("stores and returns every clinical field", async () => {
     const id = await start();
-    expect(await saveDraft(doctor(), id, fullDraft())).toMatchObject({ ok: true, value: { revision: 1 } });
+    expect(await saveDraftNow(doctor(), id, fullDraft())).toMatchObject({ ok: true, value: { revision: 1 } });
 
     const got = await getPrescription(A.as("nurse"), id); // nurses can read
     if (!got.ok) throw new Error(got.message);
@@ -131,7 +128,7 @@ describe("saveDraft with the clinical form", () => {
 
   it("still accepts the Plan 1A item shape and reads it as a duration in days", async () => {
     const id = await start();
-    await saveDraft(doctor(), id, { items: [{ drugName: "Paracetamol", timing: "TDS", durationDays: 3 }] });
+    await saveDraftNow(doctor(), id, { items: [{ drugName: "Paracetamol", timing: "TDS", durationDays: 3 }] });
     expect((await read(id)).items[0]).toMatchObject({
       timing: "TDS",
       durationValue: 3,
@@ -143,7 +140,7 @@ describe("saveDraft with the clinical form", () => {
 
   it("drops repeated phrases ignoring case and keeps the first spelling", async () => {
     const id = await start();
-    await saveDraft(doctor(), id, { complaints: ["Fever", "fever", " FEVER ", "Cough"], investigations: [{ name: "CBC" }, { name: "cbc" }] });
+    await saveDraftNow(doctor(), id, { complaints: ["Fever", "fever", " FEVER ", "Cough"], investigations: [{ name: "CBC" }, { name: "cbc" }] });
     const rx = await read(id);
     expect(rx.visit.complaints).toEqual(["Fever", "Cough"]);
     expect(rx.visit.investigations).toEqual([{ name: "CBC" }]);
@@ -153,7 +150,7 @@ describe("saveDraft with the clinical form", () => {
     const id = await start();
     const BELL = "\u0007"; // a stray control character from a paste, written as an escape
     expect([...BELL]).toHaveLength(1);
-    await saveDraft(doctor(), id, {
+    await saveDraftNow(doctor(), id, {
       chiefComplaint: "<script>alert(1)</script>",
       advice: `line1\r\nline2${BELL}`,
       complaints: ["आशा को बुखार"],
@@ -168,7 +165,7 @@ describe("saveDraft with the clinical form", () => {
 
   it("drops blank phrase entries instead of rejecting the whole save", async () => {
     const id = await start();
-    const saved = await saveDraft(doctor(), id, {
+    const saved = await saveDraftNow(doctor(), id, {
       diagnosis: ["", "   ", "\u0007", "Viral fever"],
       complaints: [" "],
       drugHistory: ["\t"],
@@ -202,8 +199,8 @@ describe("saveDraft with the clinical form", () => {
       ["a generic name", "items", { items: [{ drugName: "X", genericName: bad }] }],
     ])("is refused in %s as invalid, never silently stripped", async (_name, field, input) => {
       const id = await start();
-      expect((await saveDraft(doctor(), id, { advice: "Before" })).ok).toBe(true);
-      expect(await saveDraft(doctor(), id, input)).toMatchObject({ ok: false, code: "invalid", field });
+      expect((await saveDraftNow(doctor(), id, { advice: "Before" })).ok).toBe(true);
+      expect(await saveDraftNow(doctor(), id, input)).toMatchObject({ ok: false, code: "invalid", field });
       expect((await read(id)).visit.advice).toBe("Before");
     });
   });
@@ -219,7 +216,7 @@ describe("saveDraft with the clinical form", () => {
 
     it("is removed from jsonb text (vitals notes, test name, test instructions), not a server error", async () => {
       const id = await start();
-      const saved = await saveDraft(doctor(), id, {
+      const saved = await saveDraftNow(doctor(), id, {
         vitals: { pulse: 80, notes: `a${LONE}b` },
         investigations: [{ name: `C${LONE}BC`, instructions: `fast${LONE}ing` }],
       });
@@ -234,7 +231,7 @@ describe("saveDraft with the clinical form", () => {
 
     it("is removed from plain text columns instead of being stored as U+FFFD", async () => {
       const id = await start();
-      expect((await saveDraft(doctor(), id, { advice: `x${LONE}y`, items: [{ drugName: `D${LONE}rug` }] })).ok).toBe(true);
+      expect((await saveDraftNow(doctor(), id, { advice: `x${LONE}y`, items: [{ drugName: `D${LONE}rug` }] })).ok).toBe(true);
       const rx = await read(id);
       expect(rx.visit.advice).toBe("xy");
       expect(rx.items[0].drugName).toBe("Drug");
@@ -242,7 +239,7 @@ describe("saveDraft with the clinical form", () => {
 
     it("keeps a valid emoji in jsonb text", async () => {
       const id = await start();
-      expect((await saveDraft(doctor(), id, { vitals: { notes: `ok ${EMOJI}` } })).ok).toBe(true);
+      expect((await saveDraftNow(doctor(), id, { vitals: { notes: `ok ${EMOJI}` } })).ok).toBe(true);
       expect((await read(id)).visit.vitals.notes).toBe(`ok ${EMOJI}`);
     });
   });
@@ -253,7 +250,7 @@ describe("saveDraft with the clinical form", () => {
       // "Viral  fever" has two spaces; the last entry is e + combining acute, the first is the precomposed form.
       expect([..."Cafe\u0301"]).toHaveLength(5); // e + combining acute is two code points
       expect([..."Caf\u00e9"]).toHaveLength(4);
-      await saveDraft(doctor(), id, {
+      await saveDraftNow(doctor(), id, {
         diagnosis: ["Viral fever", "viral  FEVER", " Viral\tfever ", "Caf\u00e9", "Cafe\u0301"],
         investigations: [{ name: "Dengue NS1" }, { name: "dengue   ns1" }],
       });
@@ -265,17 +262,17 @@ describe("saveDraft with the clinical form", () => {
     it("counts only distinct phrases against the limit", async () => {
       const id = await start();
       const thirtyUnique = Array.from({ length: 30 }, (_, i) => `Complaint ${i}`);
-      expect((await saveDraft(doctor(), id, { complaints: [...thirtyUnique, "complaint 0"] })).ok).toBe(true);
+      expect((await saveDraftNow(doctor(), id, { complaints: [...thirtyUnique, "complaint 0"] })).ok).toBe(true);
       expect((await read(id)).visit.complaints).toEqual(thirtyUnique);
-      expect(await saveDraft(doctor(), id, { complaints: [...thirtyUnique, "One more"] })).toMatchObject({
+      expect(await saveDraftNow(doctor(), id, { complaints: [...thirtyUnique, "One more"] })).toMatchObject({
         ok: false,
         code: "invalid",
         field: "complaints",
       });
 
       const thirtyTests = Array.from({ length: 30 }, (_, i) => ({ name: `Test ${i}` }));
-      expect((await saveDraft(doctor(), id, { investigations: [...thirtyTests, { name: "TEST 3" }] })).ok).toBe(true);
-      expect(await saveDraft(doctor(), id, { investigations: [...thirtyTests, { name: "Test 30" }] })).toMatchObject({
+      expect((await saveDraftNow(doctor(), id, { investigations: [...thirtyTests, { name: "TEST 3" }] })).ok).toBe(true);
+      expect(await saveDraftNow(doctor(), id, { investigations: [...thirtyTests, { name: "Test 30" }] })).toMatchObject({
         ok: false,
         code: "invalid",
         field: "investigations",
@@ -285,8 +282,8 @@ describe("saveDraft with the clinical form", () => {
 
   it("says 'at most N characters' because exactly N is allowed", async () => {
     const id = await start();
-    expect((await saveDraft(doctor(), id, { advice: "x".repeat(2000) })).ok).toBe(true);
-    expect(await saveDraft(doctor(), id, { advice: "x".repeat(2001) })).toMatchObject({
+    expect((await saveDraftNow(doctor(), id, { advice: "x".repeat(2000) })).ok).toBe(true);
+    expect(await saveDraftNow(doctor(), id, { advice: "x".repeat(2001) })).toMatchObject({
       ok: false,
       message: "Keep this to at most 2000 characters",
     });
@@ -294,9 +291,9 @@ describe("saveDraft with the clinical form", () => {
 
   it("ignores unknown vitals keys and treats a blank vitals form as no vitals", async () => {
     const id = await start();
-    await saveDraft(doctor(), id, { vitals: { pulse: 80, evil: "<b>x</b>" } });
+    await saveDraftNow(doctor(), id, { vitals: { pulse: 80, evil: "<b>x</b>" } });
     expect((await read(id)).visit.vitals).toEqual({ pulse: 80 });
-    await saveDraft(doctor(), id, { vitals: { pulse: "", notes: "  " } });
+    await saveDraftNow(doctor(), id, { vitals: { pulse: "", notes: "  " } });
     expect((await read(id)).visit.vitals).toEqual({});
   });
 
@@ -327,18 +324,18 @@ describe("saveDraft with the clinical form", () => {
     [{ followUpReason: "y".repeat(301) }, "followUpReason"],
   ])("rejects %j", async (input, field) => {
     const id = await start();
-    expect(await saveDraft(doctor(), id, input)).toMatchObject({ ok: false, code: "invalid", field });
+    expect(await saveDraftNow(doctor(), id, input)).toMatchObject({ ok: false, code: "invalid", field });
   });
 
   it.each(["reception", "nurse", "pharmacist", "accountant"])("forbids %s from editing clinical fields", async (role) => {
     const id = await start();
-    expect(await saveDraft(A.as(role), id, fullDraft())).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await saveDraftNow(A.as(role), id, fullDraft())).toMatchObject({ ok: false, code: "forbidden" });
     expect((await read(id)).revision).toBe(0);
   });
 
   it("does not reveal another clinic's draft, and leaves it unchanged", async () => {
     const id = await start();
-    expect((await saveDraft(doctor(), id, { advice: "Mine", items: [{ drugName: "Mine A" }] })).ok).toBe(true);
+    expect((await saveDraftNow(doctor(), id, { advice: "Mine", items: [{ drugName: "Mine A" }] })).ok).toBe(true);
     expect(await saveDraft(B.as("doctor"), id, fullDraft(), { baseRevision: 1 })).toMatchObject({
       ok: false,
       code: "not_found",
@@ -433,10 +430,17 @@ describe("draft revisions", () => {
     expect(rx.items.map((i) => i.drugName)).toEqual(winner.items.map((i) => i.drugName));
   });
 
-  it("still accepts saves without a base revision (Plan 1A callers: last write wins)", async () => {
+  it("requires a base revision: a save without one is invalid and changes nothing", async () => {
     const id = await start();
     await saveDraft(doctor(), id, { advice: "a" }, { baseRevision: 0 });
-    expect(await saveDraft(doctor(), id, { advice: "b" })).toMatchObject({ ok: true, value: { revision: 2 } });
+    // The type makes it required; this proves the runtime guard for callers that bypass the types.
+    const untyped = saveDraft as (ctx: ServiceContext, id: string, raw: unknown, opts?: unknown) => ReturnType<typeof saveDraft>;
+    for (const opts of [undefined, {}, { baseRevision: undefined }, { baseRevision: "1" }, { baseRevision: null }]) {
+      expect(await untyped(doctor(), id, { advice: "b" }, opts)).toMatchObject({ ok: false, code: "invalid", field: "baseRevision" });
+    }
+    const rx = await read(id);
+    expect(rx.visit.advice).toBe("a");
+    expect(rx.revision).toBe(1);
   });
 
   it.each([-1, 1.5, Number.NaN])("rejects a malformed base revision %s", async (baseRevision) => {
@@ -451,7 +455,7 @@ describe("draft revisions", () => {
   it("reports immutable, not conflict, once the prescription is finalized", async () => {
     const id = await start();
     await saveDraft(doctor(), id, { items: [{ drugName: "Paracetamol" }] }, { baseRevision: 0 });
-    expect((await finalizePrescription(doctor(), id)).ok).toBe(true);
+    expect((await finalizeNow(doctor(), id)).ok).toBe(true);
     expect(await saveDraft(doctor(), id, { advice: "late" }, { baseRevision: 1 })).toMatchObject({
       ok: false,
       code: "immutable",

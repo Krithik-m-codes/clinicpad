@@ -1,5 +1,5 @@
 import { asc, eq } from "drizzle-orm";
-import { prescriptionItems, visits } from "@/server/db/schema";
+import { prescriptionItems, prescriptions, visits } from "@/server/db/schema";
 import type { TenantTx } from "@/server/db/tenant";
 import type { Investigation, Vitals } from "@/lib/domain/rx-options";
 import type { DraftInput, DraftItemInput } from "@/server/validation/prescription";
@@ -7,6 +7,151 @@ import type { ServiceContext } from "./context";
 
 export type ItemRow = typeof prescriptionItems.$inferSelect;
 export type VisitRow = typeof visits.$inferSelect;
+export type PrescriptionRow = typeof prescriptions.$inferSelect;
+
+/**
+ * Column classification for every row copy (amend, repeat). A column is either carried over from
+ * the source row (`copy`) or starts fresh in the new row (`reset`: a new id, a fresh status, or a value
+ * the caller assigns explicitly). `satisfies Record<keyof Row, ...>` makes a column added to the schema
+ * a compile error until someone decides which it is, so a new column can neither be silently copied
+ * nor silently dropped. `renderSnapshot` is always `reset`: a new draft must never inherit a frozen
+ * snapshot (Plan 1C, ADR-0032).
+ */
+export type ColumnRule = "copy" | "reset";
+
+/** Visit columns of an amendment: the same visit, corrected. */
+export const AMEND_VISIT_COLUMNS = {
+  id: "reset",
+  tenantId: "copy",
+  patientId: "copy",
+  doctorId: "copy",
+  branchId: "copy",
+  status: "reset",
+  visitType: "copy",
+  chiefComplaint: "copy",
+  vitals: "copy",
+  diagnosis: "copy",
+  advice: "copy",
+  followUpDate: "copy",
+  complaints: "copy",
+  medicalHistory: "copy",
+  drugHistory: "copy",
+  examinationNotes: "copy",
+  investigations: "copy",
+  followUpReason: "copy",
+  finalizedAt: "reset",
+  createdAt: "reset",
+  updatedAt: "reset",
+} as const satisfies Record<keyof VisitRow, ColumnRule>;
+
+/** Visit columns of a repeat: what was prescribed, not what was measured or found on the old day. */
+export const REPEAT_VISIT_COLUMNS = {
+  id: "reset",
+  tenantId: "copy",
+  patientId: "copy",
+  doctorId: "reset", // the repeating doctor, assigned by the caller
+  branchId: "copy",
+  status: "reset",
+  visitType: "reset", // always "follow-up"
+  chiefComplaint: "copy",
+  vitals: "reset",
+  diagnosis: "copy",
+  advice: "copy",
+  followUpDate: "reset",
+  complaints: "copy",
+  medicalHistory: "copy",
+  drugHistory: "copy",
+  examinationNotes: "reset",
+  investigations: "copy",
+  followUpReason: "reset",
+  finalizedAt: "reset",
+  createdAt: "reset",
+  updatedAt: "reset",
+} as const satisfies Record<keyof VisitRow, ColumnRule>;
+
+/** Item columns of amend and repeat: every medicine field is copied; keys and ownership are assigned fresh. */
+export const COPIED_ITEM_COLUMNS = {
+  id: "reset",
+  tenantId: "reset",
+  prescriptionId: "reset",
+  sortOrder: "copy",
+  drugName: "copy",
+  strength: "copy",
+  form: "copy",
+  route: "copy",
+  dose: "copy",
+  timing: "copy",
+  foodRelation: "copy",
+  durationDays: "copy",
+  remarks: "copy",
+  genericName: "copy",
+  doseMorning: "copy",
+  doseAfternoon: "copy",
+  doseEvening: "copy",
+  doseNight: "copy",
+  periodicity: "copy",
+  isSos: "copy",
+  durationValue: "copy",
+  durationUnit: "copy",
+  createdAt: "reset",
+} as const satisfies Record<keyof ItemRow, ColumnRule>;
+
+/** Prescription columns of an amendment. The caller assigns the `reset` ones that need a value (visit, version, parent, reason). */
+export const AMEND_PRESCRIPTION_COLUMNS = {
+  id: "reset",
+  tenantId: "reset",
+  visitId: "reset",
+  rxNo: "copy", // an amendment keeps its original's number
+  version: "reset",
+  draftRevision: "reset",
+  status: "reset",
+  templateVersionId: "copy",
+  pdfUrl: "reset",
+  parentPrescriptionId: "reset",
+  amendmentReason: "reset",
+  finalizedBy: "reset",
+  renderSnapshot: "reset", // never inherit a frozen snapshot: finalize writes this version's own
+  updatedAt: "reset",
+  finalizedAt: "reset",
+  createdAt: "reset",
+} as const satisfies Record<keyof PrescriptionRow, ColumnRule>;
+
+/** Prescription columns of a repeat: a repeat is a brand-new prescription, so nothing is carried over. */
+export const REPEAT_PRESCRIPTION_COLUMNS = {
+  id: "reset",
+  tenantId: "reset",
+  visitId: "reset",
+  rxNo: "reset",
+  version: "reset",
+  draftRevision: "reset",
+  status: "reset",
+  templateVersionId: "reset",
+  pdfUrl: "reset",
+  parentPrescriptionId: "reset",
+  amendmentReason: "reset",
+  finalizedBy: "reset",
+  renderSnapshot: "reset",
+  updatedAt: "reset",
+  finalizedAt: "reset",
+  createdAt: "reset",
+} as const satisfies Record<keyof PrescriptionRow, ColumnRule>;
+
+type CopiedKeys<Row, Rules extends Record<keyof Row, ColumnRule>> = {
+  [K in keyof Rules]: Rules[K] extends "copy" ? K : never;
+}[keyof Rules] &
+  keyof Row;
+
+/** The columns of `row` that the rules mark `copy` (typed, so a required column stays required). */
+export function copiedColumns<Row extends object, Rules extends Record<keyof Row, ColumnRule>>(
+  row: Row,
+  rules: Rules,
+): Pick<Row, CopiedKeys<Row, Rules>> {
+  const out: Partial<Row> = {};
+  for (const key of Object.keys(rules) as (keyof Row)[]) {
+    if (rules[key] === "copy") out[key] = row[key];
+  }
+  return out as Pick<Row, CopiedKeys<Row, Rules>>;
+}
 
 export type ItemView = {
   drugName: string;
@@ -44,12 +189,6 @@ export type ClinicalVisitView = {
   followUpDate: string | null;
   followUpReason: string | null;
 };
-
-/** Copy of `obj` without `keys`. Row copies use it so columns added later are copied too. */
-export function omit<T extends object, K extends keyof T>(obj: T, keys: readonly K[]): Omit<T, K> {
-  const drop = new Set<PropertyKey>(keys);
-  return Object.fromEntries(Object.entries(obj).filter(([key]) => !drop.has(key))) as Omit<T, K>;
-}
 
 export function toItemView(row: ItemRow): ItemView {
   // Rows written before Plan 1B have only duration_days: read them as a number of days.
@@ -161,7 +300,7 @@ export async function copyItems(
   if (rows.length === 0) return;
   await tx.insert(prescriptionItems).values(
     rows.map((row) => ({
-      ...omit(row, ["id", "createdAt"] as const),
+      ...copiedColumns(row, COPIED_ITEM_COLUMNS),
       tenantId: ctx.tenantId,
       prescriptionId: toPrescriptionId,
     })),
@@ -170,7 +309,7 @@ export async function copyItems(
 
 /** An amendment corrects the same visit, so it carries every column of the original. */
 export function amendVisitValues(old: VisitRow): VisitInsert {
-  return { ...omit(old, ["id", "status", "finalizedAt", "createdAt", "updatedAt"] as const), status: "draft" };
+  return { ...copiedColumns(old, AMEND_VISIT_COLUMNS), tenantId: old.tenantId, patientId: old.patientId, status: "draft" };
 }
 
 /**
@@ -179,19 +318,12 @@ export function amendVisitValues(old: VisitRow): VisitInsert {
  */
 export function repeatVisitValues(old: VisitRow, doctorId: string | null): VisitInsert {
   return {
+    ...copiedColumns(old, REPEAT_VISIT_COLUMNS),
     tenantId: old.tenantId,
     patientId: old.patientId,
     doctorId,
-    branchId: old.branchId,
     status: "draft",
     visitType: "follow-up",
-    chiefComplaint: old.chiefComplaint,
-    complaints: old.complaints,
-    diagnosis: old.diagnosis,
-    medicalHistory: old.medicalHistory,
-    drugHistory: old.drugHistory,
-    investigations: old.investigations,
-    advice: old.advice,
   };
 }
 

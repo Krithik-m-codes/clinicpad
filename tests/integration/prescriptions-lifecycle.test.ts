@@ -6,14 +6,8 @@ import { pgErrorInfo } from "@/server/db/errors";
 import { auditEvents, prescriptionItems, prescriptions, tenantCounters, visits } from "@/server/db/schema";
 import { NUL_MESSAGE } from "@/server/validation/text";
 import { archivePatient, createPatient } from "@/server/services/patients";
-import {
-  amendPrescription,
-  finalizePrescription,
-  getPrescription,
-  repeatPrescription,
-  saveDraft,
-  startPrescription,
-} from "@/server/services/prescriptions";
+import { amendPrescription, getPrescription, repeatPrescription, startPrescription } from "@/server/services/prescriptions";
+import { finalizeNow, saveDraftNow } from "../helpers/rx";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
 let A: TestTenant;
@@ -38,7 +32,7 @@ async function draftWithItem(drugName = "Paracetamol"): Promise<string> {
   const started = await startPrescription(doctor(), { patientId });
   if (!started.ok) throw new Error(started.message);
   const id = started.value.prescriptionId;
-  const saved = await saveDraft(doctor(), id, {
+  const saved = await saveDraftNow(doctor(), id, {
     chiefComplaint: "Fever",
     diagnosis: ["Viral fever"],
     items: [{ drugName, dose: "1 tablet", timing: "TDS", durationDays: 3 }],
@@ -49,7 +43,7 @@ async function draftWithItem(drugName = "Paracetamol"): Promise<string> {
 
 async function finalized(drugName?: string): Promise<{ id: string; rxNo: number }> {
   const id = await draftWithItem(drugName);
-  const done = await finalizePrescription(doctor(), id);
+  const done = await finalizeNow(doctor(), id);
   if (!done.ok) throw new Error(done.message);
   return { id, rxNo: done.value.rxNo };
 }
@@ -75,7 +69,7 @@ describe("finalizePrescription", () => {
     const started = await startPrescription(doctor(), { patientId });
     if (!started.ok) throw new Error(started.message);
     const counterBefore = await rxCounter();
-    const result = await finalizePrescription(doctor(), started.value.prescriptionId);
+    const result = await finalizeNow(doctor(), started.value.prescriptionId);
     expect(result).toMatchObject({ ok: false, code: "invalid", field: "items" });
     const got = await getPrescription(doctor(), started.value.prescriptionId);
     expect(got.ok && got.value.rxNo).toBeNull();
@@ -102,7 +96,7 @@ describe("finalizePrescription", () => {
 
   it("lets an owner finalize as well", async () => {
     const id = await draftWithItem();
-    expect(await finalizePrescription(A.as("owner"), id)).toMatchObject({ ok: true });
+    expect(await finalizeNow(A.as("owner"), id)).toMatchObject({ ok: true });
   });
 
   it("freezes the record and writes an audit event", async () => {
@@ -110,7 +104,7 @@ describe("finalizePrescription", () => {
     const got = await getPrescription(doctor(), id);
     expect(got).toMatchObject({ ok: true, value: { status: "finalized", version: 1 } });
 
-    expect(await saveDraft(doctor(), id, { items: [{ drugName: "Changed" }] })).toMatchObject({
+    expect(await saveDraftNow(doctor(), id, { items: [{ drugName: "Changed" }] })).toMatchObject({
       ok: false,
       code: "immutable",
     });
@@ -138,7 +132,7 @@ describe("finalizePrescription", () => {
     const id = await draftWithItem();
     const beforeRx = await rxCounter();
 
-    const [r1, r2] = await Promise.all([finalizePrescription(doctor(), id), finalizePrescription(doctor(), id)]);
+    const [r1, r2] = await Promise.all([finalizeNow(doctor(), id), finalizeNow(doctor(), id)]);
     const results = [r1, r2];
     expect(results.filter((r) => r.ok)).toHaveLength(1);
     expect(results.find((r) => !r.ok)).toMatchObject({ ok: false, code: "conflict" });
@@ -153,22 +147,22 @@ describe("finalizePrescription", () => {
   it("hands concurrent finalizes of different drafts distinct consecutive numbers", async () => {
     const ids = await Promise.all([draftWithItem(), draftWithItem(), draftWithItem()]);
     const beforeRx = await rxCounter();
-    const results = await Promise.all(ids.map((id) => finalizePrescription(doctor(), id)));
+    const results = await Promise.all(ids.map((id) => finalizeNow(doctor(), id)));
     const numbers = results.map((r) => (r.ok ? r.value.rxNo : -1)).sort((x, y) => x - y);
     expect(numbers).toEqual([beforeRx + 1, beforeRx + 2, beforeRx + 3]);
   });
 
   it.each(["reception", "nurse", "accountant", "pharmacist"])("forbids %s", async (role) => {
     const id = await draftWithItem();
-    expect(await finalizePrescription(A.as(role), id)).toMatchObject({ ok: false, code: "forbidden" });
+    expect(await finalizeNow(A.as(role), id)).toMatchObject({ ok: false, code: "forbidden" });
     const got = await getPrescription(doctor(), id);
     expect(got).toMatchObject({ ok: true, value: { status: "draft", rxNo: null } });
   });
 
   it("returns not_found for another clinic's or a malformed id", async () => {
     const id = await draftWithItem();
-    expect(await finalizePrescription(B.as("doctor"), id)).toMatchObject({ ok: false, code: "not_found" });
-    expect(await finalizePrescription(A.as("doctor"), "nope")).toMatchObject({ ok: false, code: "not_found" });
+    expect(await finalizeNow(B.as("doctor"), id)).toMatchObject({ ok: false, code: "not_found" });
+    expect(await finalizeNow(A.as("doctor"), "nope")).toMatchObject({ ok: false, code: "not_found" });
   });
 });
 
@@ -226,8 +220,8 @@ describe("amendPrescription", () => {
     if (!amended.ok) throw new Error(amended.message);
     const v2Id = amended.value.prescriptionId;
 
-    await saveDraft(doctor(), v2Id, { chiefComplaint: "Fever", items: [{ drugName: "Corrected Drug" }] });
-    const done = await finalizePrescription(doctor(), v2Id);
+    await saveDraftNow(doctor(), v2Id, { chiefComplaint: "Fever", items: [{ drugName: "Corrected Drug" }] });
+    const done = await finalizeNow(doctor(), v2Id);
     expect(done).toMatchObject({ ok: true, value: { rxNo, version: 2 } });
 
     const v1 = await getPrescription(doctor(), id);
@@ -250,7 +244,7 @@ describe("amendPrescription", () => {
     const amended = await amendPrescription(doctor(), { prescriptionId: id, reason: "No new number please" });
     if (!amended.ok) throw new Error(amended.message);
     // Items are copied from v1; no saveDraft first.
-    expect(await finalizePrescription(doctor(), amended.value.prescriptionId)).toMatchObject({
+    expect(await finalizeNow(doctor(), amended.value.prescriptionId)).toMatchObject({
       ok: true,
       value: { rxNo, version: 2 },
     });
@@ -262,7 +256,7 @@ describe("amendPrescription", () => {
     const { id } = await finalized();
     const amended = await amendPrescription(doctor(), { prescriptionId: id, reason: "Audit the parent id" });
     if (!amended.ok) throw new Error(amended.message);
-    expect(await finalizePrescription(doctor(), amended.value.prescriptionId)).toMatchObject({ ok: true });
+    expect(await finalizeNow(doctor(), amended.value.prescriptionId)).toMatchObject({ ok: true });
 
     const audit = await withTenant(A.tenantId, (tx) =>
       tx.select().from(auditEvents).where(eq(auditEvents.entityId, amended.value.prescriptionId)),
@@ -304,7 +298,7 @@ describe("amendPrescription", () => {
         .returning({ id: prescriptions.id });
       await adminDb.insert(prescriptionItems).values({ tenantId: T.tenantId, prescriptionId: child.id, drugName: "X" });
 
-      expect(await finalizePrescription(T.as("doctor"), child.id)).toMatchObject({ ok: false, code: "conflict" });
+      expect(await finalizeNow(T.as("doctor"), child.id)).toMatchObject({ ok: false, code: "conflict" });
       const counters = await adminDb.select().from(tenantCounters).where(eq(tenantCounters.tenantId, T.tenantId));
       expect(counters.find((c) => c.name === "rx")).toBeUndefined();
     } finally {
@@ -377,7 +371,7 @@ describe("amendPrescription", () => {
 
     if (!first.ok) throw new Error();
     // v2 must really be finalized (and v1 amended), or the next conflict could be the open-amendment one.
-    expect(await finalizePrescription(doctor(), first.value.prescriptionId)).toMatchObject({ ok: true });
+    expect(await finalizeNow(doctor(), first.value.prescriptionId)).toMatchObject({ ok: true });
     await expectStatus(id, "amended");
     expect(await amendPrescription(doctor(), { prescriptionId: id, reason: "Amend the old one" })).toMatchObject({
       ok: false,
@@ -436,11 +430,11 @@ describe("amendPrescription", () => {
       if (!p.ok) throw new Error(p.message);
       const s = await startPrescription(T.as("doctor"), { patientId: p.value.id });
       if (!s.ok) throw new Error(s.message);
-      await saveDraft(T.as("doctor"), s.value.prescriptionId, { items: [{ drugName: "X" }] });
-      expect(await finalizePrescription(T.as("doctor"), s.value.prescriptionId)).toMatchObject({ ok: true });
+      await saveDraftNow(T.as("doctor"), s.value.prescriptionId, { items: [{ drugName: "X" }] });
+      expect(await finalizeNow(T.as("doctor"), s.value.prescriptionId)).toMatchObject({ ok: true });
       const a = await amendPrescription(T.as("doctor"), { prescriptionId: s.value.prescriptionId, reason: "Cascade check" });
       if (!a.ok) throw new Error(a.message);
-      expect(await finalizePrescription(T.as("doctor"), a.value.prescriptionId)).toMatchObject({ ok: true });
+      expect(await finalizeNow(T.as("doctor"), a.value.prescriptionId)).toMatchObject({ ok: true });
       // The chain really contains an amended parent and a finalized child.
       const chain = await adminDb.select().from(prescriptions).where(eq(prescriptions.tenantId, T.tenantId));
       expect(chain.map((r) => r.status).sort()).toEqual(["amended", "finalized"]);
@@ -475,8 +469,8 @@ describe("repeatPrescription", () => {
     const amended = await amendPrescription(doctor(), { prescriptionId: id, reason: "Amend before repeat" });
     if (!amended.ok) throw new Error(amended.message);
     const v2Id = amended.value.prescriptionId;
-    expect(await saveDraft(doctor(), v2Id, { items: [{ drugName: "Corrected Drug" }] })).toMatchObject({ ok: true });
-    expect(await finalizePrescription(doctor(), v2Id)).toMatchObject({ ok: true });
+    expect(await saveDraftNow(doctor(), v2Id, { items: [{ drugName: "Corrected Drug" }] })).toMatchObject({ ok: true });
+    expect(await finalizeNow(doctor(), v2Id)).toMatchObject({ ok: true });
     await expectStatus(id, "amended");
 
     // The superseded v1 is refused and nothing is created.
@@ -511,8 +505,8 @@ describe("repeatPrescription", () => {
     const started = await startPrescription(doctor(), { patientId: p.value.id });
     if (!started.ok) throw new Error(started.message);
     const rxId = started.value.prescriptionId;
-    expect(await saveDraft(doctor(), rxId, { items: [{ drugName: "Old" }] })).toMatchObject({ ok: true });
-    expect(await finalizePrescription(doctor(), rxId)).toMatchObject({ ok: true });
+    expect(await saveDraftNow(doctor(), rxId, { items: [{ drugName: "Old" }] })).toMatchObject({ ok: true });
+    expect(await finalizeNow(doctor(), rxId)).toMatchObject({ ok: true });
     expect(await archivePatient(A.as("owner"), p.value.id)).toMatchObject({ ok: true });
 
     const before = await rowCounts();
