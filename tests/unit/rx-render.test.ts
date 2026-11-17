@@ -320,6 +320,22 @@ describe("assets", () => {
     expect(dom.querySelector(".sig-line")?.textContent).toBe("Reg. No.: MMC 2011/04/1234");
   });
 
+  it("never embeds a signature image or prints a signer for a draft without a doctor, even if one is passed in", () => {
+    const base = documentFixture({ status: "draft", rxNo: null, issuedAt: null });
+    const doc = { ...base, snapshot: { ...base.snapshot, doctor: { ...base.snapshot.doctor, name: "", registrationNo: null, signatureAssetId: null } } };
+    const dom = parse(render(doc, { ...NO_ASSETS, signature: TINY_PNG }).html);
+    expect(dom.querySelector(".sig-box img")).toBeNull();
+    expect(dom.querySelector(".sig-name")?.textContent).toBe("Not signed \u2014 draft");
+    expect(dom.querySelector(".sig-line")).toBeNull();
+  });
+
+  it("prints the would-be signer's name and registration on a draft but never a signature image", () => {
+    const dom = parse(render(documentFixture({ status: "draft", rxNo: null, issuedAt: null }), { ...NO_ASSETS, signature: TINY_PNG }).html);
+    expect(dom.querySelector(".sig-box img")).toBeNull();
+    expect(dom.querySelector(".sig-name")?.textContent).toBe("Dr. Meera Shah");
+    expect(dom.querySelector(".sig-line")?.textContent).toBe("Reg. No.: MMC 2011/04/1234");
+  });
+
   it("drops an asset whose base64 is not base64", () => {
     const dom = parse(render(documentFixture(), { ...NO_ASSETS, logo: { ...TINY_PNG, base64: '"><script>' } }).html);
     expect(dom.querySelector(".logo")).toBeNull();

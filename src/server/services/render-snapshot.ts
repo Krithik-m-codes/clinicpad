@@ -13,7 +13,7 @@ export type SnapshotSources = {
   patientId: string;
   /** The user who finalizes (or finalized) the prescription. When set, only their own doctor profile signs it. */
   prescriberUserId: string | null;
-  /** The doctor the visit was opened for. Used only when nobody has finalized yet (a draft preview). */
+  /** The doctor the visit was opened for. Used only when no prescriber is given; draft previews pass null (the viewer is the would-be signer). */
   visitDoctorId: string | null;
   /** The prescription's date: finalize time, or now for a draft. Age is computed for this day. */
   at: Date;

@@ -146,7 +146,10 @@ export function durationText(value: number | null, unit: string | null, lang: La
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > DURATION_CAP) return "";
   const amount = numberText(value, 2);
   if (amount === "" || amount === "0") return "";
-  const words = unit !== null && Object.hasOwn(UNIT_WORDS, unit) ? UNIT_WORDS[unit] : UNIT_WORDS.days;
+  // An unknown unit prints nothing: guessing "days" could turn "3 months" into "3 days".
+  // (A missing unit means days, the form default; a present unit we do not know prints nothing.)
+  if (unit !== null && !Object.hasOwn(UNIT_WORDS, unit)) return "";
+  const words = unit === null ? UNIT_WORDS.days : UNIT_WORDS[unit];
   const one = amount === "1";
   return pick(`${amount} ${one ? words.en[0] : words.en[1]}`, `${amount} ${one ? words.hi[0] : words.hi[1]}`, lang);
 }
@@ -171,6 +174,7 @@ const STATUS_TEXT = {
     en: "DRAFT PREVIEW · This is not a prescription until it is finalized.",
     hi: "मसौदा पूर्वावलोकन · अंतिम रूप दिए जाने तक यह पर्चा नहीं है।",
   },
+  notSignedDraft: { en: "Not signed \u2014 draft", hi: "हस्ताक्षरित नहीं \u2014 मसौदा" },
   supersededWatermark: { en: "SUPERSEDED", hi: "निरस्त" },
   supersededNewer: {
     en: "SUPERSEDED by a newer version. Do not dispense from this copy.",

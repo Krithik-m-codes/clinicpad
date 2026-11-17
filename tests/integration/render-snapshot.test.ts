@@ -80,8 +80,8 @@ async function finalizedFor(patientId: string, by: ServiceContext = doctor()): P
   return id;
 }
 
-async function load(id: string, role = "nurse") {
-  const result = await loadRxDocument(A.as(role), id);
+async function load(id: string, who: string | ServiceContext = "nurse") {
+  const result = await loadRxDocument(typeof who === "string" ? A.as(who) : who, id);
   if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
   return result.value;
 }
@@ -484,14 +484,49 @@ describe("version chains", () => {
 });
 
 describe("documents without a snapshot", () => {
-  it("renders a draft with today's details, the visit's doctor, and no Rx number", async () => {
+  it("renders a draft with today's details, the viewing doctor as would-be signer, and no Rx number", async () => {
     const patientId = await patient("Draft Person");
     const started = await startPrescription(doctor(), { patientId });
     if (!started.ok) throw new Error(started.message);
-    const bundle = await load(started.value.prescriptionId);
+    const bundle = await load(started.value.prescriptionId, doctor());
     expect(bundle.document).toMatchObject({ status: "draft", rxNo: null, issuedAt: null, snapshotSource: "live" });
     expect(bundle.document.snapshot.patient.name).toBe("Draft Person");
     expect(bundle.document.snapshot.doctor.name).toBe("Dr Snapshot");
+  });
+
+  it("never carries a signature image for a draft, and shows no signer to a viewer who cannot finalize", async () => {
+    const sig = await insertImage("signature", Buffer.from([4, 4, 4, 9, 0, 1, 2, 3]), 40, 20);
+    await adminDb.update(doctors).set({ signatureAssetId: sig }).where(eq(doctors.userId, secondDoctorUserId));
+    try {
+      const { id } = await savedDraftFor(await patient("Draft Sig Person"));
+      for (const viewer of [doctor(), secondDoctor()]) {
+        const bundle = await load(id, viewer);
+        expect(bundle.signature).toBeNull();
+        expect(bundle.document.snapshot.doctor.signatureAssetId).toBeNull();
+      }
+      // The second doctor sees their own would-be signer identity, not the visit doctor's.
+      expect((await load(id, secondDoctor())).document.snapshot.doctor.name).toBe("Dr Second");
+      for (const role of ["reception", "nurse", "pharmacist"]) {
+        const bundle = await load(id, role);
+        expect(bundle.signature).toBeNull();
+        expect(bundle.document.snapshot.doctor).toMatchObject({ name: "", registrationNo: null, signatureAssetId: null });
+        const html = renderPrescription(bundle.document, NO_FONTS).html;
+        expect(html).toContain("Not signed");
+        expect(html).not.toContain("Dr Snapshot");
+      }
+    } finally {
+      await adminDb.update(doctors).set({ signatureAssetId: null }).where(eq(doctors.userId, secondDoctorUserId));
+    }
+  });
+
+  it("shows an amendment draft's would-be signer as the viewer, never the original visit's doctor", async () => {
+    const v1 = await finalizedFor(await patient("Amend Draft Person"));
+    const amendment = await amendPrescription(doctor(), { prescriptionId: v1, reason: "Fix dosage" });
+    if (!amendment.ok) throw new Error(amendment.message);
+    const id = amendment.value.prescriptionId;
+    expect((await load(id, secondDoctor())).document.snapshot.doctor.name).toBe("Dr Second");
+    expect((await load(id, "reception")).document.snapshot.doctor.name).toBe("");
+    expect((await load(id, doctor())).document.snapshot.doctor.name).toBe("Dr Snapshot");
   });
 
   it("renders a pre-1C finalized prescription from live data, aged on its own date, and says so", async () => {

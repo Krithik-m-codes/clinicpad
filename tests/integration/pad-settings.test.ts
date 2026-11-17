@@ -24,7 +24,7 @@ import { createPatient } from "@/server/services/patients";
 import { startPrescription } from "@/server/services/prescriptions";
 import { NUL_MESSAGE } from "@/server/validation/text";
 import { newId } from "@/lib/domain/ids";
-import { JPEG_SOS, makeJpegHeader, makePng } from "../helpers/images";
+import { JPEG_EXIF_GPS, JPEG_SOS, jpegWithSegments, makeJpegHeader, makePng, pngWithChunks } from "../helpers/images";
 import { finalizeNow, saveDraftNow } from "../helpers/rx";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
@@ -176,6 +176,24 @@ describe("clinic logo", () => {
 
   it("accepts a JPEG", async () => {
     expect((await setClinicLogo(A.as("owner"), { bytes: new Uint8Array(makeJpegHeader(300, 100)) })).ok).toBe(true);
+  });
+
+  it("stores no metadata: an EXIF JPEG and a text-chunk PNG are stripped before they are saved and hashed", async () => {
+    const jpeg = jpegWithSegments(makeJpegHeader(310, 110), [JPEG_EXIF_GPS]);
+    const png = pngWithChunks(makePng(77, 33), [{ type: "tEXt", data: Buffer.from("GPS  12.97 77.59", "latin1") }]);
+    for (const [upload, marker] of [[jpeg, "Exif"], [png, "tEXt"]] as const) {
+      const stored = await setClinicLogo(A.as("owner"), { bytes: new Uint8Array(upload) });
+      if (!stored.ok) throw new Error(stored.message);
+      const [row] = await adminDb.select().from(clinicAssets).where(eq(clinicAssets.id, stored.value.assetId as string));
+      expect(row.bytes.includes(Buffer.from(marker, "latin1"))).toBe(false);
+      expect(row.bytes.length).toBeLessThan(upload.length);
+      expect(row.byteSize).toBe(row.bytes.length);
+      expect(row.sha256).toBe(createHash("sha256").update(row.bytes).digest("hex"));
+    }
+    // The same picture with and without metadata is one asset (dedupe on the stripped hash).
+    const clean = await setClinicLogo(A.as("owner"), { bytes: new Uint8Array(makeJpegHeader(310, 110)) });
+    const withExif = await setClinicLogo(A.as("owner"), { bytes: new Uint8Array(jpeg) });
+    expect(clean.ok && withExif.ok && clean.value.assetId === withExif.value.assetId).toBe(true);
   });
 
   it("keeps the same bytes as separate assets per kind", async () => {

@@ -74,12 +74,15 @@ export async function loadRxDocument(
       snapshot = await buildRenderSnapshot(tx, {
         tenantId: ctx.tenantId,
         patientId: row.visit.patientId,
-        // A pre-1C finalized row is signed by its finalizer; only a draft falls back to the visit's doctor.
-        prescriberUserId: row.rx.finalizedBy,
-        visitDoctorId: row.visit.doctorId,
+        // A pre-1C finalized row is signed by its finalizer. A draft is signed by nobody yet: its would-be signer is the
+        // VIEWER, and only when the viewer can finalize (never the visit's doctor, whose name an amendment inherits).
+        prescriberUserId: status === "draft" ? (can(ctx.role, "rx.finalize") ? ctx.userId : null) : row.rx.finalizedBy,
+        visitDoctorId: status === "draft" ? null : row.visit.doctorId,
         at: row.rx.finalizedAt ?? new Date(),
       });
       snapshotSource = "live";
+      // A draft never embeds a signature image, whoever views it.
+      if (status === "draft") snapshot = { ...snapshot, doctor: { ...snapshot.doctor, signatureAssetId: null } };
     }
 
     const items = await tx

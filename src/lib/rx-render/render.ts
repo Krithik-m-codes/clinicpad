@@ -24,6 +24,13 @@ import type { ImageAsset, LabelLanguage, PaperSpec, RenderAssets, RenderedDocume
 export const DOCUMENT_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";
 
+/**
+ * Bump when templates, labels, CSS, fonts or layout change in a way that alters printed output.
+ * The document DATA is frozen at finalize (the snapshot); the PRESENTATION is not, so every
+ * output row records the version that drew it (prescription_outputs.renderer_version).
+ */
+export const RENDERER_VERSION = "1";
+
 type Ctx = { doc: RxDocument; def: TemplateDefinition; lang: LabelLanguage; assets: RenderAssets; paper: PaperSpec };
 
 /**
@@ -417,11 +424,18 @@ function topicalTable(c: Ctx): SafeHtml {
 </table>`;
 }
 
+/**
+ * A draft is never signed: it prints the would-be signer (the viewer's own doctor profile, supplied by the loader
+ * only when the viewer can finalize) as text and NEVER a signature image, even if one is passed in. With no
+ * would-be signer it says "Not signed". A finalized document prints its frozen snapshot.
+ */
 function signature(c: Ctx): SafeHtml {
   const doctor = c.doc.snapshot.doctor;
+  const draft = c.doc.status === "draft";
+  const named = present(doctor.name);
   return html`<div class="sig">
-<div class="sig-box">${image(c.assets.signature)}</div>
-<div class="sig-name">${userText(doctor.name)}</div>
+<div class="sig-box">${draft ? null : image(c.assets.signature)}</div>
+<div class="sig-name">${draft && !named ? statusText("notSignedDraft", c.lang) : userText(doctor.name)}</div>
 ${present(doctor.registrationNo) ? html`<div class="sig-line">${labelText("regNo", c.lang)}: ${userText(doctor.registrationNo)}</div>` : null}
 </div>`;
 }

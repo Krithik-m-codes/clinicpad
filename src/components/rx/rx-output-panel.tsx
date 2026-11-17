@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import type { ProfileGap } from "@/server/services/pad-settings";
 import type { VersionRef } from "@/server/services/rx-documents";
 import type { OutputSummary } from "@/server/services/rx-output";
+import { DEFAULT_TIME_ZONE, isValidTimeZone } from "@/lib/rx-render/format";
 import { OutputActions } from "./output-actions";
 
 /** What a finalized copy prints without, read from its finalize snapshot. */
@@ -31,11 +32,18 @@ const PRINT_GAP_TEXT: Record<PrintGap, string> = { doctorName: "a doctor's name"
 const note = "rounded-md border p-3 text-sm";
 const warn = `${note} border-amber-300 bg-amber-50`;
 
-function lastPrinted(outputs: OutputSummary | null, timeZone: string): string {
+/** Exported for tests. A bad zone name falls back to Asia/Kolkata and can never throw while the page renders. */
+export function lastPrinted(outputs: OutputSummary | null, timeZone: string): string {
   if (!outputs || outputs.count === 0) return "Not printed or downloaded yet.";
   const times = `${outputs.count} time${outputs.count === 1 ? "" : "s"}`;
   if (!outputs.lastAt) return `Printed or downloaded ${times}.`;
-  const when = new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone }).format(outputs.lastAt);
+  const zone = isValidTimeZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
+  let when: string;
+  try {
+    when = new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: zone }).format(outputs.lastAt);
+  } catch {
+    when = outputs.lastAt.toISOString();
+  }
   return `Printed or downloaded ${times}, last on ${when}.`;
 }
 

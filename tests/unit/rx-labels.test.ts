@@ -89,6 +89,8 @@ describe("labels", () => {
     expect(durationText(2, "weeks", "en")).toBe("2 weeks");
     expect(durationText(2, "weeks", "bilingual")).toBe("2 weeks / 2 सप्ताह");
     expect(durationText(null, "days", "en")).toBe("");
+    // An unknown or missing unit prints nothing (never a guessed "days").
+    for (const unit of ["years", "", "__proto__", "constructor"]) expect(durationText(3, unit, "bilingual")).toBe("");
     expect(ageText("6 y", "hi")).toBe("6 वर्ष");
     expect(ageText("15 mo", "hi")).toBe("15 माह");
     expect(ageText("11 d", "hi")).toBe("11 दिन");
@@ -113,7 +115,7 @@ describe("labels", () => {
     expect(durationText(1.5, "weeks", "en")).toBe("1.5 weeks");
     expect(durationText(1 / 3, "days", "en")).toBe("0.33 days");
     expect(durationText(0.001, "days", "en")).toBe("");
-    expect(durationText(7, "fortnights", "en")).toBe("7 days");
+    expect(durationText(7, "fortnights", "en")).toBe("");
     expect(durationText(7, null, "hi")).toBe("7 दिन");
   });
 });

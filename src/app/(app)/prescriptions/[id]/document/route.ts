@@ -33,10 +33,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (!session) return Response.redirect(new URL("/login", request.url), 303);
     const { id } = await params;
     const purpose = new URL(request.url).searchParams.get("purpose") === "print" ? "print" : "preview";
-    if (purpose === "print") {
-      const refused = crossSiteRefusal(request);
-      if (refused) return refused;
-    }
+    // Same rule for preview and print: a cross-site page must not trigger an audited view or a logged print.
+    const refused = crossSiteRefusal(request);
+    if (refused) return refused;
     const result = await renderPrescriptionHtml(session, id, purpose);
     if (!result.ok) {
       return new Response(errorPage(publicMessage(result.code, result.message)), { status: statusForError(result.code), headers: HEADERS });

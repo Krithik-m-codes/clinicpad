@@ -83,3 +83,23 @@ export function makeJpegCustom(
 
 /** The scan segment alone, for building malformed JPEGs. */
 export const JPEG_SOS = Buffer.from([0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00]);
+
+/** Inserts extra chunks right after IHDR (text, EXIF, time, ...). */
+export function pngWithChunks(png: Buffer, extra: Array<{ type: string; data: Buffer }>): Buffer {
+  const afterIhdr = 8 + 12 + 13;
+  return Buffer.concat([png.subarray(0, afterIhdr), ...extra.map((c) => chunk(c.type, c.data)), png.subarray(afterIhdr)]);
+}
+
+/** A segment with a marker and a payload (the 2-byte length is added). */
+export function jpegSegment(marker: number, payload: Buffer): Buffer {
+  const header = Buffer.from([0xff, marker, (payload.length + 2) >> 8, (payload.length + 2) & 0xff]);
+  return Buffer.concat([header, payload]);
+}
+
+/** Inserts segments right after SOI (before the JFIF segment). */
+export function jpegWithSegments(jpeg: Buffer, segments: Buffer[]): Buffer {
+  return Buffer.concat([jpeg.subarray(0, 2), ...segments, jpeg.subarray(2)]);
+}
+
+/** An APP1 EXIF segment that carries a GPS-looking payload. */
+export const JPEG_EXIF_GPS = jpegSegment(0xe1, Buffer.from("Exif\0\0MM\0*GPSLatitude 12.9716 GPSLongitude 77.5946", "latin1"));

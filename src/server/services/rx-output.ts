@@ -3,7 +3,7 @@ import { count, eq, max } from "drizzle-orm";
 import { fail, ok, type Result } from "@/lib/result";
 import { can } from "@/lib/domain/permissions";
 import { isUuid } from "@/lib/domain/ids";
-import { renderPrescription } from "@/lib/rx-render/render";
+import { RENDERER_VERSION, renderPrescription } from "@/lib/rx-render/render";
 import { checkSelfContained } from "@/lib/rx-render/self-contained";
 import { pdfFileName } from "@/lib/rx-render/format";
 import type { RenderedDocument } from "@/lib/rx-render/types";
@@ -68,6 +68,7 @@ async function recordOutput(
         pageCount: pdf?.pageCount ?? null,
         byteSize: pdf?.byteSize ?? null,
         htmlSha256: htmlSha256(rendered.html),
+        rendererVersion: RENDERER_VERSION,
       })
       .returning({ id: prescriptionOutputs.id });
     await recordAudit(tx, ctx, {

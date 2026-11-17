@@ -25,7 +25,8 @@ export default async function SettingsPage() {
   const pad = await getClinicPad(session);
 
   const rows: [string, string | undefined][] = [
-    ["Clinic", data.tenant?.name],
+    ["Clinic (pad name)", data.clinic?.name],
+    ["Account name", data.tenant?.name],
     ["Plan", data.tenant?.plan],
     ["Data region", data.tenant?.region],
     ["Timezone", data.clinic?.timezone],

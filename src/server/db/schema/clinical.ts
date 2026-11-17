@@ -303,6 +303,8 @@ export const prescriptionOutputs = pgTable(
     pageCount: integer("page_count"),
     byteSize: integer("byte_size"),
     htmlSha256: text("html_sha256").notNull(),
+    // Presentation (templates, labels, CSS, fonts) is not frozen; the renderer version that drew this output is.
+    rendererVersion: text("renderer_version"),
     createdAt: createdAt(),
   },
   (t) => [

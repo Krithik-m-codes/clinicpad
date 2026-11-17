@@ -3,7 +3,7 @@ import { and, count, eq, inArray } from "drizzle-orm";
 import { clinicAssets } from "@/server/db/schema";
 import type { TenantTx } from "@/server/db/tenant";
 import type { ImageAsset } from "@/lib/rx-render/types";
-import { inspectImage, type ImageMime } from "@/lib/domain/image";
+import { inspectImage, stripImageMetadata, type ImageMime } from "@/lib/domain/image";
 import { fail, ok, type Result } from "@/lib/result";
 import type { ServiceContext } from "./context";
 
@@ -60,16 +60,20 @@ export type StoredAsset = { id: string; mime: ImageMime; width: number; height: 
 /**
  * Validates an uploaded image from its bytes (never from a file name or declared type, which are not kept)
  * and stores it once per clinic and kind: identical bytes reuse the existing row. Assets are never updated
- * or deleted afterwards. The hash is computed here, from the bytes that are stored.
+ * or deleted afterwards. Metadata is stripped first; the hash is computed here, from the bytes that are stored.
  */
 export async function storeImageAsset(
   tx: TenantTx,
   ctx: ServiceContext,
   kind: AssetKind,
-  bytes: Uint8Array,
+  uploaded: Uint8Array,
 ): Promise<Result<StoredAsset>> {
-  const check = inspectImage(bytes);
-  if (!check.ok) return fail("invalid", check.message, "image");
+  const first = inspectImage(uploaded);
+  if (!first.ok) return fail("invalid", first.message, "image");
+  // Metadata (EXIF/GPS, comments, text chunks) never reaches the database: store, hash and de-duplicate the stripped bytes.
+  const bytes = stripImageMetadata(uploaded);
+  const check = bytes ? inspectImage(bytes) : first;
+  if (!bytes || !check.ok) return fail("invalid", "The image file is damaged. Export it again as a PNG or JPEG.", "image");
   const { mime, width, height } = check.info;
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const stored = (id: string): Result<StoredAsset> => ok({ id, mime, width, height, byteSize: bytes.length });

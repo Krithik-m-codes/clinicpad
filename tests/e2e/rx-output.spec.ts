@@ -56,7 +56,8 @@ async function finalizeDraft(page: Page, drug: string, heading: RegExp): Promise
 
 test("print and download a finalized prescription; a reprint keeps the finalized details", async ({ page }) => {
   test.setTimeout(180_000);
-  test.skip(!(await gotenbergUp()), "needs the Gotenberg PDF service (the service-down path is a unit test)");
+  // Print works without Gotenberg; only the PDF download below needs it.
+  const withPdf = await gotenbergUp();
   // The init script runs in every frame, including the hidden print frame, and counts print() calls on the top window.
   await page.addInitScript(() => {
     const top = window.top as unknown as { __printCalls?: number };
@@ -87,10 +88,14 @@ test("print and download a finalized prescription; a reprint keeps the finalized
   await expect(page.locator('iframe[title="Prescription print frame"]')).toHaveCount(0);
   await expect(page.getByText(/Printed or downloaded 1 time,/)).toBeVisible();
 
-  const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Download PDF" }).click()]);
-  expect(download.suggestedFilename()).toBe("Rx-1-v1.pdf");
-  expect((await readFile(await download.path())).subarray(0, 5).toString("latin1")).toBe("%PDF-");
-  await expect(page.getByText(/Printed or downloaded 2 times,/)).toBeVisible();
+  if (withPdf) {
+    const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Download PDF" }).click()]);
+    expect(download.suggestedFilename()).toBe("Rx-1-v1.pdf");
+    expect((await readFile(await download.path())).subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    await expect(page.getByText(/Printed or downloaded 2 times,/)).toBeVisible();
+  } else {
+    test.info().annotations.push({ type: "note", description: "Gotenberg is down: the PDF download part was skipped" });
+  }
   const printMarkup = await (await page.request.get(`${rxUrl}/document?purpose=print`)).text();
   expect(printMarkup).toContain("MMC/2026/0042");
   expect(printMarkup).toContain("Asha &lt;b&gt;Rao&lt;/b&gt;");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { IMAGE_LIMITS, inspectImage } from "@/lib/domain/image";
-import { JPEG_SOS, makeJpegCustom, makeJpegHeader, makePng } from "../helpers/images";
+import { IMAGE_LIMITS, inspectImage, stripImageMetadata } from "@/lib/domain/image";
+import { JPEG_EXIF_GPS, JPEG_SOS, jpegSegment, jpegWithSegments, makeJpegCustom, makeJpegHeader, makePng, pngWithChunks } from "../helpers/images";
 
 const bytes = (b: Buffer) => new Uint8Array(b);
 
@@ -190,5 +190,76 @@ describe("inspectImage", () => {
     // A PNG header followed by HTML is still judged as a PNG and refused.
     const result = inspectImage(bytes(Buffer.concat([makePng(64, 32).subarray(0, 8), Buffer.from("<html><script>x()</script></html>")])));
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("stripImageMetadata", () => {
+  const contains = (b: Uint8Array, text: string) => Buffer.from(b).includes(Buffer.from(text, "latin1"));
+
+  it("removes a GPS EXIF APP1, other APPn segments and comments from a JPEG, keeping JFIF", () => {
+    const comment = jpegSegment(0xfe, Buffer.from("secret comment"));
+    const xmp = jpegSegment(0xe1, Buffer.from("http://ns.adobe.com/xap/1.0/\0<x:xmpmeta/>", "latin1"));
+    const icc = jpegSegment(0xe2, Buffer.from("ICC_PROFILE\0\u0001\u0001", "latin1"));
+    const input = jpegWithSegments(makeJpegHeader(320, 200), [JPEG_EXIF_GPS, xmp, comment, icc]);
+    expect(contains(input, "GPSLatitude")).toBe(true);
+    const out = stripImageMetadata(bytes(input));
+    expect(out).not.toBeNull();
+    if (!out) return;
+    expect(contains(out, "Exif")).toBe(false);
+    expect(contains(out, "GPSLatitude")).toBe(false);
+    expect(contains(out, "xmpmeta")).toBe(false);
+    expect(contains(out, "secret comment")).toBe(false);
+    expect(contains(out, "JFIF")).toBe(true);
+    expect(inspectImage(out)).toEqual({ ok: true, info: { mime: "image/jpeg", width: 320, height: 200 } });
+  });
+
+  it("keeps the Adobe APP14 colour transform and drops other APP14 and JFXX thumbnails", () => {
+    const adobe = jpegSegment(0xee, Buffer.from("Adobe\0d\u0000\u0000\u0000\u0000\u0001", "latin1"));
+    const otherApp14 = jpegSegment(0xee, Buffer.from("Other camera data", "latin1"));
+    const jfxx = jpegSegment(0xe0, Buffer.from("JFXX\0thumbnail", "latin1"));
+    const out = stripImageMetadata(bytes(jpegWithSegments(makeJpegHeader(100, 100), [adobe, otherApp14, jfxx])));
+    expect(out).not.toBeNull();
+    if (!out) return;
+    expect(contains(out, "Adobe")).toBe(true);
+    expect(contains(out, "Other camera")).toBe(false);
+    expect(contains(out, "JFXX")).toBe(false);
+    expect(inspectImage(out).ok).toBe(true);
+  });
+
+  it("keeps entropy data, stuffed bytes and every scan of a progressive JPEG untouched", () => {
+    const scans = [Buffer.from([0x12, 0xff, 0x00, 0x34, 0xff, 0xd0, 0x56]), Buffer.from([0x77, 0x88])];
+    const clean = makeJpegCustom(64, 48, { progressive: true, scans });
+    const out = stripImageMetadata(bytes(jpegWithSegments(clean, [JPEG_EXIF_GPS])));
+    expect(out && Buffer.compare(Buffer.from(out), clean)).toBe(0);
+  });
+
+  it("removes text, EXIF and time chunks from a PNG and keeps the image chunks", () => {
+    const clean = makePng(90, 40);
+    const input = pngWithChunks(clean, [
+      { type: "tEXt", data: Buffer.from("Author\0Dr Secret", "latin1") },
+      { type: "zTXt", data: Buffer.from("Comment\0\0xx", "latin1") },
+      { type: "iTXt", data: Buffer.from("XML:com.adobe.xmp\0\0\0\0\0<x/>", "latin1") },
+      { type: "eXIf", data: Buffer.from("MM\0*GPSLatitude", "latin1") },
+      { type: "tIME", data: Buffer.from([0x07, 0xe9, 1, 2, 3, 4, 5]) },
+      { type: "pHYs", data: Buffer.from([0, 0, 0x0b, 0x13, 0, 0, 0x0b, 0x13, 1]) },
+      { type: "gAMA", data: Buffer.from([0, 1, 0x86, 0xa0]) },
+    ]);
+    const out = stripImageMetadata(bytes(input));
+    expect(out).not.toBeNull();
+    if (!out) return;
+    for (const text of ["tEXt", "zTXt", "iTXt", "eXIf", "tIME", "Dr Secret", "GPSLatitude"]) expect(contains(out, text)).toBe(false);
+    for (const type of ["IHDR", "IDAT", "IEND", "pHYs", "gAMA"]) expect(contains(out, type)).toBe(true);
+    expect(inspectImage(out)).toEqual({ ok: true, info: { mime: "image/png", width: 90, height: 40 } });
+    expect(Buffer.compare(Buffer.from(out), pngWithChunks(clean, [
+      { type: "pHYs", data: Buffer.from([0, 0, 0x0b, 0x13, 0, 0, 0x0b, 0x13, 1]) },
+      { type: "gAMA", data: Buffer.from([0, 1, 0x86, 0xa0]) },
+    ]))).toBe(0);
+  });
+
+  it("returns an image without metadata unchanged and refuses non-images", () => {
+    const png = makePng(64, 32);
+    expect(Buffer.compare(Buffer.from(stripImageMetadata(bytes(png)) ?? []), png)).toBe(0);
+    expect(stripImageMetadata(bytes(Buffer.from("not an image")))).toBeNull();
+    expect(stripImageMetadata(bytes(makePng(64, 32).subarray(0, 60)))).toBeNull();
   });
 });

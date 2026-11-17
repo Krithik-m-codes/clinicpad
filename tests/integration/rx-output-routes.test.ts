@@ -19,6 +19,7 @@ import { listPrescriptionOutputs, renderPrescriptionPdf } from "@/server/service
 import { GET as getDocument, HEAD as headDocument } from "@/app/(app)/prescriptions/[id]/document/route";
 import { GET as getPdf, HEAD as headPdf } from "@/app/(app)/prescriptions/[id]/pdf/route";
 import { GET as getPdfHealth } from "@/app/api/health/pdf/route";
+import { RENDERER_VERSION } from "@/lib/rx-render/render";
 import * as selfContained from "@/lib/rx-render/self-contained";
 import { checkSelfContained } from "@/lib/rx-render/self-contained";
 import { resetPdfHealthCache } from "@/server/pdf/health-cache";
@@ -137,6 +138,7 @@ describe("GET /prescriptions/[id]/pdf", () => {
     expect(outputs).toHaveLength(1);
     expect(outputs[0]).toMatchObject({ kind: "pdf_download", pageCount: 2, templateKey: "general", paperSize: "A4" });
     expect(outputs[0].htmlSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(outputs[0].rendererVersion).toBe(RENDERER_VERSION);
 
     const events = await auditFor(finalizedId, "prescription.pdf_downloaded");
     expect(events).toHaveLength(1);
@@ -412,6 +414,19 @@ describe("GET /prescriptions/[id]/document", () => {
     expect(summary.ok && summary.value.count).toBe(outputsBefore);
   });
 
+  it("refuses a cross-site preview too, without an audit event, and serves same-origin and address-bar views", async () => {
+    const url = `http://localhost/prescriptions/${finalizedId}/document`;
+    const before = (await auditFor(finalizedId, "prescription.previewed")).length;
+    const cross = await getDocument(new Request(url, { headers: { "sec-fetch-site": "cross-site" } }), params(finalizedId));
+    expect(cross.status).toBe(403);
+    expect((await auditFor(finalizedId, "prescription.previewed")).length).toBe(before);
+    for (const site of ["same-origin", "none"]) {
+      const ok = await getDocument(new Request(url, { headers: { "sec-fetch-site": site } }), params(finalizedId));
+      expect(ok.status).toBe(200);
+    }
+    expect((await auditFor(finalizedId, "prescription.previewed")).length).toBe(before + 2);
+  });
+
   it("answers 405 to HEAD, and refuses a cross-site print without logging", async () => {
     expect(headDocument().status).toBe(405);
     const before = (await outputsFor(finalizedId)).length;
@@ -471,6 +486,7 @@ describe("GET /prescriptions/[id]/document", () => {
     expect(prints).toHaveLength(printsBefore + 2);
     expect(prints[0].htmlSha256).toBe(prints[prints.length - 1].htmlSha256);
     expect(prints[0].pageCount).toBeNull();
+    expect(prints.every((o) => o.rendererVersion === RENDERER_VERSION)).toBe(true);
     expect(await auditFor(finalizedId, "prescription.printed")).toHaveLength(auditBefore + 2);
 
     const summary = await listPrescriptionOutputs(A.as("reception"), finalizedId);
