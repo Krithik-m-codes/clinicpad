@@ -23,6 +23,7 @@ import {
   scheduleText,
 } from "@/lib/rx-render/format";
 import { parseRenderSnapshot, type RenderSnapshot } from "@/lib/rx-render/snapshot";
+import { PAD_LIMITS } from "@/server/validation/pad-settings";
 import { PAPER } from "@/lib/rx-render/paper";
 import { BUILTIN_TEMPLATES, pickOption } from "@/lib/rx-render/types";
 import { DEVANAGARI, HOSTILE, documentFixture, item, snapshot } from "../fixtures/rx-documents";
@@ -295,25 +296,28 @@ describe("render snapshot schema", () => {
 
   it("accepts every value the write side can save (snapshot limits >= write-side limits)", () => {
     const text = (n: number) => "x".repeat(n);
+    // Clinic and doctor limits come from the real write-side schema table; the patient ones are still literals.
+    const L = PAD_LIMITS;
     const cases: Array<[string, number, (n: number) => RenderSnapshot]> = [
       ["patient name 120", 120, (n) => snapshot({ patient: { name: text(n) } })],
       ["allergy entry 80", 80, (n) => snapshot({ patient: { allergies: [text(n)] } })],
-      ["clinic name 120", 120, (n) => snapshot({ clinic: { name: text(n) } })],
-      ["clinic phone 80", 80, (n) => snapshot({ clinic: { phone: text(n) } })],
-      ["clinic email 120", 120, (n) => snapshot({ clinic: { email: text(n) } })],
-      ["footer line 600", 600, (n) => snapshot({ clinic: { footerLines: [text(n)] } })],
-      ["doctor name 120", 120, (n) => snapshot({ doctor: { name: text(n) } })],
-      ["qualifications 200", 200, (n) => snapshot({ doctor: { qualifications: text(n) } })],
-      ["designation 200", 200, (n) => snapshot({ doctor: { designation: text(n) } })],
-      ["registration 40", 40, (n) => snapshot({ doctor: { registrationNo: text(n) } })],
-      ["council 120", 120, (n) => snapshot({ doctor: { registrationCouncil: text(n) } })],
+      ["clinic name", L.clinicName, (n) => snapshot({ clinic: { name: text(n) } })],
+      ["clinic phone", L.phone, (n) => snapshot({ clinic: { phone: text(n) } })],
+      ["clinic email", L.email, (n) => snapshot({ clinic: { email: text(n) } })],
+      ["footer", L.footerChars, (n) => snapshot({ clinic: { footerLines: [text(n)] } })],
+      ["address line", L.addressLine, (n) => snapshot({ clinic: { addressLines: [text(n)] } })],
+      ["doctor name", L.doctorName, (n) => snapshot({ doctor: { name: text(n) } })],
+      ["qualifications", L.qualifications, (n) => snapshot({ doctor: { qualifications: text(n) } })],
+      ["designation", L.designation, (n) => snapshot({ doctor: { designation: text(n) } })],
+      ["registration", L.registrationNo, (n) => snapshot({ doctor: { registrationNo: text(n) } })],
+      ["council", L.registrationCouncil, (n) => snapshot({ doctor: { registrationCouncil: text(n) } })],
     ];
     for (const [label, limit, build] of cases) {
       expect(parseRenderSnapshot(build(limit)), label).not.toBeNull();
     }
     const twentyAllergies = snapshot({ patient: { allergies: Array.from({ length: 20 }, () => text(80)) } });
     expect(parseRenderSnapshot(twentyAllergies)).not.toBeNull();
-    const fourFooterLines = snapshot({ clinic: { footerLines: Array.from({ length: 4 }, () => text(150)) } });
+    const fourFooterLines = snapshot({ clinic: { footerLines: Array.from({ length: PAD_LIMITS.footerLines }, () => text(150)) } });
     expect(parseRenderSnapshot(fourFooterLines)).not.toBeNull();
   });
 

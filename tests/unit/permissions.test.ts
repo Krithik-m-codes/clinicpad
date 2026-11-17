@@ -75,6 +75,8 @@ describe("role x action matrix", () => {
     "rx.amend": ["owner", "doctor"],
     "catalogue.read": ["owner", "doctor", "nurse", "pharmacist"],
     "catalogue.write": ["owner", "doctor"],
+    "settings.clinic": ["owner"],
+    "settings.profile": ["owner", "doctor"],
   };
   const actions = Object.keys(granted) as Action[];
 
@@ -84,5 +86,22 @@ describe("role x action matrix", () => {
 
   it.each(cells)("%s on %s is %s", (role, action, expected) => {
     expect(can(role, action)).toBe(expected);
+  });
+});
+
+describe("pad settings permissions", () => {
+  it("lets only owners edit the clinic pad", () => {
+    expect(can("owner", "settings.clinic")).toBe(true);
+    for (const role of ["doctor", "reception", "nurse", "pharmacist", "accountant", "mystery"]) {
+      expect(can(role, "settings.clinic")).toBe(false);
+    }
+  });
+
+  it("lets owners and doctors edit their own doctor profile", () => {
+    expect(can("owner", "settings.profile")).toBe(true);
+    expect(can("doctor", "settings.profile")).toBe(true);
+    for (const role of ["reception", "nurse", "pharmacist", "accountant", "mystery"]) {
+      expect(can(role, "settings.profile")).toBe(false);
+    }
   });
 });

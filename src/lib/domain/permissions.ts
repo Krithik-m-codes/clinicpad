@@ -8,6 +8,8 @@ const MATRIX = {
   "rx.amend": ["owner", "doctor"],
   "catalogue.read": ["owner", "doctor", "nurse", "pharmacist"],
   "catalogue.write": ["owner", "doctor"],
+  "settings.clinic": ["owner"],
+  "settings.profile": ["owner", "doctor"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type Action = keyof typeof MATRIX;

@@ -7,7 +7,7 @@ import { withTenant, type TenantTx } from "@/server/db/tenant";
 import { parseRenderSnapshot, type RenderSnapshot } from "@/lib/rx-render/snapshot";
 import type { ImageAsset, RxDocument, RxStatus } from "@/lib/rx-render/types";
 import type { ServiceContext } from "./context";
-import { loadImageAssets } from "./assets";
+import { assetKey, loadImageAssets } from "./assets";
 import { buildRenderSnapshot } from "./render-snapshot";
 import { toItemView, toVisitView } from "./rx-mapping";
 
@@ -114,8 +114,8 @@ export async function loadRxDocument(
     return ok({
       prescriptionId: id,
       document,
-      logo: logoAssetId ? (assets.get(logoAssetId) ?? null) : null,
-      signature: signatureAssetId ? (assets.get(signatureAssetId) ?? null) : null,
+      logo: logoAssetId ? (assets.get(assetKey("logo", logoAssetId)) ?? null) : null,
+      signature: signatureAssetId ? (assets.get(assetKey("signature", signatureAssetId)) ?? null) : null,
     });
   });
 }

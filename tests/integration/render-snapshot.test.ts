@@ -10,7 +10,7 @@ import { amendPrescription, finalizePrescription, repeatPrescription, saveDraft,
 import { buildFinalSnapshot, buildRenderSnapshot } from "@/server/services/render-snapshot";
 import { getVersionLinks, loadRxDocument } from "@/server/services/rx-documents";
 import type { ServiceContext } from "@/server/services/context";
-import { loadImageAssets } from "@/server/services/assets";
+import { assetKey, loadImageAssets } from "@/server/services/assets";
 import { renderPrescription } from "@/lib/rx-render/render";
 import { parseRenderSnapshot } from "@/lib/rx-render/snapshot";
 import { newId } from "@/lib/domain/ids";
@@ -378,9 +378,18 @@ describe("defence in depth behind row-level security", () => {
     const bytes = Buffer.from([0, 255, 0, 0x5c, 0x78, 1, 2, 3]);
     const sig = await insertImage("signature", bytes, 40, 20);
     const found = await withTenant(A.tenantId, (tx) => loadImageAssets(tx, A.tenantId, [{ id: sig, kind: "signature" }]));
-    expect(found.get(sig)?.base64).toBe(bytes.toString("base64"));
+    expect(found.get(assetKey("signature", sig))?.base64).toBe(bytes.toString("base64"));
     const wrongKind = await withTenant(A.tenantId, (tx) => loadImageAssets(tx, A.tenantId, [{ id: sig, kind: "logo" }]));
     expect(wrongKind.size).toBe(0);
+    // The same id requested as both kinds: only the real kind answers.
+    const both = await withTenant(A.tenantId, (tx) =>
+      loadImageAssets(tx, A.tenantId, [
+        { id: sig, kind: "logo" },
+        { id: sig, kind: "signature" },
+      ]),
+    );
+    expect([...both.keys()]).toEqual([assetKey("signature", sig)]);
+    expect(both.get(assetKey("logo", sig))).toBeUndefined();
     const otherTenant = await withTenant(A.tenantId, (tx) => loadImageAssets(tx, B.tenantId, [{ id: sig, kind: "signature" }]));
     expect(otherTenant.size).toBe(0);
   });
