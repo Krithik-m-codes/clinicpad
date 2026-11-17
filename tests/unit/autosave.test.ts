@@ -536,6 +536,223 @@ describe("server errors that are not permanent", () => {
   });
 });
 
+describe("hold, teardown and doubt edge cases (review round 2)", () => {
+  const conflict = (message = "Changed in another window"): SaveOutcome => ({ kind: "conflict", currentRevision: 5, message });
+
+  /** A saver that is "saved", then held by an exclusive call that returned no revision. */
+  async function heldAndSaved() {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].resolve(saved(1));
+    await settle();
+    await h.saver.exclusive(async () => ({ revision: null, value: "finalize did not answer" }));
+    return h;
+  }
+
+  it("retryNow releases the hold even when nothing is unsaved, so later edits autosave", async () => {
+    const h = await heldAndSaved();
+    h.saver.retryNow();
+    h.saver.update({ text: "typed" });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1]).toMatchObject({ snapshot: { text: "typed" }, base: 1 });
+  });
+
+  it("flush releases the hold even when nothing is unsaved", async () => {
+    const h = await heldAndSaved();
+    await h.saver.flush();
+    h.saver.update({ text: "typed" });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it("overwrite releases the hold", async () => {
+    const h = harness();
+    h.saver.update({ text: "mine" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].resolve(conflict());
+    await settle();
+    await h.saver.exclusive(async () => ({ revision: null, value: "x" }));
+    h.saver.overwrite();
+    expect(h.calls).toHaveLength(2);
+    h.calls[1].resolve(saved(8));
+    await settle();
+    h.saver.update({ text: "later" });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(h.calls).toHaveLength(3);
+    expect(h.calls[2]).toMatchObject({ snapshot: { text: "later" }, base: 8 });
+  });
+
+  it("does not release the hold of a halted engine through retryNow", async () => {
+    const h = harness();
+    h.saver.update({ text: "mine" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].resolve(conflict());
+    await settle();
+    h.saver.retryNow();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("dispose sends nothing while held, even with typed edits", async () => {
+    const h = await heldAndSaved();
+    h.saver.update({ text: "typed" });
+    h.saver.dispose();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("dispose sends nothing while an exclusive call is running", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    let release!: () => void;
+    const done = h.saver.exclusive(
+      () =>
+        new Promise<{ revision: number | null; value: string }>((r) => {
+          release = () => r({ revision: 1, value: "ok" });
+        }),
+    );
+    await settle();
+    h.saver.dispose();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.calls).toHaveLength(0);
+    release();
+    await done;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it("the final save of dispose is skipped when the in-flight save ends in a conflict", async () => {
+    const h = harness();
+    h.saver.update({ text: "one" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.saver.update({ text: "two" });
+    h.saver.dispose();
+    h.calls[0].resolve(conflict());
+    await settle();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("the final save of dispose is skipped when discard() follows", async () => {
+    const h = harness();
+    h.saver.update({ text: "one" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.saver.update({ text: "two" });
+    h.saver.dispose();
+    h.saver.discard();
+    h.calls[0].resolve(saved(1));
+    await settle();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.calls).toHaveLength(1);
+    expect(h.saver.hasUnsavedChanges()).toBe(false);
+  });
+
+  it("dispose twice still sends only one final save", async () => {
+    const h = harness();
+    h.saver.update({ text: "x" });
+    h.saver.dispose();
+    h.saver.dispose();
+    expect(h.calls).toHaveLength(1);
+    h.calls[0].reject(new TypeError("Failed to fetch"));
+    await settle();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it("flush restarts the backoff", async () => {
+    const h = harness();
+    h.saver.update({ text: "x" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].reject(new TypeError("Failed to fetch"));
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    h.calls[1].reject(new TypeError("Failed to fetch"));
+    await settle();
+    expect(h.last()).toMatchObject({ retryInMs: 2000 });
+    const flushed = h.saver.flush();
+    await settle();
+    expect(h.calls).toHaveLength(3);
+    h.calls[2].reject(new TypeError("Failed to fetch"));
+    await settle();
+    await flushed;
+    expect(h.last()).toMatchObject({ state: "retrying", retryInMs: 1000 });
+  });
+
+  it("a successful exclusive call clears the doubt about an earlier timed-out save", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    await vi.advanceTimersByTimeAsync(30_000); // timed out: ambiguous
+    await h.saver.exclusive(async () => ({ revision: 3, savedAt: "t", value: "ok" }));
+    h.saver.update({ text: "b" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[1].resolve(conflict());
+    await settle();
+    expect(h.last()).toMatchObject({ state: "conflict", message: "Changed in another window" });
+  });
+
+  it("keeps the doubt across an invalid answer", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    await vi.advanceTimersByTimeAsync(30_000); // timed out, may have committed
+    await vi.advanceTimersByTimeAsync(1000);
+    h.calls[1].resolve({ kind: "invalid", message: "Bad value" });
+    await settle();
+    h.saver.update({ text: "b" });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(h.calls).toHaveLength(3);
+    h.calls[2].resolve(conflict());
+    await settle();
+    expect(h.last()).toMatchObject({ state: "conflict", message: AMBIGUOUS_CONFLICT_MESSAGE });
+  });
+
+  it("a queued exclusive call does not run after discard()", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    const fn = vi.fn(async () => ({ revision: 2, value: "finalized" }));
+    const queued = h.saver.exclusive(fn);
+    const rejected = expect(queued).rejects.toThrow(/closed|stopped/);
+    h.saver.discard();
+    h.calls[0].resolve(saved(1));
+    await settle();
+    await rejected;
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("a queued exclusive call does not run after dispose()", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    const fn = vi.fn(async () => ({ revision: 2, value: "finalized" }));
+    const queued = h.saver.exclusive(fn);
+    const rejected = expect(queued).rejects.toThrow(/closed|stopped/);
+    h.saver.dispose();
+    h.calls[0].resolve(saved(1));
+    await settle();
+    await rejected;
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("a queued exclusive call does not run when the in-flight save ends in a conflict", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    const fn = vi.fn(async () => ({ revision: 2, value: "finalized" }));
+    const queued = h.saver.exclusive(fn);
+    const rejected = expect(queued).rejects.toThrow(/closed|stopped/);
+    h.calls[0].resolve(conflict());
+    await settle();
+    await rejected;
+    expect(fn).not.toHaveBeenCalled();
+    // the lock is released, so a later call (after the user decides) can run
+    await expect(h.saver.exclusive(async () => ({ revision: 6, value: "ok" }))).resolves.toBe("ok");
+  });
+});
+
 describe("rules pinned by review", () => {
   it("never reports saved while a newer edit is waiting", async () => {
     const h = harness();

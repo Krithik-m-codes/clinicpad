@@ -200,7 +200,9 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
     try {
       const outcome = await saveWithTimeout(snapshot, revision);
       retryMs = 0;
-      ambiguous = false; // the server answered, so we know where we stand
+      // An accepted or conflicting answer settles whether the earlier save committed. An invalid answer
+      // does not: the server validates before it checks the revision.
+      if (outcome.kind !== "invalid") ambiguous = false;
       apply(outcome, seq, doubt);
     } catch (error) {
       retryMs = retryMs === 0 ? 1_000 : Math.min(retryMs * 2, maxRetryMs);
@@ -256,8 +258,9 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
   }
 
   function retryNow(): void {
-    if (disposed || halt || paused > 0 || inFlight !== null || !unsaved()) return;
-    held = false;
+    if (disposed || halt || paused > 0) return;
+    held = false; // the caller decided to carry on, even if nothing is unsaved right now
+    if (inFlight !== null || !unsaved()) return;
     retryMs = 0;
     void attempt();
   }
@@ -279,7 +282,13 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
     paused += 1;
     clearTimer();
     try {
-      if (inFlight !== null) await inFlight;
+      if (inFlight !== null) {
+        const haltBefore = halt;
+        await inFlight;
+        // Do not run (finalize) after the editor was closed or saving stopped while we waited.
+        if (disposed) throw new Error("The editor was closed before this could run.");
+        if (halt && halt !== haltBefore) throw new Error("Saving stopped while this was waiting, so it did not run.");
+      }
       const seq = editSeq;
       const result = await fn(latest, revision);
       if (result.revision !== null) {
