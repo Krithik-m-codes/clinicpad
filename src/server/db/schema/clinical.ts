@@ -130,6 +130,8 @@ export const prescriptions = pgTable(
     parentPrescriptionId: uuid("parent_prescription_id"),
     amendmentReason: text("amendment_reason"),
     finalizedBy: uuid("finalized_by"),
+    /** What the printed pad shows, frozen by finalize (Plan 1C). Parse with parseRenderSnapshot(). */
+    renderSnapshot: jsonb("render_snapshot").$type<unknown>(),
     updatedAt: updatedAt(),
     finalizedAt: timestamp("finalized_at", { withTimezone: true }),
     createdAt: createdAt(),
@@ -279,4 +281,36 @@ export const tenantCounters = pgTable(
     lastNo: integer("last_no").notNull().default(0),
   },
   (t) => [primaryKey({ columns: [t.tenantId, t.name] })],
+);
+
+/**
+ * Append-only log of every print and PDF download of a finalized prescription: who, when,
+ * which layout, and the SHA-256 of the exact HTML that was rendered. Replaces the
+ * printed_at / pdf_url columns, which cannot be written once a prescription is frozen.
+ */
+export const prescriptionOutputs = pgTable(
+  "prescription_outputs",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    prescriptionId: uuid("prescription_id").notNull(),
+    actorUserId: uuid("actor_user_id"),
+    kind: text("kind").notNull(),
+    templateKey: text("template_key").notNull(),
+    paperSize: text("paper_size").notNull(),
+    pageCount: integer("page_count"),
+    byteSize: integer("byte_size"),
+    htmlSha256: text("html_sha256").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({
+      name: "rx_outputs_prescription_fk",
+      columns: [t.tenantId, t.prescriptionId],
+      foreignColumns: [prescriptions.tenantId, prescriptions.id],
+    }).onDelete("cascade"),
+    index("rx_outputs_prescription_idx").on(t.tenantId, t.prescriptionId, t.createdAt),
+  ],
 );

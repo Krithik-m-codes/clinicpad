@@ -94,6 +94,7 @@ export async function createClinicAccount(raw: OnboardingInput): Promise<CreateC
       await tx.insert(doctors).values({
         tenantId,
         userId,
+        displayName: input.doctorName,
         primaryBranchId: branch.id,
         specialties: [],
         consultationFeePaise: 0,

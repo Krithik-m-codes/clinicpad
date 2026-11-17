@@ -66,6 +66,8 @@ export async function seedDemo(): Promise<void> {
         city: "Pune",
         state: "Maharashtra",
         pincode: "411001",
+        phone: "020-2612 3456",
+        padFooter: "Mon–Sat 9 am – 1 pm and 5 pm – 8 pm\nPlease bring your previous prescriptions.",
         country: "IN",
         timezone: "Asia/Kolkata",
         currency: "INR",
@@ -90,6 +92,9 @@ export async function seedDemo(): Promise<void> {
           .values({
             tenantId,
             userId,
+            displayName: person.name,
+            regNo: person.role === "owner" ? "MMC 2011/04/1234" : "MMC 2015/07/5678",
+            registrationCouncil: "Maharashtra Medical Council",
             primaryBranchId: mainBranch.id,
             qualifications: "MBBS, MD",
             specialties: ["General Medicine"],

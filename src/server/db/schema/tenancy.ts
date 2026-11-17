@@ -1,5 +1,6 @@
 import {
   boolean,
+  customType,
   foreignKey,
   index,
   integer,
@@ -16,6 +17,13 @@ const pk = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
 const createdAt = () =>
   timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 
+/** Raw bytes (postgres-js returns bytea as a Buffer). */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
+
 export const tenants = pgTable(
   "tenants",
   {
@@ -28,6 +36,35 @@ export const tenants = pgTable(
     createdAt: createdAt(),
   },
   (t) => [unique("tenants_slug_unique").on(t.slug)],
+);
+
+/**
+ * Uploaded clinic images (logo, doctor signature). Immutable: the runtime role can insert
+ * and read but never update or delete. Finalized prescriptions reference these ids in
+ * their print snapshot, so a reprint keeps the image it was finalized with.
+ */
+export const clinicAssets = pgTable(
+  "clinic_assets",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    mime: text("mime").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    sha256: text("sha256").notNull(),
+    bytes: bytea("bytes").notNull(),
+    createdBy: uuid("created_by"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    // Target of the composite same-tenant foreign keys from clinics and doctors (ADR-0025 pattern).
+    unique("clinic_assets_tenant_id_uq").on(t.tenantId, t.id),
+    unique("clinic_assets_dedupe_key").on(t.tenantId, t.kind, t.sha256),
+  ],
 );
 
 export const clinics = pgTable(
@@ -46,12 +83,26 @@ export const clinics = pgTable(
     timezone: text("timezone").notNull().default("Asia/Kolkata"),
     currency: text("currency").notNull().default("INR"),
     logoUrl: text("logo_url"),
+    addressLine2: text("address_line2"),
+    phone: text("phone"),
+    email: text("email"),
+    padFooter: text("pad_footer"),
+    rxTemplate: text("rx_template").notNull().default("general"),
+    rxPaperSize: text("rx_paper_size").notNull().default("A4"),
+    rxLabels: text("rx_labels").notNull().default("en"),
+    logoAssetId: uuid("logo_asset_id"),
     createdAt: createdAt(),
   },
   (t) => [
     index("clinics_tenant_idx").on(t.tenantId),
     // Target of the composite same-tenant foreign keys (a foreign key needs a unique key to point at).
     unique("clinics_tenant_id_uq").on(t.tenantId, t.id),
+    // Same-tenant reference to the current logo. NO ACTION: the runtime role can never delete assets.
+    foreignKey({
+      name: "clinics_logo_asset_fk",
+      columns: [t.tenantId, t.logoAssetId],
+      foreignColumns: [clinicAssets.tenantId, clinicAssets.id],
+    }),
   ],
 );
 
@@ -134,6 +185,10 @@ export const doctors = pgTable(
     specialties: text("specialties").array(),
     signatureUrl: text("signature_url"),
     stampUrl: text("stamp_url"),
+    displayName: text("display_name"),
+    designation: text("designation"),
+    registrationCouncil: text("registration_council"),
+    signatureAssetId: uuid("signature_asset_id"),
     consultationFeePaise: integer("consultation_fee_paise").notNull().default(0),
     createdAt: createdAt(),
   },
@@ -152,5 +207,11 @@ export const doctors = pgTable(
       columns: [t.tenantId, t.primaryBranchId],
       foreignColumns: [branches.tenantId, branches.id],
     }).onDelete("set null"),
+    // Same-tenant reference to the current signature (NO ACTION, as for the clinic logo).
+    foreignKey({
+      name: "doctors_signature_asset_fk",
+      columns: [t.tenantId, t.signatureAssetId],
+      foreignColumns: [clinicAssets.tenantId, clinicAssets.id],
+    }),
   ],
 );
