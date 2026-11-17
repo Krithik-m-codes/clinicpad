@@ -76,11 +76,15 @@ export type Autosaver<T> = {
   exclusive<R>(fn: (snapshot: T, baseRevision: number) => Promise<ExclusiveResult<R>>): Promise<R>;
   hasUnsavedChanges(): boolean;
   /**
-   * True when leaving the page now would lose edits: something is unsaved AND the unmount save
-   * (`dispose()`) would not send it, because the engine is halted (conflict, locked, invalid), held,
-   * or failing to reach the server. Plain pending or in-flight saves are not at risk.
+   * True when leaving the page now could lose edits: something is unsaved AND the unmount save
+   * (`dispose()`) cannot be relied on to send it: the engine is halted (conflict, locked, invalid),
+   * held, paused by an exclusive call (finalize), failing or retrying, in doubt after an ambiguous
+   * failure, or a save is in flight (it may hang, and dispose would only queue a second one behind it).
+   * Only an edit waiting in the debounce window is safe: `dispose()` sends it at once.
    */
   wouldLoseEditsOnLeave(): boolean;
+  /** True once the server said the draft is no longer editable (finalized elsewhere or by a lost-answer finalize). */
+  isLocked(): boolean;
   /**
    * Teardown that keeps edits safe: stops timers, never emits a status again, and, unless halted
    * (conflict, locked, invalid) or held, sends ONE final best-effort save of the latest snapshot
@@ -328,7 +332,11 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
       }
       if (result.conflict) {
         // The server has a newer revision than the one this editor built on: offer Keep / Load.
-        halt = { state: "conflict", message: result.conflict.message, currentRevision: result.conflict.currentRevision };
+        halt = {
+          state: "conflict",
+          message: ambiguous ? AMBIGUOUS_CONFLICT_MESSAGE : result.conflict.message,
+          currentRevision: result.conflict.currentRevision,
+        };
         emit(halt);
       }
       return result.value;
@@ -366,7 +374,12 @@ export function createAutosaver<T>(options: AutosaverOptions<T>): Autosaver<T> {
     overwrite,
     exclusive,
     hasUnsavedChanges: () => !discarded && (unsaved() || inFlight !== null),
-    wouldLoseEditsOnLeave: () => !discarded && !disposed && unsaved() && (halt !== null || held || retryMs > 0),
+    wouldLoseEditsOnLeave: () =>
+      !discarded &&
+      !disposed &&
+      unsaved() &&
+      (halt !== null || held || paused > 0 || retryMs > 0 || ambiguous || inFlight !== null),
+    isLocked: () => halt?.state === "locked",
     dispose,
     discard,
   };

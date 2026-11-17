@@ -11,6 +11,9 @@ export const FINALIZE_TIMEOUT_MS = 45_000;
 /** The server may have finalized even though no answer arrived, so never claim it did not. */
 export const COULD_NOT_CONFIRM_MESSAGE =
   "Could not confirm that the prescription was finalized. Your edits are kept; if it is still a draft, try again.";
+/** Shown when the browser is online but the outcome still cannot be read (edits that could not be saved). */
+export const COULD_NOT_CONFIRM_RELOAD_MESSAGE =
+  "Could not confirm — your edits are kept. Use Reload if this page looks unchanged.";
 /** Shown while the outcome cannot be read yet (offline, or edits that could not be saved). */
 export const CHECK_LATER_MESSAGE =
   "Could not confirm whether this was finalized. Your edits are kept; we will check again when the connection is back.";
@@ -96,6 +99,7 @@ export function useAutosave(prescriptionId: string, initial: EditorState, initia
   /** Drops local edits and sends nothing: only after the doctor chose the server's version, or after finalizing. */
   const stop = useCallback(() => saverRef.current?.discard(), []);
   const hasUnsavedChanges = useCallback(() => saverRef.current?.hasUnsavedChanges() ?? false, []);
+  const isLocked = useCallback(() => saverRef.current?.isLocked() ?? false, []);
 
   /**
    * Saves the latest snapshot and finalizes exactly that revision, after any in-flight save.
@@ -132,5 +136,5 @@ export function useAutosave(prescriptionId: string, initial: EditorState, initia
     }
   }, [prescriptionId]);
 
-  return { status, ready, update, flush, retryNow, overwrite, stop, hasUnsavedChanges, finalize };
+  return { status, ready, update, flush, retryNow, overwrite, stop, hasUnsavedChanges, isLocked, finalize };
 }

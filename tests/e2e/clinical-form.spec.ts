@@ -15,9 +15,9 @@ async function newDraft(page: Page, patientName: string): Promise<string> {
   await page.goto("/patients/new");
   await page.getByLabel("Name").fill(patientName);
   await page.getByRole("button", { name: /register patient/i }).click();
-  await expect(page.getByRole("heading", { name: patientName })).toBeVisible();
+  await expect(page.getByRole("heading", { name: patientName })).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: /new prescription/i }).click();
-  await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible({ timeout: 15_000 });
   await waitForEditor(page);
   return page.url();
 }
@@ -171,6 +171,14 @@ test("leaving the page: pending edits are sent on unmount, but a halted draft as
   await expect(page.getByText(/nothing since .* is saved/i)).toBeVisible({ timeout: 15_000 });
   dialogs.length = 0;
   await page.getByRole("link", { name: "Leave Patient" }).click();
+  await expect.poll(() => dialogs.length).toBe(1);
+  expect(dialogs[0]).toBe("You have changes that are not saved. Leave anyway?");
+  expect(page.url()).toBe(url);
+  await expect(page.getByLabel("Advice")).toHaveValue("Written after the bad value");
+
+  // Sign out is a form, not a link: it asks too, and cancelling keeps the session and the page.
+  dialogs.length = 0;
+  await page.getByRole("button", { name: "Sign out" }).click();
   await expect.poll(() => dialogs.length).toBe(1);
   expect(dialogs[0]).toBe("You have changes that are not saved. Leave anyway?");
   expect(page.url()).toBe(url);

@@ -119,15 +119,28 @@ describe("installLeaveGuard: links", () => {
 });
 
 describe("installLeaveGuard: back and forward", () => {
-  it("restores the current URL and blocks the router when the doctor cancels", () => {
-    const push = vi.spyOn(window.history, "pushState");
-    window.history.replaceState(null, "", "/patients/p-1"); // the browser already moved
+  /** The router listens first in production (Next installs its handler before this guard), so register it before the guard. */
+  function withRouter(): { routerSaw: ReturnType<typeof vi.fn>; stop: () => void } {
+    remove();
     const routerSaw = vi.fn();
     window.addEventListener("popstate", routerSaw);
+    remove = installLeaveGuard(() => atRisk);
+    return { routerSaw, stop: () => window.removeEventListener("popstate", routerSaw) };
+  }
+
+  it("restores this page's URL and router state and blocks the router when the doctor cancels", () => {
+    const pageState = { __NA: true, page: "editor" };
+    window.history.replaceState(pageState, "", "/prescriptions/rx-1");
+    const { routerSaw, stop } = withRouter();
+    const push = vi.spyOn(window.history, "pushState");
+    // The browser already moved back: URL and state belong to the previous entry now.
+    window.history.replaceState({ __NA: true, page: "patient" }, "", "/patients/p-1");
+    push.mockClear();
     window.dispatchEvent(new PopStateEvent("popstate"));
-    window.removeEventListener("popstate", routerSaw);
+    stop();
     expect(confirm).toHaveBeenCalledWith(LEAVE_MESSAGE);
     expect(push).toHaveBeenCalledTimes(1);
+    expect(push.mock.calls[0][0]).toEqual(pageState);
     expect(window.location.pathname).toBe("/prescriptions/rx-1");
     expect(routerSaw).not.toHaveBeenCalled();
     push.mockRestore();
@@ -135,11 +148,10 @@ describe("installLeaveGuard: back and forward", () => {
 
   it("lets navigation happen when the doctor confirms", () => {
     confirm.mockReturnValue(true);
+    const { routerSaw, stop } = withRouter();
     const push = vi.spyOn(window.history, "pushState");
-    const routerSaw = vi.fn();
-    window.addEventListener("popstate", routerSaw);
     window.dispatchEvent(new PopStateEvent("popstate"));
-    window.removeEventListener("popstate", routerSaw);
+    stop();
     expect(push).not.toHaveBeenCalled();
     expect(routerSaw).toHaveBeenCalledTimes(1);
     push.mockRestore();
@@ -148,6 +160,49 @@ describe("installLeaveGuard: back and forward", () => {
   it("does not ask when nothing is at risk", () => {
     atRisk = false;
     window.dispatchEvent(new PopStateEvent("popstate"));
+    expect(confirm).not.toHaveBeenCalled();
+  });
+});
+
+describe("installLeaveGuard: guarded forms (sign out)", () => {
+  function form(guarded: boolean): HTMLFormElement {
+    const f = document.createElement("form");
+    if (guarded) f.setAttribute("data-leave-guard", "");
+    document.body.append(f);
+    return f;
+  }
+  function submit(f: HTMLFormElement): { prevented: boolean; reachedPage: boolean } {
+    let reachedPage = false;
+    const spy = () => {
+      reachedPage = true;
+    };
+    document.body.addEventListener("submit", spy);
+    const event = new Event("submit", { bubbles: true, cancelable: true });
+    f.dispatchEvent(event);
+    document.body.removeEventListener("submit", spy);
+    return { prevented: event.defaultPrevented, reachedPage };
+  }
+
+  it("asks before a guarded form submits and blocks it when the doctor cancels", () => {
+    const result = submit(form(true));
+    expect(confirm).toHaveBeenCalledWith(LEAVE_MESSAGE);
+    expect(result.prevented).toBe(true);
+    expect(result.reachedPage).toBe(false);
+  });
+
+  it("lets a guarded form submit when the doctor confirms", () => {
+    confirm.mockReturnValue(true);
+    expect(submit(form(true)).prevented).toBe(false);
+  });
+
+  it("lets a guarded form submit when nothing is at risk", () => {
+    atRisk = false;
+    expect(submit(form(true)).prevented).toBe(false);
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("never touches forms that are not marked", () => {
+    expect(submit(form(false)).prevented).toBe(false);
     expect(confirm).not.toHaveBeenCalled();
   });
 });

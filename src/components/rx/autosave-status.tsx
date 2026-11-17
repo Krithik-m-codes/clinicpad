@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { FIELDS as VITAL_FIELDS } from "./vitals-section";
 import { AMBIGUOUS_CONFLICT_MESSAGE, type AutosaveStatus } from "@/lib/rx/autosave";
 
 type Props = {
@@ -15,7 +16,11 @@ function time(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-const PATH_LABELS: Record<string, string> = { items: "medicines", investigations: "tests" };
+const PATH_LABELS: Record<string, string> = {
+  items: "medicines",
+  investigations: "tests",
+  ...Object.fromEntries(VITAL_FIELDS.map((f) => [f.key, f.label])),
+};
 
 /** "items.2.dose" becomes "medicines 3 \u00b7 dose": list positions are counted from 1, as the doctor sees them. */
 export function describePath(path: string): string {

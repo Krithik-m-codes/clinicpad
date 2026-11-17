@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { AutosaveStatusBar } from "@/components/rx/autosave-status";
+import { AutosaveStatusBar, describePath } from "@/components/rx/autosave-status";
 import { AMBIGUOUS_CONFLICT_MESSAGE, OFFLINE_MESSAGE, type AutosaveStatus } from "@/lib/rx/autosave";
 
 function setup(status: AutosaveStatus) {
@@ -47,6 +47,11 @@ describe("AutosaveStatusBar", () => {
     expect(text).toMatch(/^Nothing since \d{1,2}:\d{2}.* is saved/);
     expect(text).toContain("Keep this to at most 60 characters");
     expect(text).toContain("(medicines 3 \u00b7 dose)");
+  });
+
+  it("shows the label the editor uses for a vital, and falls back to the raw key", () => {
+    expect(describePath("vitals.temperatureF")).toBe("vitals \u00b7 Temperature (\u00b0F)");
+    expect(describePath("items.0.doseMorning")).toBe("medicines 1 \u00b7 doseMorning");
   });
 
   it("names the whole draft when there has been no save yet", () => {

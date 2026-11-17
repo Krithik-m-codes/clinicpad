@@ -329,7 +329,7 @@ describe("ClinicalEditor connection loss (final fix wave)", () => {
     expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
-  it("does not refresh while the flush leaves edits unsaved, even when online", async () => {
+  it("online with edits the flush could not save: no refresh, and no promise of a re-check that will not come", async () => {
     mocks.autosave.mockResolvedValue(CONFLICT);
     mocks.finalize.mockResolvedValue({ ok: false, code: "internal", message: "x" });
     renderEditor();
@@ -337,7 +337,42 @@ describe("ClinicalEditor connection loss (final fix wave)", () => {
     clickFinalize();
     await advance(0);
     expect(mocks.refresh).not.toHaveBeenCalled();
-    expect(screen.getByText(CHECK_LATER)).toBeInTheDocument();
+    expect(screen.queryByText(CHECK_LATER)).not.toBeInTheDocument();
+    expect(screen.getByText(/could not confirm — your edits are kept. use reload if this page looks unchanged/i)).toBeInTheDocument();
+    // An online event does not start a re-check that nothing armed.
+    setOnline(true);
+    await advance(0);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("refreshes after a lost-answer finalize when the flush finds the draft locked (the finalize did commit)", async () => {
+    mocks.autosave.mockResolvedValue({ ok: false, code: "immutable", message: "This prescription is finalized." });
+    mocks.finalize.mockResolvedValue({ ok: false, code: "internal", message: "x" });
+    renderEditor();
+    type("kept");
+    clickFinalize();
+    await advance(0);
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-arms the online check when the first re-check still cannot read the outcome", async () => {
+    const pending = deferred<unknown>();
+    mocks.finalize.mockReturnValue(pending.promise);
+    renderEditor();
+    clickFinalize();
+    await advance(0);
+    setOnline(false);
+    pending.resolve({ ok: false, code: "unreachable", message: "x" });
+    await advance(0);
+    // The event fires but the browser still reports offline: the check must be armed again.
+    act(() => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await advance(0);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    setOnline(true);
+    await advance(0);
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
   });
 
   it("online with a clean flush refreshes straight away", async () => {

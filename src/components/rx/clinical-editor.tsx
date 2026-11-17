@@ -82,6 +82,7 @@ export function ClinicalEditor({
   const recheckOutcome = useOutcomeRecheck({
     flush: autosave.flush,
     hasUnsavedChanges: autosave.hasUnsavedChanges,
+    isLocked: autosave.isLocked,
     refresh: router.refresh,
     setMessage: setFinalizeError,
     mounted,

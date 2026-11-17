@@ -7,6 +7,8 @@ config({ path: ".env.local", quiet: true });
 export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 60_000,
+  // A cold dev server compiles a route on first request; registerClinic already allows 30 s.
+  expect: { timeout: 15_000 },
   retries: process.env.CI ? 1 : 0,
   workers: 1,
   use: {

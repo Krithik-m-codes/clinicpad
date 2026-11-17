@@ -989,13 +989,81 @@ describe("final fix wave: halt details", () => {
   });
 });
 
+describe("finalize conflict after an ambiguous failure", () => {
+  it("shows the ambiguous-conflict text, not the server's", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].reject(new Error("offline")); // the save may or may not have committed
+    await settle();
+    await h.saver.exclusive(async () => ({
+      revision: null,
+      conflict: { currentRevision: 7, message: "Changed elsewhere" },
+      value: "x",
+    }));
+    expect(h.last()).toEqual({ state: "conflict", message: AMBIGUOUS_CONFLICT_MESSAGE, currentRevision: 7 });
+  });
+});
+
 describe("wouldLoseEditsOnLeave", () => {
-  it("is false while edits are merely pending or in flight (dispose sends them)", async () => {
+  it("is false while an edit is merely pending in the debounce (dispose sends it)", async () => {
     const h = harness();
     expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
     h.saver.update({ text: "a" });
     expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
+  });
+
+  it("is true while a save is in flight (it may hang, and dispose would only queue another)", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
     await vi.advanceTimersByTimeAsync(800);
+    expect(h.calls).toHaveLength(1);
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(true);
+    h.calls[0].resolve(saved(1));
+    await settle();
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
+  });
+
+  it("stays true through a manual retry of a failed save (the attempt is in flight and the failure is ambiguous)", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].reject(new Error("offline"));
+    await settle();
+    h.saver.retryNow();
+    expect(h.calls).toHaveLength(2);
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(true);
+    h.calls[1].resolve(saved(1));
+    await settle();
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
+  });
+
+  it("stays true through flush() after a failed save", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    await vi.advanceTimersByTimeAsync(800);
+    h.calls[0].reject(new Error("offline"));
+    await settle();
+    const flushed = h.saver.flush();
+    await settle();
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(true);
+    h.calls[1].resolve(saved(1));
+    await settle();
+    await flushed;
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
+  });
+
+  it("is true while an exclusive call (finalize) is running", async () => {
+    const h = harness();
+    h.saver.update({ text: "a" });
+    let release!: () => void;
+    const running = h.saver.exclusive(
+      () => new Promise<{ revision: number; savedAt: string; value: string }>((resolve) => { release = () => resolve({ revision: 1, savedAt: "t", value: "ok" }); }),
+    );
+    await settle();
+    expect(h.saver.wouldLoseEditsOnLeave()).toBe(true);
+    release();
+    await running;
     expect(h.saver.wouldLoseEditsOnLeave()).toBe(false);
   });
 

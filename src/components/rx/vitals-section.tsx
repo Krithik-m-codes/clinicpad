@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { bmi } from "@/lib/domain/rx-format";
 import type { EditorState, VitalKey } from "@/lib/rx/editor-state";
 
-const FIELDS: { key: VitalKey; label: string; step: string }[] = [
+export const FIELDS: { key: VitalKey; label: string; step: string }[] = [
   { key: "bpSystolic", label: "BP systolic (mmHg)", step: "1" },
   { key: "bpDiastolic", label: "BP diastolic (mmHg)", step: "1" },
   { key: "pulse", label: "Pulse (/min)", step: "1" },

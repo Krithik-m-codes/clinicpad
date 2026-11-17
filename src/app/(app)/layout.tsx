@@ -22,7 +22,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         role={session.role}
         clinicName={clinic?.name ?? "ClinicPad"}
         footer={
-          <form action={signOutAction}>
+          <form action={signOutAction} data-leave-guard="">
             <Button type="submit" variant="outline" size="sm">
               Sign out
             </Button>

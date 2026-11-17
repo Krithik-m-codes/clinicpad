@@ -19,14 +19,22 @@ function leavesPage(anchor: HTMLAnchorElement, event: MouseEvent): boolean {
 }
 
 /**
- * Next's soft navigation (links, back/forward) never fires `beforeunload`, and the editor's unmount
- * cannot save once autosave is halted, held or failing. While `atRisk()` is true this asks before the
+ * Next's soft navigation (links, back/forward) and server-action forms such as sign out never fire
+ * `beforeunload`, and the editor's unmount cannot be relied on to save while autosave is halted, held,
+ * failing or mid-save. While `atRisk()` is true this asks before the
  * page is left and cancels the navigation when the doctor declines. Returns the cleanup function.
  */
 export function installLeaveGuard(atRisk: () => boolean): () => void {
   const href = window.location.href;
+  // The router's history state for THIS page. After the browser has already moved back, `history.state`
+  // belongs to the other entry, so it is sampled while we are still here: now, and on every interaction.
+  let pageState: unknown = window.history.state;
+  const sampleState = () => {
+    pageState = window.history.state;
+  };
 
   const onClick = (event: MouseEvent) => {
+    sampleState();
     if (event.defaultPrevented || !atRisk()) return;
     const origin = event.target;
     if (!(origin instanceof Element)) return;
@@ -42,14 +50,29 @@ export function installLeaveGuard(atRisk: () => boolean): () => void {
     if (window.confirm(LEAVE_MESSAGE)) return;
     // The browser already moved: stop the router from following it and put this page's URL back.
     event.stopImmediatePropagation();
-    window.history.pushState(window.history.state, "", href);
+    window.history.pushState(pageState, "", href);
+  };
+
+  // Forms that leave the page without a link (sign out is a server action form) opt in with data-leave-guard.
+  const onSubmit = (event: Event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || !form.hasAttribute("data-leave-guard") || !atRisk()) return;
+    if (window.confirm(LEAVE_MESSAGE)) return;
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   // Capture phase so these run before the router's own handlers.
   document.addEventListener("click", onClick, true);
+  document.addEventListener("submit", onSubmit, true);
   window.addEventListener("popstate", onPopState, true);
+  window.addEventListener("pointerdown", sampleState, true);
+  window.addEventListener("keydown", sampleState, true);
   return () => {
     document.removeEventListener("click", onClick, true);
+    document.removeEventListener("submit", onSubmit, true);
     window.removeEventListener("popstate", onPopState, true);
+    window.removeEventListener("pointerdown", sampleState, true);
+    window.removeEventListener("keydown", sampleState, true);
   };
 }
