@@ -1,0 +1,74 @@
+import type { TemplateDefinition } from "./templates";
+import type { PaperSpec } from "./types";
+
+/**
+ * Print-first CSS. The outer .sheet table repeats its thead (pad header) and tfoot (pad footer)
+ * on every printed page; the medicines table repeats its own header; rows never split.
+ * Built only from fixed strings, template definitions and paper specs: never user data (the
+ * HTML escaper does not escape for CSS). No comments, no url(), no @import, no backslashes,
+ * no attr()/image-set()/src(): checkSelfContained() would refuse them.
+ */
+export function documentCss(def: TemplateDefinition, paper: PaperSpec): string {
+  const m = paper.marginMm;
+  return [
+    `@page{size:${paper.size} portrait;margin:${m.top}mm ${m.right}mm ${m.bottom}mm ${m.left}mm}`,
+    `:root{--accent:${def.accent}}`,
+    `*{box-sizing:border-box}`,
+    `html,body{margin:0;padding:0;background:#fff;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}`,
+    `body{font-family:"Noto Sans Devanagari",sans-serif;font-size:${paper.baseFontPt}pt;line-height:1.35}`,
+    `.sheet{width:100%;border-collapse:collapse}`,
+    `.sheet>thead{display:table-header-group}`,
+    `.sheet>tfoot{display:table-footer-group}`,
+    `.sheet>thead>tr>td,.sheet>tfoot>tr>td,.sheet>tbody>tr>td{padding:0;vertical-align:top}`,
+    `td,th,.v{overflow-wrap:anywhere;word-break:break-word}`,
+    `.v{unicode-bidi:isolate}`,
+    `.pad-head{border-bottom:2px solid var(--accent);padding-bottom:2mm;margin-bottom:3mm}`,
+    `.head-row{display:flex;justify-content:space-between;align-items:flex-start;gap:4mm}`,
+    `.doc,.clinic{flex:1;min-width:0}`,
+    `.clinic{text-align:right}`,
+    `.doc-name,.clinic-name{font-size:1.35em;font-weight:700;color:var(--accent)}`,
+    `.doc-line,.clinic-line{font-size:.9em}`,
+    `.logo img{display:block;max-height:22mm;max-width:40mm;width:auto;height:auto}`,
+    `.banner{margin-top:2mm;padding:1.5mm 2mm;border:1px solid #b45309;background:#fef3c7;font-weight:700;font-size:.9em}`,
+    `.banner-superseded{border-color:#b91c1c;background:#fee2e2}`,
+    `.watermark{position:fixed;top:45%;left:0;right:0;text-align:center;transform:rotate(-30deg);font-size:3.2em;font-weight:700;color:rgba(185,28,28,.14);pointer-events:none}`,
+    `.patient{display:flex;justify-content:space-between;gap:4mm;margin-bottom:2mm}`,
+    `.patient-main{display:flex;flex-wrap:wrap;gap:1mm 5mm}`,
+    `.patient-meta{text-align:right}`,
+    `.k{font-weight:700}`,
+    `.small{font-size:.85em}`,
+    `.muted{color:#555}`,
+    `.generic{color:#555;font-size:.85em;font-style:italic}`,
+    `.allergies{margin:1mm 0 2mm;padding:1mm 2mm;border-left:3px solid #b91c1c;background:#fff1f2}`,
+    `.vitals{display:flex;flex-wrap:wrap;gap:1mm 5mm;margin:1mm 0 2mm}`,
+    `.line{margin:0 0 1.2mm}`,
+    `.block{margin:2mm 0;break-inside:avoid}`,
+    `.block-title{font-weight:700;color:var(--accent)}`,
+    `.block-body{margin-top:.5mm}`,
+    `.rx-mark{font-size:1.9em;font-weight:700;font-style:italic;color:var(--accent);margin:1mm 0}`,
+    `.rx-mark span{font-size:.6em}`,
+    `.meds{width:100%;border-collapse:collapse;margin:1mm 0 3mm;table-layout:fixed}`,
+    `.meds>thead{display:table-header-group}`,
+    `.meds th,.meds td{border:1px solid #333;padding:1mm 1.2mm;vertical-align:top}`,
+    `.meds th{background:#f3f4f6;font-weight:700;text-align:center;font-size:.9em}`,
+    `.meds th.left{text-align:left}`,
+    `.meds tr{break-inside:avoid;page-break-inside:avoid}`,
+    `.l-hi{display:block;font-weight:400;font-size:.85em}`,
+    `.slot,.slot-text,.center,.when{text-align:center}`,
+    `.slot{font-weight:700}`,
+    `.med-name{font-weight:700}`,
+    `.sos{color:#b91c1c;font-weight:700;font-size:.85em}`,
+    `.meds-slots .c-med{width:34%}.meds-slots .c-slot{width:6%}.meds-slots .c-food{width:14%}.meds-slots .c-freq{width:28%}`,
+    `.meds-pattern .c-med{width:30%}.meds-pattern .c-dose{width:12%}.meds-pattern .c-when{width:12%}.meds-pattern .c-food{width:13%}.meds-pattern .c-dur{width:15%}.meds-pattern .c-rem{width:18%}`,
+    `.meds-topical .c-med{width:32%}.meds-topical .c-how{width:30%}.meds-topical .c-dur{width:14%}.meds-topical .c-ins{width:24%}`,
+    `.tests{margin:.5mm 0 0;padding-left:5mm}`,
+    `.sig{margin-top:6mm;margin-left:auto;width:55mm;text-align:center;break-inside:avoid}`,
+    `.sig-box{height:16mm;display:flex;align-items:flex-end;justify-content:center;border-bottom:1px solid #999}`,
+    `.sig-box img{max-height:16mm;max-width:50mm;width:auto;height:auto}`,
+    `.sig-name{font-weight:700;margin-top:1mm}`,
+    `.sig-line{font-size:.85em}`,
+    `.note{margin-top:4mm;font-size:.8em;color:#555;font-style:italic}`,
+    `.pad-foot{border-top:1px solid #999;margin-top:3mm;padding-top:1.5mm;text-align:center;font-size:.85em;color:#333}`,
+    `@media screen{html{background:#e5e7eb}body{width:${paper.widthMm}mm;min-height:${paper.heightMm}mm;margin:6mm auto;padding:${m.top}mm ${m.right}mm ${m.bottom}mm ${m.left}mm;box-shadow:0 1px 4px rgba(0,0,0,.2)}}`,
+  ].join("\n");
+}

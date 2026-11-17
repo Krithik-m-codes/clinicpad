@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; style-src &#39;unsafe-inline&#39;; img-src data:; font-src data:; base-uri &#39;none&#39;; form-action &#39;none&#39;">
+<title>Prescription Rx-12 v1</title>
+<style>
+@page{size:A4 portrait;margin:12mm 12mm 14mm 12mm}
+:root{--accent:#b91c1c}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:#fff;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body{font-family:"Noto Sans Devanagari",sans-serif;font-size:10pt;line-height:1.35}
+.sheet{width:100%;border-collapse:collapse}
+.sheet>thead{display:table-header-group}
+.sheet>tfoot{display:table-footer-group}
+.sheet>thead>tr>td,.sheet>tfoot>tr>td,.sheet>tbody>tr>td{padding:0;vertical-align:top}
+td,th,.v{overflow-wrap:anywhere;word-break:break-word}
+.v{unicode-bidi:isolate}
+.pad-head{border-bottom:2px solid var(--accent);padding-bottom:2mm;margin-bottom:3mm}
+.head-row{display:flex;justify-content:space-between;align-items:flex-start;gap:4mm}
+.doc,.clinic{flex:1;min-width:0}
+.clinic{text-align:right}
+.doc-name,.clinic-name{font-size:1.35em;font-weight:700;color:var(--accent)}
+.doc-line,.clinic-line{font-size:.9em}
+.logo img{display:block;max-height:22mm;max-width:40mm;width:auto;height:auto}
+.banner{margin-top:2mm;padding:1.5mm 2mm;border:1px solid #b45309;background:#fef3c7;font-weight:700;font-size:.9em}
+.banner-superseded{border-color:#b91c1c;background:#fee2e2}
+.watermark{position:fixed;top:45%;left:0;right:0;text-align:center;transform:rotate(-30deg);font-size:3.2em;font-weight:700;color:rgba(185,28,28,.14);pointer-events:none}
+.patient{display:flex;justify-content:space-between;gap:4mm;margin-bottom:2mm}
+.patient-main{display:flex;flex-wrap:wrap;gap:1mm 5mm}
+.patient-meta{text-align:right}
+.k{font-weight:700}
+.small{font-size:.85em}
+.muted{color:#555}
+.generic{color:#555;font-size:.85em;font-style:italic}
+.allergies{margin:1mm 0 2mm;padding:1mm 2mm;border-left:3px solid #b91c1c;background:#fff1f2}
+.vitals{display:flex;flex-wrap:wrap;gap:1mm 5mm;margin:1mm 0 2mm}
+.line{margin:0 0 1.2mm}
+.block{margin:2mm 0;break-inside:avoid}
+.block-title{font-weight:700;color:var(--accent)}
+.block-body{margin-top:.5mm}
+.rx-mark{font-size:1.9em;font-weight:700;font-style:italic;color:var(--accent);margin:1mm 0}
+.rx-mark span{font-size:.6em}
+.meds{width:100%;border-collapse:collapse;margin:1mm 0 3mm;table-layout:fixed}
+.meds>thead{display:table-header-group}
+.meds th,.meds td{border:1px solid #333;padding:1mm 1.2mm;vertical-align:top}
+.meds th{background:#f3f4f6;font-weight:700;text-align:center;font-size:.9em}
+.meds th.left{text-align:left}
+.meds tr{break-inside:avoid;page-break-inside:avoid}
+.l-hi{display:block;font-weight:400;font-size:.85em}
+.slot,.slot-text,.center,.when{text-align:center}
+.slot{font-weight:700}
+.med-name{font-weight:700}
+.sos{color:#b91c1c;font-weight:700;font-size:.85em}
+.meds-slots .c-med{width:34%}.meds-slots .c-slot{width:6%}.meds-slots .c-food{width:14%}.meds-slots .c-freq{width:28%}
+.meds-pattern .c-med{width:30%}.meds-pattern .c-dose{width:12%}.meds-pattern .c-when{width:12%}.meds-pattern .c-food{width:13%}.meds-pattern .c-dur{width:15%}.meds-pattern .c-rem{width:18%}
+.meds-topical .c-med{width:32%}.meds-topical .c-how{width:30%}.meds-topical .c-dur{width:14%}.meds-topical .c-ins{width:24%}
+.tests{margin:.5mm 0 0;padding-left:5mm}
+.sig{margin-top:6mm;margin-left:auto;width:55mm;text-align:center;break-inside:avoid}
+.sig-box{height:16mm;display:flex;align-items:flex-end;justify-content:center;border-bottom:1px solid #999}
+.sig-box img{max-height:16mm;max-width:50mm;width:auto;height:auto}
+.sig-name{font-weight:700;margin-top:1mm}
+.sig-line{font-size:.85em}
+.note{margin-top:4mm;font-size:.8em;color:#555;font-style:italic}
+.pad-foot{border-top:1px solid #999;margin-top:3mm;padding-top:1.5mm;text-align:center;font-size:.85em;color:#333}
+@media screen{html{background:#e5e7eb}body{width:210mm;min-height:297mm;margin:6mm auto;padding:12mm 12mm 14mm 12mm;box-shadow:0 1px 4px rgba(0,0,0,.2)}}</style>
+</head>
+<body class="tpl-general paper-a4 status-finalized" data-rx="ready">
+
+<table class="sheet">
+<thead><tr><td><header class="pad-head">
+<div class="head-row">
+<div class="doc">
+<div class="doc-name"><span class="v">Tom &amp; Jerry&#39;s &quot;syrup&quot;</span></div>
+<div class="doc-line"><span class="v">src=http://evil.example/a url(http://evil.example/b) @import &quot;http://evil.example/c&quot;;</span></div>
+<div class="doc-line"><span class="v">&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</span></div>
+<div class="doc-line">Reg. No.: <span class="v">&lt;script&gt;alert(1)&lt;/script&gt;</span> (<span class="v">src=http://evil.example/a url(http://evil.example/b) @import &quot;http://evil.example/c&quot;;</span>)</div>
+</div>
+
+<div class="clinic">
+<div class="clinic-name"><span class="v">&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</span></div>
+<div class="clinic-line"><span class="v">src=http://evil.example/a url(http://evil.example/b) @import &quot;http://evil.example/c&quot;;</span></div>
+<div class="clinic-line">Ph.: <span class="v">Tom &amp; Jerry&#39;s &quot;syrup&quot;</span></div>
+<div class="clinic-line"><span class="v">&lt;script&gt;alert(1)&lt;/script&gt;</span></div>
+</div>
+</div>
+
+</header></td></tr></thead>
+<tfoot><tr><td><footer class="pad-foot"><div><span class="v">&lt;script&gt;alert(1)&lt;/script&gt;</span></div></footer></td></tr></tfoot>
+<tbody><tr><td>
+<section class="patient">
+<div class="patient-main">
+<div class="kv"><span class="k">Name:</span> <b><span class="v">&lt;script&gt;alert(1)&lt;/script&gt;</span></b></div>
+<div class="kv"><span class="k">Age:</span> <span class="v">36 y</span></div>
+<div class="kv"><span class="k">Gender:</span> <span class="v">Female</span></div>
+
+<div class="kv"><span class="k">Patient No.:</span> <span class="v">42</span></div>
+</div>
+<div class="patient-meta">
+<div class="kv"><span class="k">Date:</span> <span class="v">12/11/2026</span></div>
+<div class="kv"><span class="k">Rx No.:</span> <span class="v">12</span></div>
+
+</div>
+</section>
+<div class="allergies"><span class="k">Allergies:</span> <span class="v">&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</span></div>
+<div class="rx-mark">R<span>x</span></div>
+<div class="vitals"><span class="vital"><span class="k">Pulse</span> 80/min</span><span class="vital"><span class="v">&lt;script&gt;alert(1)&lt;/script&gt;</span></span></div><p class="line"><span class="k">Chief complaint:</span> <span class="v">&lt;script&gt;alert(1)&lt;/script&gt;</span></p><p class="line"><span class="k">Complaints:</span> <span class="v">&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</span></p><p class="line"><span class="k">Medical history:</span> <span class="v">Tom &amp; Jerry&#39;s &quot;syrup&quot;</span></p><p class="line"><span class="k">Drug history:</span> <span class="v">&lt;script&gt;alert(1)&lt;/script&gt;</span></p><section class="block"><div class="block-title">Examination</div><div class="block-body"><span class="v">&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</span></div></section><p class="line"><span class="k">Diagnosis:</span> <span class="v">src=http://evil.example/a url(http://evil.example/b) @import &quot;http://evil.example/c&quot;;</span></p><table class="meds meds-slots">
+<colgroup><col class="c-med"><col class="c-slot"><col class="c-slot"><col class="c-slot"><col class="c-slot"><col class="c-food"><col class="c-freq"></colgroup>
+<thead>
+<tr><th rowspan="2" class="left">Medicine</th><th colspan="4">Dose</th><th rowspan="2">Food</th><th rowspan="2">Frequency / Duration</th></tr>
+<tr><th>Mor</th><th>Noon</th><th>Eve</th><th>Night</th></tr>
+</thead>
+<tbody><tr><td class="med">
+<div class="med-name">1. <span class="v">&lt;script&gt;alert(1)&lt;/script&gt;</span> <span class="muted"><span class="v">Tom &amp; Jerry&#39;s &quot;syrup&quot;</span></span></div>
+<div class="generic"><span class="v">&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</span></div>
+
+<div class="small">Dose: <span class="v">src=http://evil.example/a url(http://evil.example/b) @import &quot;http://evil.example/c&quot;;</span></div>
+<div class="small"><span class="v">&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</span></div>
+</td><td class="slot">1</td><td class="slot">0</td><td class="slot">0</td><td class="slot">1</td><td class="center">&lt;b&gt;bold&lt;/b&gt;</td><td class="center">&lt;img src=x onerror=&quot;alert(1)&quot;&gt; · 5 days</td></tr><tr><td class="med">
+<div class="med-name">2. <span class="v">Medicine 2</span> <span class="muted"><span class="v">500 mg</span></span></div>
+<div class="generic"><span class="v">Generic 2</span></div>
+
+<div class="small">Dose: <span class="v">1 tab</span></div>
+
+</td><td class="slot-text" colspan="4"><span class="v">&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</span></td><td class="center">After food</td><td class="center">Daily · 5 days</td></tr></tbody>
+</table><section class="block"><div class="block-title">Investigations</div><ol class="tests"><li><span class="v">&lt;script&gt;alert(1)&lt;/script&gt;</span> <span class="muted">(<span class="v">&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</span>)</span></li></ol></section><section class="block"><div class="block-title">Advice</div><div class="block-body"><span class="v">&lt;script&gt;alert(1)&lt;/script&gt;<br>WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW</span></div></section><p class="line"><span class="k">Follow-up:</span> 19/11/2026 · <span class="v">src=http://evil.example/a url(http://evil.example/b) @import &quot;http://evil.example/c&quot;;</span></p>
+<div class="sig">
+<div class="sig-box"></div>
+<div class="sig-name"><span class="v">Tom &amp; Jerry&#39;s &quot;syrup&quot;</span></div>
+<div class="sig-line">Reg. No.: <span class="v">&lt;script&gt;alert(1)&lt;/script&gt;</span></div>
+</div>
+
+</td></tr></tbody>
+</table>
+</body>
+</html>
