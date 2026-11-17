@@ -9,6 +9,8 @@ type Props = { prescriptionId: string; fileName: string };
 const PRINT_FAILED = "The prescription could not be prepared for printing. Reload the page and sign in again if asked.";
 const SIGNED_OUT = "Your session ended. Reload the page and sign in again.";
 const PREPARE_TIMEOUT_MS = 20_000;
+/** Some browsers print asynchronously; the frame must outlive print() and goes on afterprint or after this long. */
+const PRINT_FRAME_LIFETIME_MS = 60_000;
 
 export function OutputActions({ prescriptionId, fileName }: Props) {
   const router = useRouter();
@@ -16,6 +18,7 @@ export function OutputActions({ prescriptionId, fileName }: Props) {
   const [error, setError] = useState<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lifetimeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const printButton = useRef<HTMLButtonElement | null>(null);
   const mounted = useRef(true);
   const restoreFocus = useRef(false);
@@ -31,6 +34,8 @@ export function OutputActions({ prescriptionId, fileName }: Props) {
   const dropFrame = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = null;
+    if (lifetimeRef.current) clearTimeout(lifetimeRef.current);
+    lifetimeRef.current = null;
     frameRef.current?.remove();
     frameRef.current = null;
   }, []);
@@ -89,11 +94,16 @@ export function OutputActions({ prescriptionId, fileName }: Props) {
           win?.addEventListener("afterprint", () => {
             if (frameRef.current === frame) dropFrame();
           });
+          // The frame is removed on afterprint, on the lifetime timer, on a new print, or on unmount; never right
+          // after print() returns, because Firefox and Safari may still be rendering the pages.
+          lifetimeRef.current = setTimeout(() => {
+            if (frameRef.current === frame) dropFrame();
+          }, PRINT_FRAME_LIFETIME_MS);
           try {
             win?.focus();
             win?.print();
-          } finally {
-            if (frameRef.current === frame) dropFrame();
+          } catch {
+            dropFrame();
           }
           if (!mounted.current) return;
           restoreFocus.current = true;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,7 +23,12 @@ const TEXT_FIELDS = [
 ] as const;
 
 export function ClinicPadForm({ initial }: { initial: ClinicPadView }) {
-  const [state, formAction, pending] = useActionState(saveClinicPadAction, {} as SettingsFormState);
+  // Saved. describes the form as it was submitted; the first edit afterwards clears it.
+  const [dirty, setDirty] = useState(false);
+  const [state, formAction, pending] = useActionState(async (prev: SettingsFormState, formData: FormData) => {
+    setDirty(false);
+    return saveClinicPadAction(prev, formData);
+  }, {} as SettingsFormState);
   const v: Record<string, string> = state.values ?? {
     name: initial.name,
     addressLine1: initial.addressLine1,
@@ -40,7 +45,7 @@ export function ClinicPadForm({ initial }: { initial: ClinicPadView }) {
   };
 
   return (
-    <form action={formAction} className="max-w-2xl space-y-4">
+    <form action={formAction} onChange={() => setDirty(true)} className="max-w-2xl space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
         {TEXT_FIELDS.map(([name, label]) => (
           <div key={name} className="space-y-2">
@@ -89,7 +94,7 @@ export function ClinicPadForm({ initial }: { initial: ClinicPadView }) {
           {state.error}
         </p>
       ) : null}
-      {state.saved ? (
+      {state.saved && !dirty ? (
         <p role="status" className="text-sm text-muted-foreground">
           Saved.
         </p>

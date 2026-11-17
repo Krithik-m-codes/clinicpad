@@ -26,15 +26,24 @@ export function checkImageFile(file: { size: number; type: string }): string | n
   return null;
 }
 
+type Status = { kind: "error" | "saved" | "removed"; text: string; client?: boolean };
+
 export function ImageUploadForm({ label, hint, current, upload, remove }: Props) {
-  const [state, uploadAction, uploading] = useActionState(upload, {} as SettingsFormState);
-  const [removeState, removeAction, removing] = useActionState(
-    (_prev: SettingsFormState) => remove(),
-    {} as SettingsFormState,
-  );
-  const [clientError, setClientError] = useState<string | null>(null);
+  // One source of truth for what the user sees: the latest client check, upload result, or removal result.
+  const [status, setStatus] = useState<Status | null>(null);
+  const [, uploadAction, uploading] = useActionState(async (prev: SettingsFormState, formData: FormData) => {
+    const result = await upload(prev, formData);
+    setStatus(result.error ? { kind: "error", text: result.error } : { kind: "saved", text: "Image saved." });
+    return result;
+  }, {} as SettingsFormState);
+  const [, removeAction, removing] = useActionState(async () => {
+    const result = await remove();
+    setStatus(result.error ? { kind: "error", text: result.error } : { kind: "removed", text: "Image removed." });
+    return result;
+  }, {} as SettingsFormState);
   const inputId = useId();
-  const error = clientError ?? state.error ?? removeState.error ?? null;
+  const messageId = `${inputId}-message`;
+  const error = status?.kind === "error" ? status.text : null;
 
   return (
     <div className="space-y-3">
@@ -45,23 +54,27 @@ export function ImageUploadForm({ label, hint, current, upload, remove }: Props)
           name="image"
           type="file"
           accept="image/png,image/jpeg"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? messageId : undefined}
           onChange={(event) => {
+            // A new file clears whatever the last attempt said, from the client or the server.
             const file = event.target.files?.[0];
-            setClientError(file ? checkImageFile(file) : null);
+            const problem = file ? checkImageFile(file) : null;
+            setStatus(problem ? { kind: "error", text: problem, client: true } : null);
           }}
         />
         <p className="text-xs text-muted-foreground">{hint}</p>
         {error ? (
-          <p role="alert" className="text-sm text-destructive">
+          <p id={messageId} role="alert" className="text-sm text-destructive">
             {error}
           </p>
         ) : null}
-        {state.saved && !error ? (
+        {status && status.kind !== "error" ? (
           <p role="status" className="text-sm text-muted-foreground">
-            Image saved.
+            {status.text}
           </p>
         ) : null}
-        <Button type="submit" variant="outline" disabled={uploading || clientError !== null}>
+        <Button type="submit" variant="outline" disabled={uploading || status?.client === true}>
           {uploading ? "Uploading…" : "Upload"}
         </Button>
       </form>

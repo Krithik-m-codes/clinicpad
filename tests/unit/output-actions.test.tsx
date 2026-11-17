@@ -10,6 +10,7 @@ const FRAME = 'iframe[title="Prescription print frame"]';
 
 beforeEach(() => {
   refresh.mockClear();
+  afterPrintHandlers.length = 0;
 });
 
 afterEach(() => {
@@ -25,8 +26,13 @@ function frame(): HTMLIFrameElement {
   return found;
 }
 
+const afterPrintHandlers: Array<() => void> = [];
+
 function fake(f: HTMLIFrameElement, doc: unknown, print = vi.fn()) {
-  Object.defineProperty(f, "contentWindow", { value: { focus: vi.fn(), print, addEventListener: vi.fn() }, configurable: true });
+  const addEventListener = vi.fn((type: string, handler: () => void) => {
+    if (type === "afterprint") afterPrintHandlers.push(handler);
+  });
+  Object.defineProperty(f, "contentWindow", { value: { focus: vi.fn(), print, addEventListener }, configurable: true });
   Object.defineProperty(f, "contentDocument", { value: doc, configurable: true });
   return print;
 }
@@ -44,8 +50,52 @@ describe("OutputActions print", () => {
     fireEvent.load(f);
     await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(refresh).toHaveBeenCalled());
-    expect(document.querySelector(FRAME)).toBeNull();
+    // print() has returned but the browser may still be rendering: the frame stays until afterprint.
+    expect(document.querySelector(FRAME)).toBe(f);
     expect(screen.getByRole("button", { name: "Print" })).toHaveFocus();
+  });
+
+  async function printed() {
+    const view = render(<OutputActions prescriptionId={ID} fileName="Rx-1-v1.pdf" />);
+    fireEvent.click(screen.getByRole("button", { name: "Print" }));
+    const f = frame();
+    const print = fake(f, ready);
+    fireEvent.load(f);
+    await waitFor(() => expect(print).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    return { ...view, f };
+  }
+
+  it("removes the print frame on afterprint", async () => {
+    const { f } = await printed();
+    expect(document.body.contains(f)).toBe(true);
+    expect(afterPrintHandlers).toHaveLength(1);
+    act(() => afterPrintHandlers[0]());
+    expect(document.body.contains(f)).toBe(false);
+  });
+
+  it("removes the print frame after the 60 second fallback and not before", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { f } = await printed();
+    act(() => {
+      vi.advanceTimersByTime(59_000);
+    });
+    expect(document.body.contains(f)).toBe(true);
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(document.body.contains(f)).toBe(false);
+  });
+
+  it("removes the print frame when unmounted after printing, and its timers do nothing later", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { f, unmount } = await printed();
+    unmount();
+    expect(document.body.contains(f)).toBe(false);
+    act(() => {
+      vi.advanceTimersByTime(61_000);
+    });
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("waits for fonts before printing", async () => {

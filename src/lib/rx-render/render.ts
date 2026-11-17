@@ -402,7 +402,8 @@ function topicalTable(c: Ctx): SafeHtml {
   const { lang } = c;
   const rows = c.doc.items.map((item, i) => {
     const [slots, timing] = scheduleParts(item);
-    const how = joined([item.route, item.dose, slots, timing, foodText(item.foodRelation, lang)], " · ");
+    // The route is already printed with the medicine name; repeating it here would print it twice.
+    const how = joined([item.dose, slots, timing, foodText(item.foodRelation, lang)], " · ");
     return html`<tr>${medicineCell(c, item, i, { dose: false, remarks: false, timing: false })}<td class="how">${how}</td>${frequencyCell(c, item)}<td>${userText(item.remarks)}</td></tr>`;
   });
   return html`<table class="meds meds-topical">

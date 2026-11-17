@@ -12,6 +12,15 @@ import { loadFontCss } from "@/server/rx-render/fonts";
 import { DEVANAGARI, documentFixture, manyItems, snapshot, visit } from "../fixtures/rx-documents";
 
 const run = promisify(execFile);
+const GOTENBERG_FLAGS = [
+  "--api-timeout=30s",
+  "--api-disable-download-from",
+  "--webhook-disable",
+  "--libreoffice-disable-routes",
+  "--pdfengines-disable-routes",
+  "--chromium-disable-javascript=true",
+  "--chromium-deny-list=^(?!file:///tmp/|data:|about:|blob:).*",
+];
 const IMAGE = "gotenberg/gotenberg:8.11.0@sha256:e60da3ecc52050303c3886630aa7ed82f9486660b82a1ce6e5bf253c3b0764d4";
 
 const baseUrl = process.env.GOTENBERG_URL ?? "http://localhost:3001";
@@ -113,12 +122,15 @@ describe.skipIf(!health.up)(`real Gotenberg at ${baseUrl} (skipped when it is no
       }
     }
     if (!info) {
+      // Where PDF coverage is mandatory, a missing container is a failure, not a pass-by-skipping.
+      if (required) throw new Error("config drift check needs a local container named clinicpad-gotenberg or gotenberg (GOTENBERG_REQUIRED or CI is set).");
       console.warn("SKIP config drift: no local container named clinicpad-gotenberg or gotenberg (the service runs elsewhere).");
       skip();
       return;
     }
-    for (const flag of ["--chromium-deny-list=", "--webhook-disable", "--api-disable-download-from", "--chromium-disable-javascript=true"]) {
-      expect(info, flag).toContain(flag);
+    // Every flag docker-compose.yml and the CI workflow configure; the deny-list is compared in full.
+    for (const flag of GOTENBERG_FLAGS) {
+      expect(info, flag).toContain(JSON.stringify(flag).slice(1, -1));
     }
     expect(info).toContain('"HostIp":"127.0.0.1"');
     expect(info).not.toContain('"HostIp":""');
@@ -141,6 +153,7 @@ describe("probe positive control", () => {
         if (!port) throw new Error("no mapped port");
         url = `http://127.0.0.1:${port}`;
       } catch {
+        if (required) throw new Error("probe positive control needs docker to start a control container (GOTENBERG_REQUIRED or CI is set).");
         console.warn("SKIP probe positive control: docker is not available to start a control container.");
         skip();
         return;
@@ -150,6 +163,7 @@ describe("probe positive control", () => {
       expect((await control.health()).up, "control container did not become healthy").toBe(true);
       expect((await sendProbe(url, probePage(beacon.port, false))).ok).toBe(true);
       if (beacon.hits() === 0) {
+        if (required) throw new Error("probe positive control saw no hit: the container cannot reach this machine, so the zero-hit assertions prove nothing (GOTENBERG_REQUIRED or CI is set).");
         console.warn("SKIP network probe: the container cannot reach this machine (firewall or host.docker.internal); the zero-hit assertions prove nothing here.");
         skip();
         return;

@@ -36,6 +36,7 @@ function hostileDocument(overrides: Partial<RxDocument> = {}): RxDocument {
         strength: HOSTILE.quotes,
         dose: HOSTILE.urls,
         route: HOSTILE.script,
+        timing: HOSTILE.attrBreaker,
         remarks: HOSTILE.img,
         foodRelation: "<b>bold</b>",
         periodicity: HOSTILE.img,
@@ -70,6 +71,9 @@ describe("hostile text", () => {
         expect(body).toContain(HOSTILE.script);
         expect(body).toContain(HOSTILE.img);
         expect(body).toContain("<b>bold</b>");
+        // Item 1 has dose slots, so its free-text timing is printed too; it must stay inert text.
+        expect(body).toContain(HOSTILE.attrBreaker);
+        expect(dom.querySelectorAll("[onmouseover]")).toHaveLength(0);
       });
     }
   }
@@ -238,7 +242,7 @@ describe("templates", () => {
     const dom = parse(render(documentFixture({ layout: { template: { kind: "builtin", key: "derma" } } })).html);
     expect(dom.querySelector(".meds-topical")).not.toBeNull();
     expect(dom.querySelector(".vitals.vitals-compact")?.textContent).toContain("BP 130/85 mmHg");
-    expect(dom.querySelector(".meds tbody tr td.how")?.textContent).toBe("Oral · 1 tab · 1-0-1 · After food");
+    expect(dom.querySelector(".meds tbody tr td.how")?.textContent).toBe("1 tab · 1-0-1 · After food");
   });
 
   it("omits empty sections", () => {
@@ -442,7 +446,7 @@ describe("completeness: nothing recorded is dropped", () => {
     const pattern = parse(render(withLayout(documentFixture({ items: [item(1, { timing: "every 6 hours" })] }), { template: { kind: "builtin", key: "paediatric" } })).html);
     expect(pattern.querySelector("td.when")?.textContent).toBe("1-0-1 · every 6 hours");
     const derma = parse(render(withLayout(documentFixture({ items: [item(1, { timing: "every 6 hours" })] }), { template: { kind: "builtin", key: "derma" } })).html);
-    expect(derma.querySelector("td.how")?.textContent).toBe("Oral · 1 tab · 1-0-1 · every 6 hours · After food");
+    expect(derma.querySelector("td.how")?.textContent).toBe("1 tab · 1-0-1 · every 6 hours · After food");
   });
 
   it("prints strength, form and route with the medicine name on every template", () => {
@@ -492,7 +496,8 @@ describe("bidirectional safety in joined cells", () => {
     expect(Array.from(URDU)).toHaveLength(6);
     const doc = withLayout(documentFixture({ items: [item(1, { route: URDU, dose: null, doseMorning: 1, doseAfternoon: 0, doseEvening: null, doseNight: 2, remarks: URDU })] }), { template: { kind: "builtin", key: "derma" } });
     const spans = Array.from(parse(render(doc).html).querySelectorAll("td.how span.v")).map((el) => el.textContent);
-    expect(spans).toEqual([URDU, "1-0-2", "After food"]);
+    // The route (URDU) belongs to the medicine name cell; the How cell must not repeat it.
+    expect(spans).toEqual(["1-0-2", "After food"]);
   });
 
   it("isolates each allergy, list entry and frequency part on its own", () => {
@@ -526,6 +531,7 @@ describe("continuation pages", () => {
   it("keeps the signature with the last section and the last medicine row", () => {
     const out = render(documentFixture());
     const closing = parse(out.html).querySelector(".closing");
+    expect(closing, "the closing wrapper must exist").not.toBeNull();
     expect(closing?.querySelector(".sig")).not.toBeNull();
     expect(closing?.querySelector(".block, .line")).not.toBeNull();
     expect(out.html).toContain(".closing{break-inside:avoid;page-break-inside:avoid}");

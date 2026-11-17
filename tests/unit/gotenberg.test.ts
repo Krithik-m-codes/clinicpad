@@ -60,6 +60,25 @@ describe("createGotenbergEngine.render", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("counts the UTF-8 byte length, not the character count, against the size cap", async () => {
+    const { calls, impl } = recorder(async () => pdfResponse(1));
+    // Half as many characters as the cap, each two bytes: under the cap by length, over it by bytes.
+    const filler = "é".repeat(Math.ceil(PDF_LIMITS.maxHtmlBytes / 2) + 10);
+    const wide = { ...rendered, html: rendered.html.replace("</body>", `<p>${filler}</p></body>`) };
+    expect(wide.html.length).toBeLessThan(PDF_LIMITS.maxHtmlBytes);
+    expect(Buffer.byteLength(wide.html, "utf8")).toBeGreaterThan(PDF_LIMITS.maxHtmlBytes);
+    expect(await createGotenbergEngine({ baseUrl: BASE, fetch: impl }).render(wide)).toMatchObject({ ok: false, code: "pdf_too_large" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses a response whose content type is not PDF even when the bytes are a valid PDF", async () => {
+    const respond = async () => new Response(fakePdfBytes(1), { status: 200, headers: { "Content-Type": "text/html" } });
+    expect(await createGotenbergEngine({ baseUrl: BASE, fetch: recorder(respond).impl }).render(rendered)).toMatchObject({
+      ok: false,
+      code: "pdf_failed",
+    });
+  });
+
   it.each([
     ["a refused connection", async () => { throw new TypeError("fetch failed"); }, "pdf_unavailable"],
     ["a 503", async () => new Response("busy", { status: 503 }), "pdf_unavailable"],

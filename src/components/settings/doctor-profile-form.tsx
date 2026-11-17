@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,7 +16,12 @@ const FIELDS = [
 ] as const;
 
 export function DoctorProfileForm({ initial }: { initial: DoctorProfileView }) {
-  const [state, formAction, pending] = useActionState(saveDoctorProfileAction, {} as SettingsFormState);
+  // Saved. describes the form as it was submitted; the first edit afterwards clears it.
+  const [dirty, setDirty] = useState(false);
+  const [state, formAction, pending] = useActionState(async (prev: SettingsFormState, formData: FormData) => {
+    setDirty(false);
+    return saveDoctorProfileAction(prev, formData);
+  }, {} as SettingsFormState);
   const v: Record<string, string> = state.values ?? {
     displayName: initial.displayName,
     qualifications: initial.qualifications,
@@ -26,7 +31,7 @@ export function DoctorProfileForm({ initial }: { initial: DoctorProfileView }) {
   };
 
   return (
-    <form action={formAction} className="max-w-xl space-y-4">
+    <form action={formAction} onChange={() => setDirty(true)} className="max-w-xl space-y-4">
       {FIELDS.map(([name, label]) => (
         <div key={name} className="space-y-2">
           <Label htmlFor={`doc-${name}`}>{label}</Label>
@@ -41,7 +46,7 @@ export function DoctorProfileForm({ initial }: { initial: DoctorProfileView }) {
           {state.error}
         </p>
       ) : null}
-      {state.saved ? (
+      {state.saved && !dirty ? (
         <p role="status" className="text-sm text-muted-foreground">
           Saved.
         </p>
