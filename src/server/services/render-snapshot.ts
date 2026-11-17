@@ -1,11 +1,15 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { ageLabel } from "@/lib/domain/age";
 import { clinics, doctors, patients } from "@/server/db/schema";
 import type { TenantTx } from "@/server/db/tenant";
-import type { RenderSnapshot } from "@/lib/rx-render/snapshot";
+import { fail, ok, type Result } from "@/lib/result";
+import { DEFAULT_TIME_ZONE, isValidTimeZone } from "@/lib/rx-render/format";
+import { parseRenderSnapshot, type RenderSnapshot } from "@/lib/rx-render/snapshot";
 import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES, pickOption } from "@/lib/rx-render/types";
 
 export type SnapshotSources = {
+  /** The caller's tenant (from the session). Every read here filters on it, on top of row-level security. */
+  tenantId: string;
   patientId: string;
   /** The user who finalizes (or finalized) the prescription. When set, only their own doctor profile signs it. */
   prescriberUserId: string | null;
@@ -33,10 +37,23 @@ export function footerLines(text: string | null): string[] {
   return nonEmpty((text ?? "").split("\n")).slice(0, 4);
 }
 
-/** The tenant's clinic profile (one per tenant today; the oldest if there are several). RLS scopes the read. */
-export async function primaryClinic(tx: TenantTx): Promise<ClinicRow | null> {
-  const [row] = await tx.select().from(clinics).orderBy(asc(clinics.createdAt), asc(clinics.id)).limit(1);
+/** The tenant's clinic profile (one per tenant today; the oldest if there are several). */
+export async function primaryClinic(tx: TenantTx, tenantId: string): Promise<ClinicRow | null> {
+  const [row] = await tx
+    .select()
+    .from(clinics)
+    .where(eq(clinics.tenantId, tenantId))
+    .orderBy(asc(clinics.createdAt), asc(clinics.id))
+    .limit(1);
   return row ?? null;
+}
+
+/** "YYYY-MM-DD" for `at` on the calendar of `timeZone` (the clinic's own day, not UTC's). */
+export function clinicLocalDate(at: Date, timeZone: string | null | undefined): string {
+  const zone = isValidTimeZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(at);
+  const part = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
 /**
@@ -46,25 +63,26 @@ export async function primaryClinic(tx: TenantTx): Promise<ClinicRow | null> {
  * the visit's doctor.
  */
 async function prescribingDoctor(tx: TenantTx, sources: SnapshotSources) {
-  if (sources.prescriberUserId) {
-    const [byUser] = await tx.select().from(doctors).where(eq(doctors.userId, sources.prescriberUserId)).limit(1);
+  if (sources.prescriberUserId !== null) {
+    const [byUser] = await tx
+      .select()
+      .from(doctors)
+      .where(and(eq(doctors.tenantId, sources.tenantId), eq(doctors.userId, sources.prescriberUserId)))
+      .limit(1);
     return byUser ?? null;
   }
-  if (sources.visitDoctorId) {
-    const [byId] = await tx.select().from(doctors).where(eq(doctors.id, sources.visitDoctorId)).limit(1);
+  if (sources.visitDoctorId !== null) {
+    const [byId] = await tx
+      .select()
+      .from(doctors)
+      .where(and(eq(doctors.tenantId, sources.tenantId), eq(doctors.id, sources.visitDoctorId)))
+      .limit(1);
     return byId ?? null;
   }
   return null;
 }
 
-/**
- * Everything the printed pad shows that is not clinical content. Finalize stores it in
- * prescriptions.render_snapshot so a reprint never picks up later edits (ADR-0032).
- * Call it only inside withTenant(): RLS scopes every read here (the clinic lookup takes the
- * tenant's first clinic), so on the admin connection it would read other tenants' rows.
- * The age uses ageLabel's UTC calendar day (clinic-timezone ages are a Plan 1D follow-up).
- */
-export async function buildRenderSnapshot(tx: TenantTx, sources: SnapshotSources): Promise<RenderSnapshot> {
+async function gather(tx: TenantTx, sources: SnapshotSources) {
   const [patient] = await tx
     .select({
       name: patients.name,
@@ -74,20 +92,28 @@ export async function buildRenderSnapshot(tx: TenantTx, sources: SnapshotSources
       allergies: patients.allergies,
     })
     .from(patients)
-    .where(eq(patients.id, sources.patientId))
+    .where(and(eq(patients.tenantId, sources.tenantId), eq(patients.id, sources.patientId)))
     .limit(1);
-  const clinic = await primaryClinic(tx);
+  const clinic = await primaryClinic(tx, sources.tenantId);
   const doctor = await prescribingDoctor(tx, sources);
+  return { patient: patient ?? null, clinic, doctor };
+}
 
+type Gathered = Awaited<ReturnType<typeof gather>>;
+
+function compose(found: Gathered, at: Date): RenderSnapshot {
+  const { patient, clinic, doctor } = found;
+  const timezone = clinic?.timezone ?? DEFAULT_TIME_ZONE;
   return {
     v: 1,
-    takenAt: sources.at.toISOString(),
+    takenAt: at.toISOString(),
     patient: {
       name: patient?.name ?? "",
       patientNo: patient?.patientNo ?? null,
       gender: patient?.gender ?? null,
       dob: patient?.dob ?? null,
-      ageLabel: patient?.dob ? ageLabel(patient.dob, sources.at) : "",
+      // Aged on the clinic's own calendar day, the same day the printed date shows.
+      ageLabel: patient?.dob ? ageLabel(patient.dob, clinicLocalDate(at, timezone)) : "",
       allergies: patient?.allergies ?? [],
     },
     clinic: {
@@ -97,7 +123,7 @@ export async function buildRenderSnapshot(tx: TenantTx, sources: SnapshotSources
       email: clinic?.email ?? null,
       footerLines: footerLines(clinic?.padFooter ?? null),
       logoAssetId: clinic?.logoAssetId ?? null,
-      timezone: clinic?.timezone ?? "Asia/Kolkata",
+      timezone,
     },
     doctor: {
       name: doctor?.displayName ?? "",
@@ -113,4 +139,33 @@ export async function buildRenderSnapshot(tx: TenantTx, sources: SnapshotSources
       labels: pickOption(LABEL_LANGUAGES, clinic?.rxLabels, "en"),
     },
   };
+}
+
+/**
+ * Everything the printed pad shows that is not clinical content, for previews (drafts) and for
+ * prescriptions finalized before snapshots existed: missing rows give empty blocks. Every read filters on
+ * `sources.tenantId` on top of row-level security. Call it only inside withTenant().
+ */
+export async function buildRenderSnapshot(tx: TenantTx, sources: SnapshotSources): Promise<RenderSnapshot> {
+  return compose(await gather(tx, sources), sources.at);
+}
+
+/**
+ * The snapshot finalize freezes into the record (ADR-0032), or `invalid` when it cannot be a faithful one:
+ * the patient or the clinic profile is missing, or a stored value is unprintable. Nothing here allocates or writes.
+ */
+export async function buildFinalSnapshot(tx: TenantTx, sources: SnapshotSources): Promise<Result<RenderSnapshot>> {
+  const found = await gather(tx, sources);
+  if (!found.patient) return fail("invalid", "The patient record could not be read, so the prescription cannot be finalized.");
+  if (!found.clinic) {
+    return fail("invalid", "Set up the clinic profile (name and address) before finalizing prescriptions.");
+  }
+  const snapshot = parseRenderSnapshot(compose(found, sources.at));
+  if (!snapshot) {
+    return fail(
+      "invalid",
+      "The patient, clinic, or doctor details cannot be printed as they are. Check the clinic profile and the patient record, then finalize again.",
+    );
+  }
+  return ok(snapshot);
 }

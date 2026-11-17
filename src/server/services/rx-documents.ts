@@ -61,15 +61,18 @@ export async function loadRxDocument(
     const status = STATUSES.find((s) => s === row.rx.status);
     if (!status) return fail("invalid", "This prescription has an unknown status.");
 
+    // Only a finalized or amended row has a frozen snapshot. A draft always renders from live data: whatever
+    // a draft row holds in render_snapshot is never trusted (finalize overwrites it).
     let snapshot: RenderSnapshot;
     let snapshotSource: RxDocument["snapshotSource"];
-    if (row.rx.renderSnapshot !== null && row.rx.renderSnapshot !== undefined) {
+    if (status !== "draft" && row.rx.renderSnapshot !== null && row.rx.renderSnapshot !== undefined) {
       const parsed = parseRenderSnapshot(row.rx.renderSnapshot);
       if (!parsed) return fail("invalid", "This prescription's print data is damaged and cannot be printed. Contact support.");
       snapshot = parsed;
       snapshotSource = "finalize";
     } else {
       snapshot = await buildRenderSnapshot(tx, {
+        tenantId: ctx.tenantId,
         patientId: row.visit.patientId,
         // A pre-1C finalized row is signed by its finalizer; only a draft falls back to the visit's doctor.
         prescriberUserId: row.rx.finalizedBy,
@@ -104,7 +107,10 @@ export async function loadRxDocument(
     if (opts.withAssets === false) return ok({ prescriptionId: id, document, logo: null, signature: null });
     const { logoAssetId } = snapshot.clinic;
     const { signatureAssetId } = snapshot.doctor;
-    const assets = await loadImageAssets(tx, [logoAssetId, signatureAssetId]);
+    const assets = await loadImageAssets(tx, ctx.tenantId, [
+      { id: logoAssetId, kind: "logo" },
+      { id: signatureAssetId, kind: "signature" },
+    ]);
     return ok({
       prescriptionId: id,
       document,

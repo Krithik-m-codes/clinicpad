@@ -1,5 +1,8 @@
-/** "6 y", "15 mo" or "11 d". Empty string for a missing, malformed, or future date of birth. */
-export function ageLabel(dob: string, now: Date): string {
+/**
+ * "6 y", "15 mo" or "11 d". Empty string for a missing, malformed, or future date of birth.
+ * `now` is an instant (aged on its UTC day) or, to age on another calendar, today's "YYYY-MM-DD".
+ */
+export function ageLabel(dob: string, now: Date | string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dob);
   if (!m) return "";
   const y = Number(m[1]);
@@ -8,11 +11,26 @@ export function ageLabel(dob: string, now: Date): string {
   const born = Date.UTC(y, mo - 1, d);
   if (Number.isNaN(born) || new Date(born).getUTCMonth() !== mo - 1) return "";
 
-  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  if (born > today) return "";
+  let ty: number;
+  let tmo: number;
+  let td: number;
+  if (typeof now === "string") {
+    const t = /^(\d{4})-(\d{2})-(\d{2})$/.exec(now);
+    if (!t) return "";
+    ty = Number(t[1]);
+    tmo = Number(t[2]) - 1;
+    td = Number(t[3]);
+    if (new Date(Date.UTC(ty, tmo, td)).getUTCMonth() !== tmo) return "";
+  } else {
+    ty = now.getUTCFullYear();
+    tmo = now.getUTCMonth();
+    td = now.getUTCDate();
+  }
+  const today = Date.UTC(ty, tmo, td);
+  if (Number.isNaN(today) || born > today) return "";
 
-  let months = (now.getUTCFullYear() - y) * 12 + (now.getUTCMonth() - (mo - 1));
-  if (now.getUTCDate() < d) months -= 1;
+  let months = (ty - y) * 12 + (tmo - (mo - 1));
+  if (td < d) months -= 1;
 
   if (months >= 24) return `${Math.floor(months / 12)} y`;
   if (months >= 1) return `${months} mo`;

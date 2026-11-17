@@ -9,8 +9,7 @@ import { amendReasonSchema, draftInputSchema } from "@/server/validation/prescri
 import type { ServiceContext } from "./context";
 import { allocateNumber } from "./numbering";
 import { recordAudit } from "./audit";
-import { buildRenderSnapshot } from "./render-snapshot";
-import { parseRenderSnapshot } from "@/lib/rx-render/snapshot";
+import { buildFinalSnapshot } from "./render-snapshot";
 import {
   AMEND_PRESCRIPTION_COLUMNS,
   REPEAT_PRESCRIPTION_COLUMNS,
@@ -338,20 +337,15 @@ export async function finalizePrescription(
       // built BEFORE the number is allocated so a failure here burns no Rx number. The finalizing user signs: their
       // own doctor profile or none, never the visit's doctor. The value is always a concrete, validated object that
       // the UPDATE below writes unconditionally, so a stale draft-time value can never be frozen.
-      const built = await buildRenderSnapshot(tx, {
+      const built = await buildFinalSnapshot(tx, {
+        tenantId: ctx.tenantId,
         patientId: visit.patientId,
         prescriberUserId: ctx.userId,
         visitDoctorId: visit.doctorId,
         at: now,
       });
-      const renderSnapshot = parseRenderSnapshot(built);
-      // An empty patient name means the patient row was not visible (patients.name is NOT NULL).
-      if (!renderSnapshot || renderSnapshot.patient.name === "") {
-        return fail(
-          "invalid",
-          "The patient, clinic, or doctor details cannot be printed as they are. Check the clinic profile and the patient record, then finalize again.",
-        );
-      }
+      if (!built.ok) return built;
+      const renderSnapshot = built.value;
 
       // First versions (no parent) get the next number; amendments must already carry their parent's.
       // An amendment without a number means a corrupt chain: refuse rather than allocate a second number

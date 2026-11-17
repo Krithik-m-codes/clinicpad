@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
-import { doctors, tenants, users } from "@/server/db/schema";
+import { clinics, doctors, tenants, users } from "@/server/db/schema";
 import { newId } from "@/lib/domain/ids";
 import type { ServiceContext } from "@/server/services/context";
 
@@ -26,6 +26,8 @@ export async function createTestTenant(label: string): Promise<TestTenant> {
       .returning();
     userId = user.id;
     await adminDb.insert(doctors).values({ tenantId: tenant.id, userId: user.id });
+    // Every real tenant has a clinic profile (sign-up creates it); finalize refuses to freeze a pad without one.
+    await adminDb.insert(clinics).values({ tenantId: tenant.id, name: `Test clinic ${label}` });
   } catch (error) {
     // Do not leak a half-built tenant: remove what was created, then report the original failure.
     await adminDb.delete(tenants).where(eq(tenants.id, tenant.id)).catch(() => undefined);

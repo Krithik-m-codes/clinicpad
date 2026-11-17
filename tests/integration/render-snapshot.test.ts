@@ -7,9 +7,10 @@ import { withTenant } from "@/server/db/tenant";
 import { clinicAssets, clinics, doctors, prescriptionItems, prescriptions, tenantCounters, users, visits } from "@/server/db/schema";
 import { createPatient, updatePatient } from "@/server/services/patients";
 import { amendPrescription, finalizePrescription, repeatPrescription, saveDraft, startPrescription } from "@/server/services/prescriptions";
-import { buildRenderSnapshot } from "@/server/services/render-snapshot";
+import { buildFinalSnapshot, buildRenderSnapshot } from "@/server/services/render-snapshot";
 import { getVersionLinks, loadRxDocument } from "@/server/services/rx-documents";
 import type { ServiceContext } from "@/server/services/context";
+import { loadImageAssets } from "@/server/services/assets";
 import { renderPrescription } from "@/lib/rx-render/render";
 import { parseRenderSnapshot } from "@/lib/rx-render/snapshot";
 import { newId } from "@/lib/domain/ids";
@@ -29,15 +30,24 @@ const secondDoctor = (): ServiceContext => ({ tenantId: A.tenantId, userId: seco
 const NO_FONTS = { logo: null, signature: null, fontCss: "" };
 
 async function insertLogo(width: number): Promise<string> {
-  const bytes = makePng(width, 20);
+  return insertImage("logo", makePng(width, 20), width, 20);
+}
+
+async function insertImage(
+  kind: "logo" | "signature",
+  bytes: Buffer,
+  width: number,
+  height: number,
+  tenantId = A.tenantId,
+): Promise<string> {
   const [row] = await adminDb
     .insert(clinicAssets)
     .values({
-      tenantId: A.tenantId,
-      kind: "logo",
+      tenantId,
+      kind,
       mime: "image/png",
       width,
-      height: 20,
+      height,
       byteSize: bytes.length,
       sha256: createHash("sha256").update(bytes).digest("hex"),
       bytes,
@@ -100,16 +110,18 @@ beforeAll(async () => {
   B = await createTestTenant("snapb");
   firstLogoId = await insertLogo(40);
   secondLogoId = await insertLogo(41);
-  await adminDb.insert(clinics).values({
-    tenantId: A.tenantId,
-    name: "Snapshot Clinic",
-    addressLine1: "1 Old Road",
-    city: "Pune",
-    pincode: "411001",
-    phone: "020-1111 2222",
-    padFooter: "Closed on Sundays\n\n  Bring old papers  ",
-    logoAssetId: firstLogoId,
-  });
+  await adminDb
+    .update(clinics)
+    .set({
+      name: "Snapshot Clinic",
+      addressLine1: "1 Old Road",
+      city: "Pune",
+      pincode: "411001",
+      phone: "020-1111 2222",
+      padFooter: "Closed on Sundays\n\n  Bring old papers  ",
+      logoAssetId: firstLogoId,
+    })
+    .where(eq(clinics.tenantId, A.tenantId));
   await adminDb
     .update(doctors)
     .set({ displayName: "Dr Snapshot", regNo: "MMC-1234", qualifications: "MBBS" })
@@ -158,7 +170,7 @@ describe("finalize freezes the printed details", () => {
     expect(snap?.takenAt).toBe(row.finalizedAt?.toISOString());
     // The stored value is exactly what the builder produces for the same sources and instant.
     const rebuilt = await withTenant(A.tenantId, (tx) =>
-      buildRenderSnapshot(tx, { patientId, prescriberUserId: doctor().userId, visitDoctorId: null, at: row.finalizedAt as Date }),
+      buildRenderSnapshot(tx, { tenantId: A.tenantId, patientId, prescriberUserId: doctor().userId, visitDoctorId: null, at: row.finalizedAt as Date }),
     );
     expect(row.renderSnapshot).toEqual(rebuilt);
   });
@@ -201,8 +213,9 @@ describe("finalize freezes the printed details", () => {
     expect(bundle.document.snapshot.doctor.registrationNo).toBe("MMC-1234");
     expect(bundle.document.snapshot.layout).toMatchObject({ template: { key: "general" }, paperSize: "A4" });
 
-    const [first] = await adminDb.select().from(clinicAssets).where(eq(clinicAssets.id, firstLogoId));
-    expect(bundle.logo?.base64).toBe(first.bytes.toString("base64"));
+    // Compared with the bytes that were written (a real PNG, which contains 0x00 bytes), not with a re-read of the row.
+    expect(makePng(40, 20).includes(0)).toBe(true);
+    expect(bundle.logo?.base64).toBe(makePng(40, 20).toString("base64"));
 
     const printed = renderPrescription(bundle.document, NO_FONTS).html;
     expect(printed).toContain("Snapshot Patient");
@@ -291,7 +304,7 @@ describe("a snapshot that cannot be built", () => {
     const C = await createTestTenant("snapc");
     try {
       // 300 characters is more than the snapshot (and the write side) allows: the frozen copy would be unprintable.
-      await adminDb.insert(clinics).values({ tenantId: C.tenantId, name: "N".repeat(300) });
+      await adminDb.update(clinics).set({ name: "N".repeat(300) }).where(eq(clinics.tenantId, C.tenantId));
       const created = await createPatient(C.as("reception"), { name: "Unprintable Person" }, { allowDuplicate: true });
       if (!created.ok) throw new Error(created.message);
       const started = await startPrescription(C.as("doctor"), { patientId: created.value.id });
@@ -316,6 +329,148 @@ describe("a snapshot that cannot be built", () => {
     } finally {
       await C.cleanup();
     }
+  });
+});
+
+describe("the frozen age uses the clinic's calendar day", () => {
+  const sources = (patientId: string, at: string) => ({
+    tenantId: A.tenantId,
+    patientId,
+    prescriberUserId: doctor().userId,
+    visitDoctorId: null,
+    at: new Date(at),
+  });
+  // 2026-11-16T20:00Z is 01:30 on 17 November in Kolkata, but still the 16th in UTC.
+  const AT = "2026-11-16T20:00:00.000Z";
+
+  it("counts a birthday that has already come in the clinic's zone", async () => {
+    const id = await patient("Birthday Person", "2020-11-17");
+    const snap = await withTenant(A.tenantId, (tx) => buildRenderSnapshot(tx, sources(id, AT)));
+    expect(snap.patient.ageLabel).toBe("6 y");
+  });
+
+  it("counts a newborn's days to the clinic's date", async () => {
+    const id = await patient("Newborn Person", "2026-11-05");
+    const snap = await withTenant(A.tenantId, (tx) => buildRenderSnapshot(tx, sources(id, AT)));
+    expect(snap.patient.ageLabel).toBe("12 d");
+  });
+
+  it("gives the earlier count before the clinic's midnight", async () => {
+    const id = await patient("Evening Person", "2026-11-05");
+    const snap = await withTenant(A.tenantId, (tx) => buildRenderSnapshot(tx, sources(id, "2026-11-16T17:00:00.000Z")));
+    expect(snap.patient.ageLabel).toBe("11 d");
+  });
+});
+
+describe("defence in depth behind row-level security", () => {
+  it("reads nothing for another tenant's id, even from this tenant's transaction", async () => {
+    const id = await patient("Scoped Person", "2020-03-15");
+    const base = { patientId: id, prescriberUserId: doctor().userId, visitDoctorId: null, at: new Date() };
+    const snap = await withTenant(A.tenantId, (tx) => buildRenderSnapshot(tx, { ...base, tenantId: B.tenantId }));
+    expect(snap.patient.name).toBe("");
+    expect(snap.doctor.name).toBe("");
+    expect(snap.clinic.name).not.toBe("Moved Clinic");
+    const final = await withTenant(A.tenantId, (tx) => buildFinalSnapshot(tx, { ...base, tenantId: B.tenantId }));
+    expect(final).toMatchObject({ ok: false, code: "invalid" });
+  });
+
+  it("loads an image only as the kind the caller expects, and only from the tenant", async () => {
+    const bytes = Buffer.from([0, 255, 0, 0x5c, 0x78, 1, 2, 3]);
+    const sig = await insertImage("signature", bytes, 40, 20);
+    const found = await withTenant(A.tenantId, (tx) => loadImageAssets(tx, A.tenantId, [{ id: sig, kind: "signature" }]));
+    expect(found.get(sig)?.base64).toBe(bytes.toString("base64"));
+    const wrongKind = await withTenant(A.tenantId, (tx) => loadImageAssets(tx, A.tenantId, [{ id: sig, kind: "logo" }]));
+    expect(wrongKind.size).toBe(0);
+    const otherTenant = await withTenant(A.tenantId, (tx) => loadImageAssets(tx, B.tenantId, [{ id: sig, kind: "signature" }]));
+    expect(otherTenant.size).toBe(0);
+  });
+});
+
+describe("a clinic with no profile", () => {
+  it("refuses to finalize and burns no Rx number", async () => {
+    const D = await createTestTenant("snapd");
+    try {
+      await adminDb.delete(clinics).where(eq(clinics.tenantId, D.tenantId));
+      const created = await createPatient(D.as("reception"), { name: "No Clinic Person" }, { allowDuplicate: true });
+      if (!created.ok) throw new Error(created.message);
+      const started = await startPrescription(D.as("doctor"), { patientId: created.value.id });
+      if (!started.ok) throw new Error(started.message);
+      const id = started.value.prescriptionId;
+      const saved = await saveDraft(D.as("doctor"), id, { items: [{ drugName: "Paracetamol" }] }, { baseRevision: 0 });
+      if (!saved.ok) throw new Error(saved.message);
+
+      expect(await finalizePrescription(D.as("doctor"), id, { expectedRevision: saved.value.revision })).toMatchObject({
+        ok: false,
+        code: "invalid",
+      });
+      const counters = await adminDb.select().from(tenantCounters).where(eq(tenantCounters.tenantId, D.tenantId));
+      expect(counters.find((c) => c.name === "rx")?.lastNo ?? 0).toBe(0);
+      const [row] = await adminDb.select().from(prescriptions).where(eq(prescriptions.id, id));
+      expect(row).toMatchObject({ status: "draft", rxNo: null, renderSnapshot: null });
+    } finally {
+      await D.cleanup();
+    }
+  });
+});
+
+describe("a draft never prints from a stored snapshot", () => {
+  it("ignores a stale snapshot on a draft, and finalize overwrites it", async () => {
+    const { id, revision } = await savedDraftFor(await patient("Stale Person"));
+    await adminDb.update(prescriptions).set({ renderSnapshot: {} }).where(eq(prescriptions.id, id));
+
+    const preview = await load(id);
+    expect(preview.document).toMatchObject({ status: "draft", snapshotSource: "live" });
+    expect(preview.document.snapshot.patient.name).toBe("Stale Person");
+
+    expect((await finalizePrescription(doctor(), id, { expectedRevision: revision })).ok).toBe(true);
+    const [row] = await adminDb.select().from(prescriptions).where(eq(prescriptions.id, id));
+    expect(parseRenderSnapshot(row.renderSnapshot)?.patient.name).toBe("Stale Person");
+    expect((await load(id)).document.snapshotSource).toBe("finalize");
+  });
+});
+
+describe("the signature", () => {
+  it("is frozen at finalize, loads with the document, and survives the doctor replacing it", async () => {
+    const original = Buffer.from([0, 9, 8, 7, 0, 255, 6, 5]);
+    const firstSig = await insertImage("signature", original, 40, 20);
+    await adminDb.update(doctors).set({ signatureAssetId: firstSig }).where(eq(doctors.userId, secondDoctorUserId));
+    const id = await finalizedFor(await patient("Signed Person"), secondDoctor());
+
+    const bundle = await load(id);
+    expect(bundle.document.snapshot.doctor.signatureAssetId).toBe(firstSig);
+    expect(bundle.signature?.base64).toBe(original.toString("base64"));
+
+    const secondSig = await insertImage("signature", Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]), 41, 20);
+    await adminDb.update(doctors).set({ signatureAssetId: secondSig }).where(eq(doctors.userId, secondDoctorUserId));
+    const again = await load(id);
+    expect(again.document.snapshot.doctor.signatureAssetId).toBe(firstSig);
+    expect(again.signature?.base64).toBe(original.toString("base64"));
+    await adminDb.update(doctors).set({ signatureAssetId: null }).where(eq(doctors.userId, secondDoctorUserId));
+  });
+
+  it("is never taken from a doctor profile in another clinic", async () => {
+    // The user has a profile only in clinic B (B.as("doctor")) and finalizes in clinic A.
+    const outsider: ServiceContext = { tenantId: A.tenantId, userId: B.as("doctor").userId, role: "doctor" };
+    const { id, revision } = await savedDraftFor(await patient("Outsider Person"));
+    expect((await finalizePrescription(outsider, id, { expectedRevision: revision })).ok).toBe(true);
+    expect((await load(id)).document.snapshot.doctor).toMatchObject({ name: "", registrationNo: null, signatureAssetId: null });
+  });
+});
+
+describe("version chains", () => {
+  it("names the immediate successor of each superseded version", async () => {
+    const v1 = await finalizedFor(await patient("Chain Person"));
+    const a2 = await amendPrescription(doctor(), { prescriptionId: v1, reason: "First fix" });
+    if (!a2.ok) throw new Error(a2.message);
+    expect((await finalizeNow(doctor(), a2.value.prescriptionId)).ok).toBe(true);
+    const a3 = await amendPrescription(doctor(), { prescriptionId: a2.value.prescriptionId, reason: "Second fix" });
+    if (!a3.ok) throw new Error(a3.message);
+    expect((await finalizeNow(doctor(), a3.value.prescriptionId)).ok).toBe(true);
+
+    // An old version's banner names the next version; the chain leads on to the latest.
+    expect((await load(v1)).document.supersededBy).toMatchObject({ version: 2 });
+    expect((await load(a2.value.prescriptionId)).document.supersededBy).toMatchObject({ version: 3 });
+    expect((await load(a3.value.prescriptionId)).document.supersededBy).toBeNull();
   });
 });
 

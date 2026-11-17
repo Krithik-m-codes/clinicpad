@@ -18,8 +18,11 @@ const createdAt = () =>
   timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 
 /**
- * Raw bytes. postgres-js returns bytea as a Buffer, but it sends an untyped Buffer parameter as raw text
- * (a NUL byte, as in any PNG, then fails with 22021), so writes go as bytea hex text (`\x...`).
+ * Raw bytes. postgres-js returns bytea as a Buffer and normally sends a Buffer parameter as bytea. Under
+ * vitest's jsdom environment a Buffer fails postgres-js's `instanceof Uint8Array` check, so it was sent as
+ * text and any value with a NUL byte (every PNG) failed with 22021. Writing bytea hex text (`\x...`) works
+ * in both. It relies on postgres-js `infer: false` (the default): with `infer: true` the string would be typed
+ * and double-encoded. tests/integration/render-snapshot.test.ts round-trips bytes containing 0x00.
  */
 const bytea = customType<{ data: Buffer; driverData: Buffer | string }>({
   dataType() {
