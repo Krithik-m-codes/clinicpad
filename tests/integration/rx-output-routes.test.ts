@@ -26,7 +26,7 @@ import { resetPdfHealthCache } from "@/server/pdf/health-cache";
 import { createLimiter } from "@/server/pdf/limiter";
 import type { PdfEngine } from "@/server/pdf/engine";
 import { newId } from "@/lib/domain/ids";
-import { fakePdfBytes, resetFakeEngine, sharedFakeEngine } from "../helpers/fake-pdf-engine";
+import { createFakePdfEngine, fakePdfBytes, resetFakeEngine, sharedFakeEngine } from "../helpers/fake-pdf-engine";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
 // Lets one test make the output-log insert fail while every read still works.
@@ -312,6 +312,31 @@ describe("GET /prescriptions/[id]/pdf", () => {
 });
 
 describe("renderPrescriptionPdf concurrency limit", () => {
+  it("logs no download when the client disconnects during the render, and hands the engine the signal", async () => {
+    const controller = new AbortController();
+    const engine = createFakePdfEngine(1);
+    const original = engine.render;
+    engine.render = async (doc, opts) => {
+      const outcome = await original(doc, opts);
+      controller.abort(); // the client goes away while the engine works
+      return outcome;
+    };
+    const before = (await outputsFor(finalizedId)).length;
+    const result = await renderPrescriptionPdf(A.as("doctor"), finalizedId, engine, createLimiter({ concurrency: 1, maxQueue: 1 }), controller.signal);
+    expect(result).toMatchObject({ ok: false, code: "unavailable", message: "The download was cancelled." });
+    expect(engine.signals[0]).toBe(controller.signal);
+    expect(await outputsFor(finalizedId)).toHaveLength(before);
+  });
+
+  it("does not render at all for a request that is already cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const engine = createFakePdfEngine(1);
+    const result = await renderPrescriptionPdf(A.as("doctor"), finalizedId, engine, createLimiter({ concurrency: 1, maxQueue: 1 }), controller.signal);
+    expect(result).toMatchObject({ ok: false, message: "The download was cancelled." });
+    expect(engine.calls).toHaveLength(0);
+  });
+
   it("runs at most two renders at once, queues five, fails the rest fast with a busy message, and logs only produced PDFs", async () => {
     let started = 0;
     let running = 0;

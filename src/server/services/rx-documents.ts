@@ -42,6 +42,9 @@ async function supersedingVersion(tx: TenantTx, id: string) {
  * mix a save that lands between the two reads (getPrescription's revision re-check is not
  * repeated here).
  */
+/** Who is looking at a document: it matters only for a draft (who may be named as its would-be signer). */
+export type DocumentViewer = { userId: string | null; canFinalize: boolean };
+
 export async function loadRxDocument(
   ctx: ServiceContext,
   id: string,
@@ -50,76 +53,90 @@ export async function loadRxDocument(
   if (!can(ctx.role, "rx.read")) return fail("forbidden", "You cannot view prescriptions.");
   if (!isUuid(id)) return notFound();
 
-  return withTenant(ctx.tenantId, async (tx): Promise<Result<RxDocumentBundle>> => {
-    const [row] = await tx
-      .select({ rx: prescriptions, visit: visits })
-      .from(prescriptions)
-      .innerJoin(visits, eq(visits.id, prescriptions.visitId))
-      .where(eq(prescriptions.id, id))
-      .limit(1);
-    if (!row) return notFound();
-    const status = STATUSES.find((s) => s === row.rx.status);
-    if (!status) return fail("invalid", "This prescription has an unknown status.");
+  return withTenant(ctx.tenantId, (tx) =>
+    loadRxDocumentIn(tx, ctx.tenantId, id, { userId: ctx.userId, canFinalize: can(ctx.role, "rx.finalize") }, opts),
+  );
+}
 
-    // Only a finalized or amended row has a frozen snapshot. A draft always renders from live data: whatever
-    // a draft row holds in render_snapshot is never trusted (finalize overwrites it).
-    let snapshot: RenderSnapshot;
-    let snapshotSource: RxDocument["snapshotSource"];
-    if (status !== "draft" && row.rx.renderSnapshot !== null && row.rx.renderSnapshot !== undefined) {
-      const parsed = parseRenderSnapshot(row.rx.renderSnapshot);
-      if (!parsed) return fail("invalid", "This prescription's print data is damaged and cannot be printed. Contact support.");
-      snapshot = parsed;
-      snapshotSource = "finalize";
-    } else {
-      snapshot = await buildRenderSnapshot(tx, {
-        tenantId: ctx.tenantId,
-        patientId: row.visit.patientId,
-        // A pre-1C finalized row is signed by its finalizer. A draft is signed by nobody yet: its would-be signer is the
-        // VIEWER, and only when the viewer can finalize (never the visit's doctor, whose name an amendment inherits).
-        prescriberUserId: status === "draft" ? (can(ctx.role, "rx.finalize") ? ctx.userId : null) : row.rx.finalizedBy,
-        visitDoctorId: status === "draft" ? null : row.visit.doctorId,
-        at: row.rx.finalizedAt ?? new Date(),
-      });
-      snapshotSource = "live";
-      // A draft never embeds a signature image, whoever views it.
-      if (status === "draft") snapshot = { ...snapshot, doctor: { ...snapshot.doctor, signatureAssetId: null } };
-    }
+/**
+ * The body of loadRxDocument inside the caller's transaction (also used by the public share route, which has no
+ * session: it passes a viewer with no user and only ever loads finalized or amended versions).
+ */
+export async function loadRxDocumentIn(
+  tx: TenantTx,
+  tenantId: string,
+  id: string,
+  viewer: DocumentViewer,
+  opts: { withAssets?: boolean } = {},
+): Promise<Result<RxDocumentBundle>> {
+  const [row] = await tx
+    .select({ rx: prescriptions, visit: visits })
+    .from(prescriptions)
+    .innerJoin(visits, eq(visits.id, prescriptions.visitId))
+    .where(and(eq(prescriptions.tenantId, tenantId), eq(prescriptions.id, id)))
+    .limit(1);
+  if (!row) return notFound();
+  const status = STATUSES.find((s) => s === row.rx.status);
+  if (!status) return fail("invalid", "This prescription has an unknown status.");
 
-    const items = await tx
-      .select()
-      .from(prescriptionItems)
-      .where(eq(prescriptionItems.prescriptionId, id))
-      .orderBy(asc(prescriptionItems.sortOrder));
-    const superseding = status === "amended" ? await supersedingVersion(tx, id) : null;
-
-    const document: RxDocument = {
-      status,
-      rxNo: row.rx.rxNo,
-      version: row.rx.version,
-      issuedAt: row.rx.finalizedAt ? row.rx.finalizedAt.toISOString() : null,
-      supersededBy: superseding
-        ? { version: superseding.version, issuedAt: superseding.finalizedAt ? superseding.finalizedAt.toISOString() : null }
-        : null,
-      replacesVersion: row.rx.parentPrescriptionId ? row.rx.version - 1 : null,
-      snapshot,
-      snapshotSource,
-      visit: toVisitView(row.visit),
-      items: items.map(toItemView),
-    };
-
-    if (opts.withAssets === false) return ok({ prescriptionId: id, document, logo: null, signature: null });
-    const { logoAssetId } = snapshot.clinic;
-    const { signatureAssetId } = snapshot.doctor;
-    const assets = await loadImageAssets(tx, ctx.tenantId, [
-      { id: logoAssetId, kind: "logo" },
-      { id: signatureAssetId, kind: "signature" },
-    ]);
-    return ok({
-      prescriptionId: id,
-      document,
-      logo: logoAssetId ? (assets.get(assetKey("logo", logoAssetId)) ?? null) : null,
-      signature: signatureAssetId ? (assets.get(assetKey("signature", signatureAssetId)) ?? null) : null,
+  // Only a finalized or amended row has a frozen snapshot. A draft always renders from live data: whatever
+  // a draft row holds in render_snapshot is never trusted (finalize overwrites it).
+  let snapshot: RenderSnapshot;
+  let snapshotSource: RxDocument["snapshotSource"];
+  if (status !== "draft" && row.rx.renderSnapshot !== null && row.rx.renderSnapshot !== undefined) {
+    const parsed = parseRenderSnapshot(row.rx.renderSnapshot);
+    if (!parsed) return fail("invalid", "This prescription's print data is damaged and cannot be printed. Contact support.");
+    snapshot = parsed;
+    snapshotSource = "finalize";
+  } else {
+    snapshot = await buildRenderSnapshot(tx, {
+      tenantId: tenantId,
+      patientId: row.visit.patientId,
+      // A pre-1C finalized row is signed by its finalizer. A draft is signed by nobody yet: its would-be signer is the
+      // VIEWER, and only when the viewer can finalize (never the visit's doctor, whose name an amendment inherits).
+      prescriberUserId: status === "draft" ? (viewer.canFinalize ? viewer.userId : null) : row.rx.finalizedBy,
+      visitDoctorId: status === "draft" ? null : row.visit.doctorId,
+      at: row.rx.finalizedAt ?? new Date(),
     });
+    snapshotSource = "live";
+    // A draft never embeds a signature image, whoever views it.
+    if (status === "draft") snapshot = { ...snapshot, doctor: { ...snapshot.doctor, signatureAssetId: null } };
+  }
+
+  const items = await tx
+    .select()
+    .from(prescriptionItems)
+    .where(eq(prescriptionItems.prescriptionId, id))
+    .orderBy(asc(prescriptionItems.sortOrder));
+  const superseding = status === "amended" ? await supersedingVersion(tx, id) : null;
+
+  const document: RxDocument = {
+    status,
+    rxNo: row.rx.rxNo,
+    version: row.rx.version,
+    issuedAt: row.rx.finalizedAt ? row.rx.finalizedAt.toISOString() : null,
+    supersededBy: superseding
+      ? { version: superseding.version, issuedAt: superseding.finalizedAt ? superseding.finalizedAt.toISOString() : null }
+      : null,
+    replacesVersion: row.rx.parentPrescriptionId ? row.rx.version - 1 : null,
+    snapshot,
+    snapshotSource,
+    visit: toVisitView(row.visit),
+    items: items.map(toItemView),
+  };
+
+  if (opts.withAssets === false) return ok({ prescriptionId: id, document, logo: null, signature: null });
+  const { logoAssetId } = snapshot.clinic;
+  const { signatureAssetId } = snapshot.doctor;
+  const assets = await loadImageAssets(tx, tenantId, [
+    { id: logoAssetId, kind: "logo" },
+    { id: signatureAssetId, kind: "signature" },
+  ]);
+  return ok({
+    prescriptionId: id,
+    document,
+    logo: logoAssetId ? (assets.get(assetKey("logo", logoAssetId)) ?? null) : null,
+    signature: signatureAssetId ? (assets.get(assetKey("signature", signatureAssetId)) ?? null) : null,
   });
 }
 

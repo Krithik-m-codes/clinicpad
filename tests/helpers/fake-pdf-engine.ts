@@ -3,6 +3,7 @@ import type { RenderedDocument } from "@/lib/rx-render/types";
 
 export type FakePdfEngine = PdfEngine & {
   calls: RenderedDocument[];
+  signals: (AbortSignal | null)[];
   failWith: PdfFailureCode | null;
   up: boolean;
   pages: number;
@@ -21,11 +22,13 @@ export function fakePdfBytes(pages: number): ArrayBuffer {
 export function createFakePdfEngine(pages = 1): FakePdfEngine {
   const engine: FakePdfEngine = {
     calls: [],
+    signals: [],
     failWith: null,
     up: true,
     pages,
-    async render(doc) {
+    async render(doc, opts) {
       engine.calls.push(doc);
+      engine.signals.push(opts?.signal ?? null);
       if (engine.failWith) return { ok: false, code: engine.failWith, message: PDF_MESSAGES[engine.failWith] };
       return { ok: true, pdf: fakePdfBytes(engine.pages), pageCount: engine.pages };
     },
@@ -41,6 +44,7 @@ export const sharedFakeEngine = createFakePdfEngine(2);
 
 export function resetFakeEngine(engine: FakePdfEngine, pages = 2): void {
   engine.calls.length = 0;
+  engine.signals.length = 0;
   engine.failWith = null;
   engine.up = true;
   engine.pages = pages;

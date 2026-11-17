@@ -46,3 +46,16 @@ export async function recordAuditMany(tx: TenantTx, ctx: ServiceContext, events:
     })),
   );
 }
+
+/** An event with no signed-in actor (a patient opening a shared link). Same payload rules as recordAudit. */
+export async function recordSystemAudit(tx: TenantTx, tenantId: string, event: AuditInput): Promise<void> {
+  await tx.insert(auditEvents).values({
+    tenantId,
+    actorUserId: null,
+    action: event.action,
+    entityType: event.entityType,
+    entityId: event.entityId,
+    before: event.before,
+    after: event.after,
+  });
+}

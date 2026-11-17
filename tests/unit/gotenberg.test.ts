@@ -25,6 +25,17 @@ const pdfResponse = (pages: number, headers: Record<string, string> = {}) =>
   new Response(fakePdfBytes(pages), { status: 200, headers: { "Content-Type": "application/pdf", ...headers } });
 
 describe("createGotenbergEngine.render", () => {
+  it("passes the caller's abort signal through to the request, combined with the timeout", async () => {
+    const { calls, impl } = recorder(async () => pdfResponse(1));
+    const controller = new AbortController();
+    await createGotenbergEngine({ baseUrl: BASE, fetch: impl }).render(rendered, { signal: controller.signal });
+    const signal = calls[0].init?.signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal?.aborted).toBe(false);
+    controller.abort();
+    expect(signal?.aborted).toBe(true);
+  });
+
   it("posts the document, an empty header, and the page-number footer to the Chromium route", async () => {
     const { calls, impl } = recorder(async () => pdfResponse(2));
     const outcome = await createGotenbergEngine({ baseUrl: `${BASE}/`, fetch: impl }).render(rendered);

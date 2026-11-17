@@ -26,7 +26,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       );
     }
     const { id } = await params;
-    const result = await renderPrescriptionPdf(session, id);
+    const result = await renderPrescriptionPdf(session, id, undefined, undefined, request.signal);
     if (!result.ok) {
       const busy = result.code === "unavailable" && result.message === BUSY_MESSAGE;
       // The engine's own text ("not configured", "not reachable") names infrastructure: show a generic line.

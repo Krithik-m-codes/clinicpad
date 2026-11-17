@@ -6,9 +6,9 @@ export type PdfOutcome = { ok: true; pdf: ArrayBuffer; pageCount: number } | { o
 
 export type PdfHealth = { up: boolean; detail: string };
 
-/** Turns a rendered document into a PDF. Injected so tests never need the real service. */
+/** Turns a rendered document into a PDF. Injected so tests never need the real service. `signal` cancels the request when the caller goes away. */
 export interface PdfEngine {
-  render(doc: RenderedDocument): Promise<PdfOutcome>;
+  render(doc: RenderedDocument, opts?: { signal?: AbortSignal }): Promise<PdfOutcome>;
   health(): Promise<PdfHealth>;
 }
 

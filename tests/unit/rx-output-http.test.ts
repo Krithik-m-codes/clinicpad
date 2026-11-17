@@ -124,6 +124,46 @@ describe("createLimiter", () => {
     await Promise.all([first, second]);
     expect(await limiter.run(async () => 4)).toEqual({ busy: false, value: 4 });
   });
+
+  it("drops a queued task whose request was aborted: it never runs and frees its place in the queue", async () => {
+    const limiter = createLimiter({ concurrency: 1, maxQueue: 1 });
+    const g = gate();
+    const first = limiter.run(() => g.promise);
+    const controller = new AbortController();
+    let ran = false;
+    const queued = limiter.run(
+      async () => {
+        ran = true;
+      },
+      { signal: controller.signal },
+    );
+    controller.abort();
+    expect(await queued).toEqual({ busy: false, aborted: true });
+    // The aborted task no longer holds the only queue place.
+    const next = limiter.run(async () => "next");
+    g.open();
+    await first;
+    expect(await next).toEqual({ busy: false, value: "next" });
+    expect(ran).toBe(false);
+  });
+
+  it("answers aborted at once for an already aborted signal, without taking a slot", async () => {
+    const limiter = createLimiter({ concurrency: 1, maxQueue: 0 });
+    const controller = new AbortController();
+    controller.abort();
+    expect(await limiter.run(async () => 1, { signal: controller.signal })).toEqual({ busy: false, aborted: true });
+    expect(await limiter.run(async () => 2)).toEqual({ busy: false, value: 2 });
+  });
+
+  it("hands the signal to a running task's owner and lets a second instance have its own limits", async () => {
+    const strict = createLimiter({ concurrency: 1, maxQueue: 0 });
+    const g = gate();
+    const first = strict.run(() => g.promise);
+    expect(await strict.run(async () => 1)).toEqual({ busy: true });
+    expect(await createLimiter({ concurrency: 2, maxQueue: 0 }).run(async () => 1)).toEqual({ busy: false, value: 1 });
+    g.open();
+    await first;
+  });
 });
 
 describe("middleware matcher", () => {

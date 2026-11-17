@@ -79,7 +79,7 @@ async function discard(response: Response): Promise<void> {
 }
 
 /** Posts a prepared form. Callers must have checked the document; createGotenbergEngine().render does. */
-export async function postHtmlToGotenberg(options: GotenbergOptions, form: FormData): Promise<PdfOutcome> {
+export async function postHtmlToGotenberg(options: GotenbergOptions, form: FormData, signal?: AbortSignal): Promise<PdfOutcome> {
   const fetchImpl = options.fetch ?? fetch;
   const maxBytes = options.maxPdfBytes ?? PDF_LIMITS.maxPdfBytes;
   let response: Response;
@@ -87,7 +87,9 @@ export async function postHtmlToGotenberg(options: GotenbergOptions, form: FormD
     response = await fetchImpl(`${trimSlash(options.baseUrl)}/forms/chromium/convert/html`, {
       method: "POST",
       body: form,
-      signal: AbortSignal.timeout(options.renderTimeoutMs ?? PDF_LIMITS.renderTimeoutMs),
+      signal: signal
+        ? AbortSignal.any([AbortSignal.timeout(options.renderTimeoutMs ?? PDF_LIMITS.renderTimeoutMs), signal])
+        : AbortSignal.timeout(options.renderTimeoutMs ?? PDF_LIMITS.renderTimeoutMs),
     });
   } catch (error) {
     return failure(isTimeout(error) ? "pdf_timeout" : "pdf_unavailable");
@@ -123,7 +125,7 @@ export async function postHtmlToGotenberg(options: GotenbergOptions, form: FormD
 export function createGotenbergEngine(options: GotenbergOptions): PdfEngine {
   const fetchImpl = options.fetch ?? fetch;
   return {
-    async render(doc) {
+    async render(doc, opts) {
       try {
         // Size first (cheap length test, then exact bytes): the self-contained checker would
         // otherwise report an oversize document as refused.
@@ -132,7 +134,7 @@ export function createGotenbergEngine(options: GotenbergOptions): PdfEngine {
         for (const part of [doc.html, doc.footerHtml]) {
           if (!checkSelfContained(part).ok) return failure("pdf_refused");
         }
-        return await postHtmlToGotenberg(options, gotenbergForm(doc));
+        return await postHtmlToGotenberg(options, gotenbergForm(doc), opts?.signal);
       } catch {
         return failure("pdf_failed");
       }

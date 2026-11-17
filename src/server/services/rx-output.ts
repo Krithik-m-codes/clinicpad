@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { count, eq, max } from "drizzle-orm";
+import { and, count, eq, inArray, max } from "drizzle-orm";
 import { fail, ok, type Result } from "@/lib/result";
 import { can } from "@/lib/domain/permissions";
 import { isUuid } from "@/lib/domain/ids";
@@ -22,6 +22,7 @@ export type OutputKind = "pdf_download" | "browser_print";
 export type OutputSummary = { count: number; lastAt: Date | null };
 
 export const DRAFT_OUTPUT_MESSAGE = "Finalize this prescription before printing or downloading it.";
+export const ABORTED_MESSAGE = "The download was cancelled.";
 export const BUSY_MESSAGE = "The PDF service is busy. Try again in a moment, or use Print.";
 
 export function htmlSha256(html: string): string {
@@ -32,7 +33,7 @@ export function htmlSha256(html: string): string {
  * Every document (HTML response or PDF input) is produced here, so the self-contained check runs
  * on the final markup, embedded font CSS included, before anything is served or sent to the PDF service.
  */
-function render(bundle: RxDocumentBundle): RenderedDocument {
+export function renderDocument(bundle: RxDocumentBundle): RenderedDocument {
   const rendered = renderPrescription(bundle.document, { logo: bundle.logo, signature: bundle.signature, fontCss: loadFontCss() });
   for (const part of [rendered.html, rendered.footerHtml]) {
     const check = checkSelfContained(part);
@@ -109,11 +110,14 @@ export async function renderPrescriptionHtml(
   ctx: ServiceContext,
   id: string,
   purpose: DocumentPurpose,
+  signal?: AbortSignal,
 ): Promise<Result<{ html: string; title: string; fileName: string }>> {
   const loaded = await loadRxDocument(ctx, id);
   if (!loaded.ok) return loaded;
   if (purpose === "print" && loaded.value.document.status === "draft") return fail("conflict", DRAFT_OUTPUT_MESSAGE);
-  const rendered = render(loaded.value);
+  const rendered = renderDocument(loaded.value);
+  // The request was cancelled before the document was handed over: do not log a print or a view nobody received.
+  if (signal?.aborted) return fail("unavailable", ABORTED_MESSAGE);
   if (purpose === "print") await recordOutput(ctx, loaded.value, rendered, "browser_print", null);
   else if (loaded.value.document.status !== "draft") await recordPreview(ctx, loaded.value);
   return ok({ html: rendered.html, title: rendered.title, fileName: fileNameOf(loaded.value, "html") });
@@ -125,14 +129,16 @@ export async function renderPrescriptionPdf(
   id: string,
   engine: PdfEngine = getPdfEngine(),
   limiter: Limiter = renderLimiter,
+  signal?: AbortSignal,
 ): Promise<Result<{ pdf: ArrayBuffer; fileName: string; pageCount: number }>> {
   const loaded = await loadRxDocument(ctx, id);
   if (!loaded.ok) return loaded;
   const { document } = loaded.value;
   if (document.status === "draft") return fail("conflict", DRAFT_OUTPUT_MESSAGE);
-  const rendered = render(loaded.value);
-  const run = await limiter.run(() => engine.render(rendered));
+  const rendered = renderDocument(loaded.value);
+  const run = await limiter.run(() => engine.render(rendered, { signal }), { signal });
   if (run.busy) return fail("unavailable", BUSY_MESSAGE);
+  if (run.aborted === true) return fail("unavailable", ABORTED_MESSAGE);
   const outcome = run.value;
   if (!outcome.ok) {
     // Code only: never log patient data.
@@ -140,6 +146,8 @@ export async function renderPrescriptionPdf(
     if (outcome.code === "pdf_too_large" || outcome.code === "pdf_refused") return fail("invalid", outcome.message);
     return fail(outcome.code === "pdf_timeout" ? "timeout" : "unavailable", outcome.message);
   }
+  // The client went away while the engine worked: nobody receives the file, so no download is logged.
+  if (signal?.aborted) return fail("unavailable", ABORTED_MESSAGE);
   await recordOutput(ctx, loaded.value, rendered, "pdf_download", { pageCount: outcome.pageCount, byteSize: outcome.pdf.byteLength });
   return ok({ pdf: outcome.pdf, fileName: fileNameOf(loaded.value, "pdf"), pageCount: outcome.pageCount });
 }
@@ -151,7 +159,7 @@ export async function listPrescriptionOutputs(ctx: ServiceContext, id: string): 
     const [row] = await tx
       .select({ count: count(), lastAt: max(prescriptionOutputs.createdAt) })
       .from(prescriptionOutputs)
-      .where(eq(prescriptionOutputs.prescriptionId, id));
+      .where(and(eq(prescriptionOutputs.prescriptionId, id), inArray(prescriptionOutputs.kind, ["pdf_download", "browser_print"])));
     return ok({ count: row?.count ?? 0, lastAt: row?.lastAt ?? null });
   });
 }

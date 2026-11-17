@@ -36,7 +36,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     // Same rule for preview and print: a cross-site page must not trigger an audited view or a logged print.
     const refused = crossSiteRefusal(request);
     if (refused) return refused;
-    const result = await renderPrescriptionHtml(session, id, purpose);
+    const result = await renderPrescriptionHtml(session, id, purpose, request.signal);
     if (!result.ok) {
       return new Response(errorPage(publicMessage(result.code, result.message)), { status: statusForError(result.code), headers: HEADERS });
     }

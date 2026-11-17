@@ -1,13 +1,14 @@
-export type LimiterResult<T> = { busy: true } | { busy: false; value: T };
+export type LimiterResult<T> = { busy: true } | { busy: false; aborted: true; value?: undefined } | { busy: false; aborted?: false; value: T };
 
 export type Limiter = {
-  run<T>(task: () => Promise<T>): Promise<LimiterResult<T>>;
+  run<T>(task: () => Promise<T>, opts?: { signal?: AbortSignal }): Promise<LimiterResult<T>>;
 };
 
 /**
  * At most `concurrency` tasks run at once; up to `maxQueue` more wait; anything beyond that
  * fails fast with `busy` (no unbounded queue, no unbounded memory). A task that throws still
- * frees its slot; the error is passed on to the caller.
+ * frees its slot; the error is passed on to the caller. A queued task whose `signal` aborts leaves the queue
+ * without running and without taking a slot. Each instance has its own limits (the public share route makes its own).
  */
 export function createLimiter({ concurrency, maxQueue }: { concurrency: number; maxQueue: number }): Limiter {
   let active = 0;
@@ -20,10 +21,27 @@ export function createLimiter({ concurrency, maxQueue }: { concurrency: number; 
   };
 
   return {
-    async run<T>(task: () => Promise<T>): Promise<LimiterResult<T>> {
+    async run<T>(task: () => Promise<T>, opts: { signal?: AbortSignal } = {}): Promise<LimiterResult<T>> {
+      const { signal } = opts;
+      // The caller is gone (closed tab, cancelled request): do not take a slot for a result nobody will read.
+      if (signal?.aborted) return { busy: false, aborted: true };
       if (active >= concurrency) {
         if (waiting.length >= maxQueue) return { busy: true };
-        await new Promise<void>((resolve) => waiting.push(resolve));
+        const admitted = await new Promise<boolean>((resolve) => {
+          const onAbort = () => {
+            const index = waiting.indexOf(admit);
+            if (index >= 0) waiting.splice(index, 1);
+            resolve(false);
+          };
+          const admit = () => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve(true);
+          };
+          waiting.push(admit);
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+        // A waiter removed by abort never received the slot, so there is nothing to release.
+        if (!admitted) return { busy: false, aborted: true };
       } else {
         active += 1;
       }
