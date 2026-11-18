@@ -61,20 +61,20 @@ export const LABELS = {
 
 export type LabelKey = keyof typeof LABELS;
 
-function pick(en: string, hindi: string, lang: LabelLanguage): string {
+export function pickLabel(en: string, hindi: string, lang: LabelLanguage): string {
   if (lang === "en") return en;
   if (lang === "hi") return hindi;
   return en === hindi ? en : `${en} / ${hindi}`;
 }
 
 export function labelText(key: LabelKey, lang: LabelLanguage): string {
-  return pick(LABELS[key].en, LABELS[key].hi, lang);
+  return pickLabel(LABELS[key].en, LABELS[key].hi, lang);
 }
 
 /** Table headings: bilingual stacks the Hindi under the English. */
 export function labelHtml(key: LabelKey, lang: LabelLanguage): SafeHtml {
   const { en, hi: hindi } = LABELS[key];
-  if (lang !== "bilingual" || en === hindi) return html`${pick(en, hindi, lang)}`;
+  if (lang !== "bilingual" || en === hindi) return html`${pickLabel(en, hindi, lang)}`;
   return html`<span class="l-en">${en}</span><span class="l-hi">${hindi}</span>`;
 }
 
@@ -92,7 +92,7 @@ function coded<K extends string>(
 ): string {
   if (!code) return "";
   if (!Object.hasOwn(en, code)) return code; // unknown code: print it as text (it is escaped later)
-  return pick(en[code as K], hindi[code as K], lang);
+  return pickLabel(en[code as K], hindi[code as K], lang);
 }
 
 export function foodText(code: string | null, lang: LabelLanguage): string {
@@ -105,7 +105,7 @@ export function periodicityText(code: string | null, lang: LabelLanguage): strin
 
 export function genderText(code: string | null, lang: LabelLanguage): string {
   if (!code || !Object.hasOwn(GENDER, code)) return "";
-  return pick(GENDER[code].en, GENDER[code].hi, lang);
+  return pickLabel(GENDER[code].en, GENDER[code].hi, lang);
 }
 
 const UNIT_WORDS: Record<string, { en: [string, string]; hi: [string, string] }> = {
@@ -130,7 +130,7 @@ export function durationText(value: number | null, unit: string | null, lang: La
   if (unit !== null && !Object.hasOwn(UNIT_WORDS, unit)) return "";
   const words = unit === null ? UNIT_WORDS.days : UNIT_WORDS[unit];
   const one = amount === "1";
-  return pick(`${amount} ${one ? words.en[0] : words.en[1]}`, `${amount} ${one ? words.hi[0] : words.hi[1]}`, lang);
+  return pickLabel(`${amount} ${one ? words.en[0] : words.en[1]}`, `${amount} ${one ? words.hi[0] : words.hi[1]}`, lang);
 }
 
 const HI_AGE_UNITS: Record<string, string> = { y: "वर्ष", mo: "माह", d: "दिन" };
@@ -139,7 +139,7 @@ const HI_AGE_UNITS: Record<string, string> = { y: "वर्ष", mo: "माह
 export function ageText(label: string, lang: LabelLanguage): string {
   const match = /^(\d+) (y|mo|d)$/.exec(label);
   if (!match) return label;
-  return pick(label, `${match[1]} ${HI_AGE_UNITS[match[2]]}`, lang);
+  return pickLabel(label, `${match[1]} ${HI_AGE_UNITS[match[2]]}`, lang);
 }
 
 /*
@@ -168,20 +168,20 @@ const STATUS_TEXT = {
 export type StatusTextKey = keyof typeof STATUS_TEXT;
 
 export function statusText(key: StatusTextKey, lang: LabelLanguage): string {
-  return pick(STATUS_TEXT[key].en, STATUS_TEXT[key].hi, lang);
+  return pickLabel(STATUS_TEXT[key].en, STATUS_TEXT[key].hi, lang);
 }
 
 /** "SUPERSEDED by version 2 issued 13/11/2026. Do not dispense from this copy." */
 export function supersededByText(version: number, issued: string, lang: LabelLanguage): string {
   const en = `SUPERSEDED by version ${version}${issued ? ` issued ${issued}` : ""}. Do not dispense from this copy.`;
   const hindi = `संस्करण ${version} द्वारा निरस्त${issued ? `, जारी दिनांक ${issued}` : ""}। इस प्रति से दवा न दें।`;
-  return pick(en, hindi, lang);
+  return pickLabel(en, hindi, lang);
 }
 
 export function replacesVersionText(version: number, lang: LabelLanguage): string {
-  return pick(`Replaces version ${version}`, `संस्करण ${version} का स्थान लेता है`, lang);
+  return pickLabel(`Replaces version ${version}`, `संस्करण ${version} का स्थान लेता है`, lang);
 }
 
 export function draftAmendmentText(version: number, lang: LabelLanguage): string {
-  return pick(`Draft amendment of version ${version}`, `संस्करण ${version} का संशोधन मसौदा`, lang);
+  return pickLabel(`Draft amendment of version ${version}`, `संस्करण ${version} का संशोधन मसौदा`, lang);
 }
