@@ -1,7 +1,12 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
+vi.mock("@/server/scanning", async () => {
+  const { sharedFakeScanner } = await import("../helpers/fake-scanner");
+  return { getMalwareScanner: () => sharedFakeScanner };
+});
+
 import { adminDb } from "@/server/db/admin";
 import { withTenant } from "@/server/db/tenant";
 import { pgErrorInfo } from "@/server/db/errors";

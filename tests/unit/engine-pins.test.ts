@@ -18,4 +18,25 @@ describe("engine image pins", () => {
     expect(new Set(found).size, found.join("\n")).toBe(1);
     expect(found[0]).toMatch(/^gotenberg\/gotenberg:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/);
   });
+
+  it("pins ClamAV to one tag and digest in compose and CI", () => {
+    const found = FILES.map(read).flatMap((t) => pinsOf(t, "clamav/clamav"));
+    expect(found.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(found).size, found.join("\n")).toBe(1);
+    expect(found[0]).toBe("clamav/clamav:1.4.6@sha256:4cc4350d3fded380caf1799e76c0d1c93f3fa40af99c0cb2862ec0c9b117718a");
+  });
+
+  it("gives the ClamAV container the same hardening in compose and CI", () => {
+    const compose = read("docker-compose.yml");
+    const ci = read(".github/workflows/ci.yml");
+    for (const text of [compose, ci]) {
+      for (const cap of ["CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]) expect(text).toContain(cap);
+      expect(text).toContain("no-new-privileges:true");
+      expect(text).toContain("CLAMAV_NO_FRESHCLAMD");
+      expect(text).toContain("2500m");
+      expect(text).toContain("/var/log/clamav:uid=100,gid=101");
+    }
+    expect(ci).toContain("--read-only");
+    expect(compose).toMatch(/read_only: true/);
+  });
 });

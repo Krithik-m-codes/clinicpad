@@ -95,7 +95,8 @@ Production notes for sharing: use an https `NEXT_PUBLIC_APP_URL` (otherwise "Sha
 | Variable | Phase | Purpose |
 |---|---|---|
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | 2 | Template and PDF storage |
-| `CLAMAV_HOST`, `CLAMAV_PORT` | 2 | Upload scanning |
+| `CLAMAV_HOST`, `CLAMAV_PORT` | 2A | Upload scanning (clamd). Default `127.0.0.1:3310` outside production; both mandatory in production. Uploads are refused while the scanner is unreachable |
+| `CLAMAV_DISABLED_FOR_DEVELOPMENT`, `CLAMAV_DISABLED_ACK` | dev only | Skip scanning: works only with `NODE_ENV=development`, the flag `1`, AND `CLAMAV_DISABLED_ACK=unscanned-uploads-on-this-machine`; in any other case the flag makes every upload fail. Do not use it for e2e or demos |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | 3 | India payments |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | 5 | International payments |
 | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_ID`, `WHATSAPP_VERIFY_TOKEN` | 3 | Meta Cloud API |
@@ -107,7 +108,7 @@ Production notes for sharing: use an https `NEXT_PUBLIC_APP_URL` (otherwise "Sha
 
 ## 4. Local services
 
-`docker-compose.yml` runs `postgres` (5432) and `gotenberg` (127.0.0.1:3001, prescription PDFs). Start both with `docker compose up -d`; without Gotenberg the app still works, Print still works, and Download PDF shows an error. On this project's Windows machine Docker Desktop lives under `%LOCALAPPDATA%\Programs\DockerDesktop`.
+`docker-compose.yml` runs `postgres` (5432), `gotenberg` (127.0.0.1:3001, prescription PDFs) and `clamav` (127.0.0.1:3310, upload scanning). Start them with `docker compose up -d`; without Gotenberg the app still works, Print still works, and Download PDF shows an error. On this project's Windows machine Docker Desktop lives under `%LOCALAPPDATA%\Programs\DockerDesktop`.
 
 Target compose stack:
 
@@ -174,6 +175,14 @@ For Supabase staging, use the pooled URL in `DATABASE_URL` and the direct URL in
 ### 4.2 Document engine (Gotenberg)
 
 `docker compose up -d gotenberg` starts the digest-pinned Gotenberg image with JavaScript disabled, a Chromium deny-list, no webhooks or download-from, and the API bound to loopback only (it has no authentication). Check it with `curl http://localhost:3001/health` or the app's `GET /api/health/pdf`. Prescription documents embed their fonts and images, carry a `default-src 'none'` CSP, and are checked before they are sent, so Gotenberg never needs network access: in staging and production run it with no egress (no outbound network from its container) and copy the flag set from `docker-compose.yml`. Set `GOTENBERG_URL` explicitly in production. After upgrading the image, run `npm run test:visual` (it also writes the real PDFs to `test-results/rx-visual-pdf/`) and review the screenshots and PDF pages. Set `GOTENBERG_REQUIRED=1` to make `npm run test` fail instead of skipping when Gotenberg or docker is missing (CI does this).
+
+### 4.3 Malware scanner (ClamAV)
+
+`docker compose up -d clamav` starts the digest-pinned ClamAV image (clamd on 127.0.0.1:3310, no authentication) with the hardening of `docs/spikes/2026-11-18-s4-clamav.md`: all capabilities dropped except CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER, `no-new-privileges`, read-only root, tmpfs `/tmp`, `/run` and `/var/log/clamav`, and a 2500 MB memory limit (a signature reload doubles clamd memory for about 15 s). It runs with `CLAMAV_NO_FRESHCLAMD=true`: it never calls out, and the signatures baked into the image load in about 20 s (no multi-minute first download; the empty named volume is filled from the image on first start). The container is healthy when `docker compose ps clamav` says so. Uploads of logos, signatures and (from Task 9) template files are scanned before anything is stored; if the scanner is down they are refused with a message to try again, never accepted unscanned.
+
+Updating signatures is a separate job with egress: `docker compose --profile update run --rm clamav-update`, then `docker compose restart clamav` (about 16 s; or send clamd `zRELOAD`, scans keep working). Schedule it a few times a day in staging and production. Docker does not publish ports of containers on an internal network, so on a developer machine the scanner sits on the default bridge; true egress blocking (production) needs the app in a container on the same internal network or a host firewall (open hosting question).
+
+Tests never need clamd: they use `tests/helpers/fake-scanner.ts`. `tests/integration/clamav-smoke.test.ts` runs against the real container when it is up (EICAR detection, `VERSION` format, and a drift check of the container options) and skips otherwise; `CLAMAV_REQUIRED=1` or `CI=true` turns the skip into a failure. CI starts the same image and options with `CLAMAV_NO_FRESHCLAMD=true`. `tests/e2e/pad-settings.spec.ts` uploads a real logo and signature, so run it with the scanner up (`docker compose up -d postgres gotenberg clamav`).
 
 ## 5. Run the app
 
@@ -311,6 +320,7 @@ All commands must exit `0`. Then start the app and check:
 | Postgres auth error | Wrong URL / pooler vs direct | Check `DATABASE_URL` vs `DIRECT_URL` |
 | RLS returns zero rows | Session tenant not set | Verify `app.tenant_id` is set in the transaction |
 | Migration hangs | Locked table / wrong DB | Check `pg_stat_activity`; use direct connection |
+| Uploading a logo or signature says the virus scanner is not available | ClamAV not running or still loading signatures | `docker compose up -d clamav`; wait for `healthy` (about 20 s) |
 | Download PDF says the PDF service is not reachable | Gotenberg not running | `docker compose up -d gotenberg`; then `curl http://localhost:3001/health` |
 | Share panel says "Sharing is turned off for this clinic" | Off by default | The owner turns it on in Settings, Sharing (after reviewing the consent text) |
 | A shared link says "This link is not valid" | Expired (7 days), used 10 times, withdrawn, consent withdrawn, patient archived, or sharing switched off | Share again from the prescription page |

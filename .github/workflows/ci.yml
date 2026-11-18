@@ -30,6 +30,9 @@ jobs:
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       GOTENBERG_URL: http://localhost:3001
       GOTENBERG_REQUIRED: "1"
+      CLAMAV_HOST: 127.0.0.1
+      CLAMAV_PORT: "3310"
+      CLAMAV_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -55,6 +58,19 @@ jobs:
       - run: |
           for i in $(seq 1 30); do curl -sf http://localhost:3001/health && break; sleep 2; done
           curl -sf http://localhost:3001/health
+      # Same image and options as the clamav service in docker-compose.yml; keep them in sync (tests/unit/engine-pins.test.ts).
+      # No freshclam in CI: the signatures baked into the image are deterministic and need no network.
+      - run: >-
+          docker run -d --name clamav -p 127.0.0.1:3310:3310
+          --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add DAC_OVERRIDE --cap-add FOWNER
+          --security-opt no-new-privileges:true --read-only
+          --tmpfs /tmp --tmpfs /run --tmpfs /var/log/clamav:uid=100,gid=101
+          -v clamav_db:/var/lib/clamav -e CLAMAV_NO_FRESHCLAMD=true
+          --memory 2500m --pids-limit 256
+          clamav/clamav:1.4.6@sha256:4cc4350d3fded380caf1799e76c0d1c93f3fa40af99c0cb2862ec0c9b117718a
+      - run: |
+          for i in $(seq 1 60); do printf 'zPING\0' | timeout 2 nc 127.0.0.1 3310 | grep -q PONG && break; sleep 5; done
+          printf 'zPING\0' | timeout 2 nc 127.0.0.1 3310 | grep -q PONG
       - run: npm run test
       - run: npm run build:web
       - run: npm run build:desktop

@@ -58,5 +58,69 @@ services:
       timeout: 5s
       retries: 10
 
+  clamav:
+    # Malware scanner for uploads (Plan 2A, ADR-0046). Pinned by digest; option set verified in
+    # docs/spikes/2026-11-18-s4-clamav.md (every option below is needed; weaker sets fail to start).
+    # clamd reads only bytes the app streams to it (INSTREAM). It runs with CLAMAV_NO_FRESHCLAMD=true and opens no
+    # outbound connection: the signatures baked into the image load at start (about 20 s). Updates come from the
+    # separate clamav-update job below, which shares the signature volume and is the only part that needs egress.
+    # Bound to loopback only: clamd has no authentication. mem_limit covers the peak of a concurrent signature reload.
+    image: clamav/clamav:1.4.6@sha256:4cc4350d3fded380caf1799e76c0d1c93f3fa40af99c0cb2862ec0c9b117718a
+    container_name: clinicpad-clamav
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3310:3310"
+    volumes:
+      - clinicpad_clamav:/var/lib/clamav
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "true"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+      - /var/log/clamav:uid=100,gid=101
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2500m
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  clamav-update:
+    # Optional signature update job (needs egress, no ports): `docker compose run --rm clamav-update`, then restart
+    # clamav (or send it zRELOAD). Run it a few times a day from a scheduler in staging and production.
+    image: clamav/clamav:1.4.6@sha256:4cc4350d3fded380caf1799e76c0d1c93f3fa40af99c0cb2862ec0c9b117718a
+    profiles: ["update"]
+    entrypoint: ["freshclam", "--foreground", "--stdout", "--user=clamav", "--checks=1"]
+    volumes:
+      - clinicpad_clamav:/var/lib/clamav
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/log/clamav:uid=100,gid=101
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   clinicpad_pg:
+  clinicpad_clamav:

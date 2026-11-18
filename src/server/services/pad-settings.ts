@@ -1,6 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import { fail, invalidFrom, ok, type Result } from "@/lib/result";
 import { can } from "@/lib/domain/permissions";
+import { inspectImage } from "@/lib/domain/image";
+import type { MalwareScanner } from "@/server/scanning/scanner";
+import { scanOrRefuse } from "@/server/scanning/uploads";
 import { clinics, doctors } from "@/server/db/schema";
 import { withTenant, type TenantTx } from "@/server/db/tenant";
 import {
@@ -148,8 +151,24 @@ export async function internalAttachDoctorSignature(tx: TenantTx, tenantId: stri
   return ok(null);
 }
 
-export async function setClinicLogo(ctx: ServiceContext, image: UploadedImage | null): Promise<Result<{ assetId: string | null }>> {
+/** Bytes that are not an image are refused without a scan; an image is scanned before any transaction opens. */
+async function scanImage(ctx: ServiceContext, image: UploadedImage, entityType: string, kind: string, scanner?: MalwareScanner): Promise<Result<null>> {
+  const precheck = inspectImage(image.bytes);
+  if (!precheck.ok) return fail("invalid", precheck.message, "image");
+  const scanned = await scanOrRefuse(ctx, image.bytes, { action: "upload.rejected", entityType, kind, field: "image" }, scanner);
+  return scanned.ok ? ok(null) : scanned;
+}
+
+export async function setClinicLogo(
+  ctx: ServiceContext,
+  image: UploadedImage | null,
+  deps: { scanner?: MalwareScanner } = {},
+): Promise<Result<{ assetId: string | null }>> {
   if (!can(ctx.role, "settings.clinic")) return fail("forbidden", CLINIC_FORBIDDEN);
+  if (image !== null) {
+    const scanned = await scanImage(ctx, image, "clinic", "logo", deps.scanner);
+    if (!scanned.ok) return scanned;
+  }
   return withTenant(ctx.tenantId, async (tx): Promise<Result<{ assetId: string | null }>> => {
     const clinic = await primaryClinic(tx, ctx.tenantId);
     if (!clinic) return NO_CLINIC();
@@ -213,8 +232,16 @@ export async function updateDoctorProfile(ctx: ServiceContext, raw: unknown): Pr
   });
 }
 
-export async function setDoctorSignature(ctx: ServiceContext, image: UploadedImage | null): Promise<Result<{ assetId: string | null }>> {
+export async function setDoctorSignature(
+  ctx: ServiceContext,
+  image: UploadedImage | null,
+  deps: { scanner?: MalwareScanner } = {},
+): Promise<Result<{ assetId: string | null }>> {
   if (!can(ctx.role, "settings.profile")) return fail("forbidden", PROFILE_FORBIDDEN);
+  if (image !== null) {
+    const scanned = await scanImage(ctx, image, "doctor", "signature", deps.scanner);
+    if (!scanned.ok) return scanned;
+  }
   return withTenant(ctx.tenantId, async (tx): Promise<Result<{ assetId: string | null }>> => {
     const doctor = await ownDoctor(tx, ctx.tenantId, ctx.userId);
     if (!doctor) return NO_DOCTOR();

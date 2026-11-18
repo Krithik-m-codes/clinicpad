@@ -5,6 +5,10 @@ import { eq } from "drizzle-orm";
 vi.mock("@/server/auth/session", () => ({ requireSession: vi.fn(), getSessionContext: vi.fn() }));
 vi.mock("@/auth", () => ({ auth: vi.fn() }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+vi.mock("@/server/scanning", async () => {
+  const { sharedFakeScanner } = await import("../helpers/fake-scanner");
+  return { getMalwareScanner: () => sharedFakeScanner };
+});
 
 import { requireSession } from "@/server/auth/session";
 import { adminDb } from "@/server/db/admin";
