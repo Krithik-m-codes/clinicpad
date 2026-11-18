@@ -21,7 +21,8 @@ export type EditorAction =
   | { type: "flow"; patch: Partial<OverlayDefinition["flow"]> }
   | { type: "options"; patch: OptionsPatch }
   | { type: "replace"; definition: OverlayDefinition }
-  | { type: "saved" };
+  /** The definition that was saved: the editor is clean only if it is still the current one (edits made during the save keep it dirty). */
+  | { type: "saved"; definition: OverlayDefinition };
 
 const tenth = (n: number) => Math.round(n * 10) / 10;
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, Number.isFinite(n) ? n : min));
@@ -139,6 +140,6 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     case "replace":
       return { ...state, definition: action.definition, dirty: false };
     case "saved":
-      return { ...state, dirty: false };
+      return state.definition === action.definition ? { ...state, dirty: false } : state;
   }
 }

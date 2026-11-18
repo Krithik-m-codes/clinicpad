@@ -6,13 +6,13 @@ import { rollbackTemplateAction } from "@/server/actions/templates";
 import { Button } from "@/components/ui/button";
 
 type Version = { versionId: string; version: number; publishedAt: string };
-type Props = { templateId: string; currentVersionId: string | null; versions: Version[]; canPublish: boolean };
+type Props = { templateId: string; currentVersionId: string | null; versions: Version[]; canPublish: boolean; /** An open draft would be replaced by publishing an older version again: do it from the pad list, not inside the editor. */ hasDraft?: boolean };
 
 /**
  * Published versions, newest first. Publishing an older one again makes a new version (history is never rewritten) and
  * shows the same refusals as publishing: a bound pad that is the clinic default, or one another doctor uses.
  */
-export function VersionHistory({ templateId, currentVersionId, versions, canPublish }: Props) {
+export function VersionHistory({ templateId, currentVersionId, versions, canPublish, hasDraft = false }: Props) {
   const router = useRouter();
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -35,7 +35,7 @@ export function VersionHistory({ templateId, currentVersionId, versions, canPubl
           <li key={v.versionId} className="flex flex-wrap items-center justify-between gap-2">
             <span>
               Version {v.version} · {new Date(v.publishedAt).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" })}
-              {v.versionId === currentVersionId ? " (in use)" : ""}
+              {v.versionId === currentVersionId ? " (current)" : ""}
             </span>
             <span className="flex gap-2">
               <Button asChild variant="outline" size="sm">
@@ -43,7 +43,7 @@ export function VersionHistory({ templateId, currentVersionId, versions, canPubl
                   Preview version {v.version}
                 </a>
               </Button>
-              {canPublish && v.versionId !== currentVersionId ? (
+              {canPublish && !hasDraft && v.versionId !== currentVersionId ? (
                 <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void again(v)}>
                   Publish version {v.version} again
                 </Button>
@@ -52,6 +52,7 @@ export function VersionHistory({ templateId, currentVersionId, versions, canPubl
           </li>
         ))}
       </ul>
+      {hasDraft && canPublish ? <p className="text-xs text-muted-foreground">There is an open draft. Publish or discard it before publishing an older version again.</p> : null}
       <p role="status" aria-live="polite">
         {message}
       </p>

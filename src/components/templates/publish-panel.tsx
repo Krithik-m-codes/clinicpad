@@ -37,6 +37,17 @@ export function PublishPanel({ templateId, definition, paper, revision, doctors,
   const asked: PublishIdentity | null = identity === null ? null : identity === "dynamic" ? { kind: "dynamic" } : { kind: "bound", doctorId: doctor?.id ?? null, confirmed };
   const issues = asked ? overlayPublishIssues(definition, paper, asked) : [];
 
+  // The confirmation is about one doctor's letterhead: a new answer or a new doctor starts again.
+  function chooseIdentity(next: "dynamic" | "bound") {
+    setIdentity(next);
+    setDoctorId("");
+    setConfirmed(false);
+  }
+  function chooseDoctor(next: string) {
+    setDoctorId(next);
+    setConfirmed(false);
+  }
+
   if (!canPublish) return <p className="rounded-md border p-3 text-sm">The clinic owner publishes pads. Save your draft and ask them to review and publish it.</p>;
 
   async function publish() {
@@ -60,17 +71,17 @@ export function PublishPanel({ templateId, definition, paper, revision, doctors,
       <fieldset className="space-y-1 text-sm">
         <legend>Does the printed letterhead show a doctor&apos;s name or registration number?</legend>
         <label className="flex items-center gap-2">
-          <input type="radio" name="identity" checked={identity === "dynamic"} onChange={() => setIdentity("dynamic")} /> No, it does not show a doctor: ClinicPad prints the signing doctor&apos;s details
+          <input type="radio" name="identity" checked={identity === "dynamic"} onChange={() => chooseIdentity("dynamic")} /> No, it does not show a doctor: ClinicPad prints the signing doctor&apos;s details
         </label>
         <label className="flex items-center gap-2">
-          <input type="radio" name="identity" checked={identity === "bound"} onChange={() => setIdentity("bound")} /> Yes, it shows one doctor: only that doctor&apos;s prescriptions use it
+          <input type="radio" name="identity" checked={identity === "bound"} onChange={() => chooseIdentity("bound")} /> Yes, it shows one doctor: only that doctor&apos;s prescriptions use it
         </label>
       </fieldset>
       {identity === "bound" ? (
         <div className="space-y-2 text-sm">
           <label className="flex flex-col">
             Whose letterhead is it?
-            <select value={doctorId} onChange={(e) => setDoctorId(e.target.value)} className="rounded border p-1">
+            <select value={doctorId} onChange={(e) => chooseDoctor(e.target.value)} className="rounded border p-1">
               <option value="">Choose a doctor</option>
               {doctors.map((d) => (
                 <option key={d.id} value={d.id}>

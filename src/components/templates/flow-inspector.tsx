@@ -4,6 +4,7 @@ import type { LabelLanguage } from "@/lib/rx-render/types";
 import { SECTION_KEYS, type OverlayDefinition } from "@/lib/rx-render/overlay-definition";
 import type { SectionKey } from "@/lib/rx-render/templates";
 import type { EditorAction } from "@/lib/templates/editor-state";
+import { NumberField } from "./number-field";
 
 const SECTION_LABELS: Record<SectionKey, string> = {
   vitals: "Vitals",
@@ -18,17 +19,13 @@ const SECTION_LABELS: Record<SectionKey, string> = {
   advice: "Advice",
   followUp: "Follow-up",
 };
-const num = (v: string) => (v.trim() === "" ? Number.NaN : Number(v));
 
 type Props = { definition: OverlayDefinition; labels: LabelLanguage; onLabels: (l: LabelLanguage) => void; dispatch: (a: EditorAction) => void };
 
 export function FlowInspector({ definition, labels, onLabels, dispatch }: Props) {
   const flow = definition.flow;
   const inset = (key: "topMm" | "bottomMm" | "leftMm" | "rightMm", label: string) => (
-    <label className="flex flex-col text-xs">
-      {label}
-      <input type="number" step={0.5} value={flow[key]} onChange={(e) => Number.isFinite(num(e.target.value)) && dispatch({ type: "flow", patch: { [key]: num(e.target.value) } })} className="rounded border p-1" />
-    </label>
+    <NumberField label={label} value={flow[key]} min={0} onValue={(n) => dispatch({ type: "flow", patch: { [key]: n } })} />
   );
   const toggle = (key: SectionKey, on: boolean) => {
     const next = on ? SECTION_KEYS.filter((k) => k === key || flow.sections.includes(k)) : flow.sections.filter((k) => k !== key);

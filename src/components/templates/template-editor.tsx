@@ -2,7 +2,7 @@
 
 import "@fontsource/noto-sans-devanagari/400.css";
 import "@fontsource/noto-sans-devanagari/700.css";
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BOX_FIELD_KEYS, TEMPLATE_FIELDS, type BoxFieldKey } from "@/lib/rx-render/fields";
 import { overlayGeometryIssues, type OverlayDefinition } from "@/lib/rx-render/overlay-definition";
@@ -33,6 +33,7 @@ export function TemplateEditor({ templateId, name, fileId, paper, labels: initia
   const router = useRouter();
   const [state, dispatch] = useReducer(editorReducer, undefined, () => initialEditorState(definition, paper));
   const [labels, setLabels] = useState(initialLabels);
+  const labelsNow = useRef(initialLabels);
   const [labelsDirty, setLabelsDirty] = useState(false);
   const [revision, setRevision] = useState(initialRevision);
   const [message, setMessage] = useState<string | null>(null);
@@ -59,12 +60,15 @@ export function TemplateEditor({ templateId, name, fileId, paper, labels: initia
     setSaving(true);
     setMessage(null);
     setConflict(false);
-    const result = await saveTemplateDraftAction(templateId, { definition: state.definition, labels, baseRevision: revision });
+    const sent = state.definition;
+    const sentLabels = labels;
+    const result = await saveTemplateDraftAction(templateId, { definition: sent, labels: sentLabels, baseRevision: revision });
     setSaving(false);
     if (result.ok && typeof result.revision === "number") {
       setRevision(result.revision);
-      dispatch({ type: "saved" });
-      setLabelsDirty(false);
+      // Edits made while the save was running are not on the server yet: stay dirty for them.
+      dispatch({ type: "saved", definition: sent });
+      if (labelsNow.current === sentLabels) setLabelsDirty(false);
       setMessage("Saved.");
       router.refresh();
     } else if (result.currentRevision !== undefined) {
@@ -164,6 +168,7 @@ export function TemplateEditor({ templateId, name, fileId, paper, labels: initia
             definition={state.definition}
             labels={labels}
             onLabels={(l) => {
+              labelsNow.current = l;
               setLabels(l);
               setLabelsDirty(true);
             }}

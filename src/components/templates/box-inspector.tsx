@@ -3,21 +3,17 @@
 import { BOX_FIELD_KEYS, TEMPLATE_FIELDS, type BoxFieldKey } from "@/lib/rx-render/fields";
 import type { OverlayBox } from "@/lib/rx-render/overlay-definition";
 import { boxLimitReason, type EditorAction } from "@/lib/templates/editor-state";
+import { OVERLAY_LIMITS } from "@/lib/rx-render/overlay-definition";
 import { Button } from "@/components/ui/button";
+import { NumberField } from "./number-field";
 
 const GROUPS = ["patient", "visit", "doctor", "clinic", "vitals", "clinical"] as const;
-const num = (value: string) => (value.trim() === "" ? Number.NaN : Number(value));
 
 type Props = { box: OverlayBox; others: readonly OverlayBox[]; warn: boolean; dispatch: (a: EditorAction) => void };
 
 export function BoxInspector({ box, others, warn, dispatch }: Props) {
   const set = (patch: Partial<OverlayBox>) => dispatch({ type: "set", id: box.id, patch });
-  const length = (key: "xMm" | "yMm" | "wMm" | "hMm", label: string) => (
-    <label className="flex flex-col text-xs">
-      {label}
-      <input type="number" step={0.5} value={box[key]} onChange={(e) => Number.isFinite(num(e.target.value)) && set({ [key]: num(e.target.value) })} className="rounded border p-1" />
-    </label>
-  );
+  const length = (key: "xMm" | "yMm" | "wMm" | "hMm", label: string, min: number) => <NumberField label={label} value={box[key]} min={min} onValue={(n) => set({ [key]: n })} />;
   return (
     <section aria-label="Selected box" className="space-y-3 rounded-md border p-3">
       <label className="flex flex-col text-sm">
@@ -35,16 +31,13 @@ export function BoxInspector({ box, others, warn, dispatch }: Props) {
         </select>
       </label>
       <div className="grid grid-cols-4 gap-2">
-        {length("xMm", "Left (mm)")}
-        {length("yMm", "Top (mm)")}
-        {length("wMm", "Width (mm)")}
-        {length("hMm", "Height (mm)")}
+        {length("xMm", "Left (mm)", 0)}
+        {length("yMm", "Top (mm)", 0)}
+        {length("wMm", "Width (mm)", OVERLAY_LIMITS.minBoxMm)}
+        {length("hMm", "Height (mm)", OVERLAY_LIMITS.minBoxMm)}
       </div>
       <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col text-xs">
-          Size (pt)
-          <input type="number" min={6} max={24} step={0.5} value={box.fontPt} onChange={(e) => Number.isFinite(num(e.target.value)) && set({ fontPt: num(e.target.value) })} className="w-20 rounded border p-1" />
-        </label>
+        <NumberField label="Size (pt)" value={box.fontPt} min={OVERLAY_LIMITS.minFontPt} max={OVERLAY_LIMITS.maxFontPt} step={0.5} className="w-20 rounded border p-1" onValue={(n) => set({ fontPt: n })} />
         <label className="flex flex-col text-xs">
           Align
           <select value={box.align} onChange={(e) => set({ align: e.target.value === "center" ? "center" : e.target.value === "right" ? "right" : "left" })} className="rounded border p-1">

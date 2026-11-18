@@ -275,18 +275,41 @@ describe("OutputActions on an overlay pad", () => {
   const setAgent = (value: string) => Object.defineProperty(window.navigator, "userAgent", { value, configurable: true });
 
   it("prints through the paper PDF in a new tab where the browser cannot print overlays", () => {
-    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    vi.useFakeTimers();
+    const tab = { opener: {} };
+    const open = vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
     // An unknown print engine is never trusted with overlays.
     setAgent("Mozilla/5.0 (UnknownOS) UnknownBrowser/1.0");
     render(<OutputActions prescriptionId={ID} fileName="Rx-1-v1.pdf" printsOnOverlay />);
     fireEvent.click(screen.getByRole("button", { name: /print/i }));
-    expect(open).toHaveBeenCalledWith(`/prescriptions/${ID}/pdf?purpose=print`, "_blank", "noopener");
+    // No "noopener" feature (it hides a blocked pop-up); the opener link is cut by hand.
+    expect(open).toHaveBeenCalledWith(`/prescriptions/${ID}/pdf?purpose=print`, "_blank");
+    expect(tab.opener).toBeNull();
     expect(document.querySelector("iframe")).toBeNull();
+    // Busy while the tab loads, so a second click cannot open and log it twice; then the history refreshes.
+    expect(screen.getByRole("button", { name: /Preparing/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Preparing/ }));
+    expect(open).toHaveBeenCalledTimes(1);
+    act(() => {
+      vi.advanceTimersByTime(3_000);
+    });
+    expect(screen.getByRole("button", { name: "Print" })).toBeEnabled();
     expect(refresh).toHaveBeenCalled();
   });
 
-  it("does the same in Firefox (the S1 default) and tells people to print the PDF at 100 percent", () => {
+  it("says so when the browser blocks the new tab, and does not log or refresh", () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
+    setAgent("Mozilla/5.0 (UnknownOS) UnknownBrowser/1.0");
+    render(<OutputActions prescriptionId={ID} fileName="Rx-1-v1.pdf" printsOnOverlay />);
+    fireEvent.click(screen.getByRole("button", { name: /print/i }));
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(/blocked the PDF window/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Print" })).toBeEnabled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("does the same in Firefox (the S1 default) and tells people to print the PDF at 100 percent", () => {
+    const open = vi.spyOn(window, "open").mockReturnValue({ opener: null } as unknown as Window);
     setAgent(FIREFOX);
     render(<OutputActions prescriptionId={ID} fileName="Rx-1-v1.pdf" printsOnOverlay />);
     expect(screen.getByText(/Actual size/)).toBeTruthy();

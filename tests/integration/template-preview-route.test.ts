@@ -11,7 +11,8 @@ vi.mock("@/server/pdf", async () => {
 
 import { getSessionContext } from "@/server/auth/session";
 import { adminDb } from "@/server/db/admin";
-import { auditEvents, prescriptionOutputs } from "@/server/db/schema";
+import { createHash } from "node:crypto";
+import { auditEvents, clinicAssets, doctors, prescriptionOutputs, prescriptions } from "@/server/db/schema";
 import { checkSelfContained } from "@/lib/rx-render/self-contained";
 import { newId } from "@/lib/domain/ids";
 import { GET, HEAD } from "@/app/(app)/templates/[id]/preview/route";
@@ -38,6 +39,13 @@ const events = (tenantId: string, action: string) =>
 beforeAll(async () => {
   A = await createTestTenant("tpl-preview-a");
   B = await createTestTenant("tpl-preview-b");
+  // Every doctor of clinic A has a signature on file, so "never a signature" in a preview is a real assertion.
+  const bytes = Buffer.from("fake-signature-bytes");
+  const [signature] = await adminDb
+    .insert(clinicAssets)
+    .values({ tenantId: A.tenantId, kind: "signature", mime: "image/png", width: 40, height: 20, byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), bytes })
+    .returning({ id: clinicAssets.id });
+  await adminDb.update(doctors).set({ signatureAssetId: signature.id }).where(eq(doctors.tenantId, A.tenantId));
   templateId = (await insertPublishedOverlay(A.tenantId)).templateId;
   const patient = await newPatient(A.as("reception"), "Preview Patient आशा");
   rxId = await finalized(A.as("doctor"), patient);
@@ -93,7 +101,10 @@ describe("GET /templates/<id>/preview", () => {
     const html = await response.text();
     expect(html).toContain("DRAFT · NOT VALID FOR DISPENSING");
     expect(html).toContain("Preview Patient");
-    expect(imageCount(html)).toBe(1); // the pad background only: no logo or signature in this fixture
+    expect(imageCount(html)).toBe(1); // the pad background only: the signed signature is never drawn
+    const [row] = await adminDb.select({ rxNo: prescriptions.rxNo }).from(prescriptions).where(eq(prescriptions.id, rxId));
+    expect(row.rxNo).not.toBeNull();
+    expect(html).not.toMatch(new RegExp(String.raw`Rx\s*(no\.?)?\s*${row.rxNo}\b`, "i")); // the signed number is never printed on a working copy
     const [event] = await events(A.tenantId, "template.previewed_with_patient");
     expect(event.after).toEqual({ templateId, templateVersionId: expect.any(String), prescriptionId: rxId });
     expect(JSON.stringify(event)).not.toContain("Preview Patient");
@@ -125,6 +136,7 @@ describe("GET /templates/<id>/preview", () => {
     expect((await preview(templateId, `sample=short&version=${other.versionId}`)).status).toBe(404);
     expect((await preview(templateId, "sample=huge")).status).toBe(404);
     expect((await preview(templateId, "")).status).toBe(404);
+    expect(await (await preview(templateId, "sample=huge")).text()).toContain("This preview link is not valid");
     expect((await preview("not-a-uuid", "sample=short")).status).toBe(404);
   });
 
@@ -133,6 +145,7 @@ describe("GET /templates/<id>/preview", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/pdf");
     expect(response.headers.get("content-disposition")).toMatch(/^inline;/);
+    expect(response.headers.get("cross-origin-resource-policy")).toBe("same-origin");
     expect(sharedFakeEngine.calls).toHaveLength(1);
     expect(await adminDb.select().from(prescriptionOutputs).where(eq(prescriptionOutputs.tenantId, A.tenantId))).toHaveLength(0);
   });

@@ -10,6 +10,8 @@ type Props = { prescriptionId: string; fileName: string; /** The prescription pr
 const PRINT_FAILED = "The prescription could not be prepared for printing. Reload the page and sign in again if asked.";
 const SIGNED_OUT = "Your session ended. Reload the page and sign in again.";
 const PREPARE_TIMEOUT_MS = 20_000;
+const POPUP_BLOCKED = "Your browser blocked the PDF window. Allow pop-ups for this site, then press Print again.";
+const OPEN_HOLD_MS = 3_000;
 /** Some browsers print asynchronously; the frame must outlive print() and goes on afterprint or after this long. */
 const PRINT_FRAME_LIFETIME_MS = 60_000;
 
@@ -53,9 +55,23 @@ export function OutputActions({ prescriptionId, fileName, printsOnOverlay = fals
     // Overlay pads print from HTML only where the S1 check passed (override 16); elsewhere the paper PDF opens in a new
     // tab (window.open runs synchronously in the click, so popup blockers allow it). The server logs it as a print.
     if (printsOnOverlay && !overlayPrintsInBrowser(browserFamily(navigator.userAgent, "userAgentData" in navigator))) {
+      // No "noopener" feature: it makes window.open return null even when the tab opened, hiding a blocked pop-up.
+      const opened = window.open(`/prescriptions/${prescriptionId}/pdf?purpose=print`, "_blank");
+      if (!opened) {
+        setError(POPUP_BLOCKED);
+        return;
+      }
+      opened.opener = null;
       setError(null);
-      window.open(`/prescriptions/${prescriptionId}/pdf?purpose=print`, "_blank", "noopener");
-      router.refresh();
+      // The server logs a print per request: hold the button so a second click cannot open and log it twice.
+      setBusy("print");
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        if (!mounted.current) return;
+        setBusy(null);
+        router.refresh();
+      }, OPEN_HOLD_MS);
       return;
     }
     setError(null);

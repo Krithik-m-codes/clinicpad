@@ -25,22 +25,25 @@ const pct = (mm: number, total: number) => `${(mm / total) * 100}%`;
  */
 export function BoxCanvas({ fileId, paper, definition, selected, warnings, dispatch }: Props) {
   const host = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ id: string; x: number; y: number } | null>(null);
+  const drag = useRef<{ id: string; x: number; y: number; boxX: number; boxY: number } | null>(null);
   const { widthMm, heightMm } = PAPER[paper];
   const band = definition.pageNumbers.bandMm;
   const mmPerPx = () => widthMm / (host.current?.clientWidth || 1);
 
   function onPointerDown(event: PointerEvent<HTMLDivElement>, id: string) {
+    if (event.button !== 0) return; // a right or middle click must not start a drag
     dispatch({ type: "select", id });
-    drag.current = { id, x: event.clientX, y: event.clientY };
+    const box = definition.boxes.find((b) => b.id === id);
+    if (!box) return;
+    drag.current = { id, x: event.clientX, y: event.clientY, boxX: box.xMm, boxY: box.yMm };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
   function onPointerMove(event: PointerEvent<HTMLDivElement>) {
     const d = drag.current;
     if (!d) return;
     const scale = mmPerPx();
-    dispatch({ type: "move", id: d.id, dxMm: (event.clientX - d.x) * scale, dyMm: (event.clientY - d.y) * scale });
-    drag.current = { ...d, x: event.clientX, y: event.clientY };
+    // From where the drag started, not event by event: a clamped edge forgets nothing.
+    dispatch({ type: "set", id: d.id, patch: { xMm: d.boxX + (event.clientX - d.x) * scale, yMm: d.boxY + (event.clientY - d.y) * scale } });
   }
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>, id: string) {
     const step = event.shiftKey ? BIG_STEP_MM : MOVE_STEP_MM;

@@ -55,7 +55,7 @@ describe("VersionHistory", () => {
 
   it("offers to publish an older version again, with a preview of each, and the owner only", () => {
     const { unmount } = render(<VersionHistory templateId="t1" currentVersionId="v2" versions={versions} canPublish />);
-    expect(screen.getByText(/Version 2 .*\(in use\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Version 2 .*\(current\)/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Publish version 1 again" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Publish version 2 again" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Preview version 1" })).toHaveAttribute("href", "/templates/t1/preview?sample=short&version=v1");

@@ -32,6 +32,8 @@ type Prepared = { doc: RxDocument; logo: ImageAsset | null; overlay: OverlayInpu
 export const PREVIEW_PDF_TOO_LARGE_MESSAGE = "This pad is too large for a PDF preview. Use the on-screen preview instead.";
 const NOT_FOUND = () => fail("not_found", TEMPLATE_NOT_FOUND);
 const ZERO_HASH = "0".repeat(64);
+/** A sample shows no real patient: this id matches no row, so the snapshot has an empty patient that sampleDocument replaces. */
+const NO_PATIENT = "00000000-0000-0000-0000-000000000000";
 
 /** The version to show: the one asked for, else the open draft, else the published one. */
 async function pickVersion(tx: TenantTx, tenantId: string, templateId: string, versionId: string | null) {
@@ -55,7 +57,7 @@ async function prepare(tx: TenantTx, ctx: ServiceContext, templateId: string, so
 
   if (source.kind === "sample") {
     // The clinic's own letterhead details; the doctor is replaced by a placeholder inside sampleDocument (override 13).
-    const base = await buildRenderSnapshot(tx, { tenantId: ctx.tenantId, patientId: ctx.userId, prescriberUserId: null, visitDoctorId: null, at: new Date() });
+    const base = await buildRenderSnapshot(tx, { tenantId: ctx.tenantId, patientId: NO_PATIENT, prescriberUserId: null, visitDoctorId: null, at: new Date() });
     const { layout: _builtin, v: _v, ...parts } = base;
     void _builtin;
     void _v;

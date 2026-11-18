@@ -42,14 +42,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (!session) return Response.redirect(new URL("/login", request.url), 303);
     const { id } = await params;
     const parsed = query.safeParse(Object.fromEntries(new URL(request.url).searchParams));
-    if (!parsed.success || (parsed.data.sample === undefined) === (parsed.data.prescriptionId === undefined)) return page(404, "Preview not found.");
+    if (!parsed.success || (parsed.data.sample === undefined) === (parsed.data.prescriptionId === undefined)) return page(404, "This preview link is not valid. Open it again from the pad.");
     const source: PreviewSource = parsed.data.prescriptionId ? { kind: "patient", prescriptionId: parsed.data.prescriptionId } : { kind: "sample", sample: parsed.data.sample ?? "short" };
     const result = await renderTemplatePreview(session, id, { source, versionId: parsed.data.version ?? null, format: parsed.data.format }, { signal: request.signal });
     if (!result.ok) return page(statusForError(result.code), publicMessage(result.code, result.message));
     if (result.value.format === "html") return new Response(result.value.html, { status: 200, headers: HTML_HEADERS });
     return new Response(result.value.pdf, {
       status: 200,
-      headers: { "Content-Type": "application/pdf", "Content-Disposition": 'inline; filename="pad-preview.pdf"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" },
+      headers: { "Content-Type": "application/pdf", "Content-Disposition": 'inline; filename="pad-preview.pdf"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "same-origin" },
     });
   } catch (error) {
     // Error class only: exception messages can carry row values.

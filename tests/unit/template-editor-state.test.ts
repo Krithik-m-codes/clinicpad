@@ -101,7 +101,10 @@ describe("editorReducer", () => {
     let s = editorReducer(start(), { type: "add", field: "clinic.logo" });
     s = editorReducer(s, { type: "move", id: s.definition.boxes[2].id, dxMm: 0.33, dyMm: 0.77 });
     expect(overlayDefinitionSchema.parse(s.definition)).toEqual(s.definition);
-    expect(editorReducer(s, { type: "saved" }).dirty).toBe(false);
+    expect(editorReducer(s, { type: "saved", definition: s.definition }).dirty).toBe(false);
+    // Something changed after the saved definition was sent: still dirty.
+    const later = editorReducer(s, { type: "move", id: s.definition.boxes[0].id, dxMm: 5, dyMm: 0 });
+    expect(editorReducer(later, { type: "saved", definition: s.definition }).dirty).toBe(true);
   });
 
   it("picks the next free id", () => {

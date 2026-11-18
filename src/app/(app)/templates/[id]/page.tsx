@@ -40,8 +40,9 @@ export default async function TemplatePage({ params }: { params: Promise<{ id: s
     summary.current && summary.status === "active" && can(session.role, "template.assign") ? (
       <AssignPanel templateId={id} identity={summary.identity} boundDoctorId={summary.boundDoctorId} role={session.role} doctors={doctorList} />
     ) : null;
-  const versionHistory = (
+  const versionHistory = (hasDraft: boolean) => (
     <VersionHistory
+      hasDraft={hasDraft}
       templateId={id}
       currentVersionId={summary.current?.versionId ?? null}
       versions={history.map((v) => ({ versionId: v.versionId, version: v.version, publishedAt: v.publishedAt.toISOString() }))}
@@ -62,7 +63,7 @@ export default async function TemplatePage({ params }: { params: Promise<{ id: s
         {!draft && editable ? <StartDraftButton templateId={id} /> : null}
         {summary.current ? <PreviewPanel templateId={id} versionId={summary.current.versionId} prescriptions={prescriptions} /> : null}
         {assign}
-        {versionHistory}
+        {versionHistory(false)}
       </div>
     );
   }
@@ -72,7 +73,7 @@ export default async function TemplatePage({ params }: { params: Promise<{ id: s
         <PreviewPanel templateId={id} versionId={null} prescriptions={prescriptions} />
         <PublishPanel templateId={id} definition={draft.definition} paper={draft.paperSize} revision={draft.revision} doctors={doctorList} canPublish={canPublish} />
         {assign}
-        {versionHistory}
+        {versionHistory(true)}
       </div>
     </TemplateEditor>
   );
