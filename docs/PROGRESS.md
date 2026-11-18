@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-18
 **Current phase:** Phase 1D — Sharing, consent, CSV import, history, hardening (code complete; automated gate passed locally 2026-11-18). Phase 1 is code complete; the exit criteria that need people are open (section 4.11). Phase 0 ops items (staging etc.) still open.
-**Overall status:** 🟡 `node scripts/verify-gate-0.mjs` PASSED locally on 2026-11-12, 2026-11-16, 2026-11-17 (Phases 1B and 1C) and 2026-11-18 (Phase 1D: 2,121 tests, 51 e2e); not yet deployed to staging
+**Overall status:** 🟡 `node scripts/verify-gate-0.mjs` PASSED locally on 2026-11-12, 2026-11-16, 2026-11-17 (Phases 1B and 1C) and 2026-11-18 (Phase 1D: 2,163 tests, 51 e2e); not yet deployed to staging
 
 This is the live source of truth for *what is actually true*. Update it at the end of every work session. Do not mark a task done without evidence (command output, link, screenshot, or commit hash).
 
@@ -15,7 +15,7 @@ This is the live source of truth for *what is actually true*. Update it at the e
 | Product stage | pre-alpha / foundation |
 | Codebase origin | copy of `doctor-prescription-app` |
 | Git initialized | yes (`97a4af0`) |
-| Tests passing | 2,121 unit/integration passed + 1 skipped in 103 files, and 59 e2e (51 passed, 8 skipped: the opt-in screenshot tests), on 2026-11-18 (`node scripts/verify-gate-0.mjs`; `npm run test:visual` 24 passed) |
+| Tests passing | 2,163 unit/integration passed + 1 skipped in 107 files, and 59 e2e (51 passed, 8 skipped: the opt-in screenshot tests), on 2026-11-18 (`node scripts/verify-gate-0.mjs`; `npm run test:visual` 24 passed) |
 | Build status | `build:web` and `build:desktop` pass with strict type/lint (inside `verify-gate-0` on 2026-11-18; `build:desktop` also run alone afterwards, exit 0, tree clean apart from documentation; `drizzle-kit generate`: no schema changes) |
 | Paying clinics | 0 |
 | Design partners | 0 |
@@ -30,7 +30,7 @@ This is the live source of truth for *what is actually true*. Update it at the e
 | Phase | Status | Started | Completed | Evidence |
 |---|---|---|---|---|
 | 0 — Foundation | 🟡 in progress | 2026-11-06 | — | `node scripts/verify-gate-0.mjs` PASSED 2026-11-12 |
-| 1 — Prescription MVP | 🟡 code complete (1A–1D); exit criteria needing design partners open (section 4.11) | 2026-11-12 | — | see sections 4.8 to 4.11; `node scripts/verify-gate-0.mjs` PASSED 2026-11-18 (2,121 tests + 51 e2e passed, 8 skipped) |
+| 1 — Prescription MVP | 🟡 code complete (1A–1D); exit criteria needing design partners open (section 4.11) | 2026-11-12 | — | see sections 4.8 to 4.11; `node scripts/verify-gate-0.mjs` PASSED 2026-11-18 (2,163 tests + 51 e2e passed, 8 skipped) |
 | 2 — Template Studio | ⚪ not started | — | — | — |
 | 3 — Clinic operations | ⚪ not started | — | — | — |
 | 4 — Offline + desktop | ⚪ not started | — | — | — |
@@ -306,6 +306,8 @@ A box is ticked only for evidence seen on 2026-11-18 at commit `4eb54f1` (the la
 | Render failure rate < 1%; p95 finalize < 800 ms online | Local tests only | Staging metrics under real use | open |
 | CSV import of the existing `sample_data/*.csv` shape works with a validation report | `patient-import.test.ts`, `import-wizard.test.tsx`, `patient-import.spec.ts` (patients, `sample_data/patients_template.csv`); `catalogue-seed.test.ts` (the catalogue lists) | none | met (automated) |
 
+Final fix wave (after the whole-branch review): the individual gate steps were run on 2026-11-18 (lint and typecheck clean, `npm run test` 2,163 passed + 1 skipped in 107 files, `build:web` and `build:desktop` exit 0, e2e 51 passed and 8 skipped, `npm run test:visual` 24 passed). Port 3000 and 3100 were held by other projects' servers on this machine, so the e2e and visual runs used a temporary Playwright config on port 3217 instead of `verify-gate-0.mjs` itself; the commands and specs are the same.
+
 **Phase 1D known limitations and follow-ups**
 
 - HUMAN DECISION (still open): may an owner without a doctor profile finalize (sections 4.8–4.10)?
@@ -317,8 +319,12 @@ A box is ticked only for evidence seen on 2026-11-18 at commit `4eb54f1` (the la
 - HUMAN DECISION: links to a superseded version stay valid for their 7 days and show a SUPERSEDED marker (no automatic revocation on amend).
 - HUMAN CHECK: open a shared link from Android Chrome and from the WhatsApp in-app browser before ticking the sharing exit criteria. Scanners that submit forms spend an open (cap 10); an Android WebView downloader may save the interstitial instead of the PDF (ADR-0037).
 - OPS: the share token is in the URL path, so host, proxy, CDN and analytics logs must not retain `/s/*` URLs. `NEXT_PUBLIC_APP_URL` must be an https origin and `GOTENBERG_URL` set in production. Set `SHARE_CLIENT_IP_HEADER` on non-Vercel hosts. Add an edge rate limit in front of `/s/`; the public-route limits and the PDF limiter are per process. Verify at the first deployment that `/s/<token>` renders the Devanagari fonts (`outputFileTracingIncludes`). Install with lifecycle scripts enabled (ADR-0042).
-- `createShareLinkIn` relies on its caller for the `rx.share` permission and the sending flow's switch and consent checks; only `src/server/services/sharing.ts` calls it (ADR-0037). Link creation takes a KEY SHARE lock on the consent, prescription and patient rows (ADR-0036).
-- Import rows that match an existing patient or an earlier row by name only (no phone match) are skip-only; whether the owner may register such rows as new (twins, namesakes) is a human decision (ADR-0039).
+- `createShareLinkIn` checks the clinic switch, the current consent, the archived state and the finalized snapshot itself and relies on its caller only for the `rx.share` permission; only `src/server/services/sharing.ts` calls it (ADR-0037). Link creation takes a KEY SHARE lock on the consent, prescription and patient rows (ADR-0036).
+- Import rows that match an existing patient or an earlier row by name only (the phone differs or is missing) are skip-only: neither "add missing details" nor "register as new" is offered, and the report shows the basis of each match. "Add missing details" needs a phone match, or a patient without a phone and equal recorded birth dates. Whether the owner may register such rows from the wizard (twins, namesakes) is a human decision; today they use the patient form (ADR-0039).
+- Import commit sends only the rows the owner changed (8-hex fingerprint each) and a bitmap of the duplicate rows, so 5,000 duplicates commit and the worst case is under 80 KB (ADR-0039).
+- Sharing by email writes a `prepared` log row before the provider is called and an outcome row after (two rows per attempt); the daily cap counts attempts. If the outcome row cannot be written after a real send, the send is still reported and only the `prepared` row remains (ADR-0038).
+- WhatsApp numbers: a `+` with ten digits starting 6-9 and no country code set apart, and a number with a leading 0 shaped like an STD landline, are refused with no suggested digits; the Share panel shows the full number and the patient's name before "Open WhatsApp" (ADR-0038). Each link ended by a consent withdrawal or an archive also gets a `share.revoked` system audit event.
+- Builds (`npm run build`, `build:web`, `build:desktop`) run `scripts/patch-react-ping.mjs --check` first and fail when the bundled React is neither patched nor recognised (ADR-0042). The public-route rate limit reads `X-Real-IP` only when `SHARE_CLIENT_IP_HEADER` names it.
 - Two simultaneous shares can overshoot the per-user or per-prescription link limits by one, and two emails the daily email limit (no lock).
 - Dates in imports are always read day-first; a US-formatted file with days of 12 or less is read wrongly unless the owner notices the preview.
 - Temperature stays °F and "Page x of y" stays English (ADR-0041).
@@ -461,7 +467,7 @@ Append to §11 at the end of each working session:
 
 ### 2026-11-18 — Phase 1D: sharing, consent, CSV import, history, hardening
 - Did: shipped Phase 1D on `phase-1-prescription-mvp` (`7fd5657` to `4eb54f1`): database hardening (migrations 0017 to 0023: rows born as drafts, successor check, CHECKs mirrored in the schema, RLS guard, sweep script), clinic-timezone dates, patient history filters with archive and restore, patient CSV import with duplicate decisions, an append-only consent log, hashed expiring share links with the public `/s/<token>` route, `wa.me` and email sharing behind a per-clinic switch with a masked share log, Hindi option labels, in-app not-found, skip link, and a Next 15.5.29 upgrade with a vendored React patch (stuck server actions under `next start`). Decisions ADR-0036 to ADR-0042.
-- Evidence: see section 4.11 (`npm run test` 103 files / 2,121 passed + 1 skipped; `node scripts/verify-gate-0.mjs` PASSED, e2e 51 passed and 8 skipped; `npm run test:visual` 24 passed; `npm run build:desktop` exit 0).
+- Evidence: see section 4.11 (`npm run test` 107 files / 2,163 passed + 1 skipped; `node scripts/verify-gate-0.mjs` PASSED, e2e 51 passed and 8 skipped; `npm run test:visual` 24 passed; `npm run build:desktop` exit 0).
 - Blocked by: nothing for the automated gate. Staging, CI on GitHub, pre-commit hook, 360 px check and MFA note remain open; the human decisions in section 4.11 gate any pilot.
 - Next: staging and a design-partner pilot, then Phase 2 (ADRs from ADR-0043, migrations from 0024).
 - Gotchas: rows are born as drafts (insert then UPDATE to finalize); a `finalized -> amended` flip needs a finalized child first; every CHECK must also be declared in the Drizzle schema; `as("reception")` returns a new random user per call (capture one context when asserting on it); `/s/` is outside the middleware and must stay session-less; the e2e sharing spec needs Gotenberg up for its PDF branch; production-mode sharing needs an https app URL and `GOTENBERG_URL`; `npm install --ignore-scripts` skips the React patch; a Docker Desktop restart stops the containers.
