@@ -1,7 +1,6 @@
 import {
   boolean,
   check,
-  customType,
   foreignKey,
   index,
   integer,
@@ -13,30 +12,15 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
+import { bytea } from "./columns";
 import { memberRole, memberStatus, tenantPlan } from "./enums";
+// templates is only used inside the lazy config callbacks below (clinics.custom_template_id, doctors.template_id),
+// so the import cycle with templates.ts (which references tenants and doctors the same way) is safe.
+import { templates } from "./templates";
 
 const pk = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
 const createdAt = () =>
   timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
-
-/**
- * Raw bytes. postgres-js returns bytea as a Buffer and normally sends a Buffer parameter as bytea. Under
- * vitest's jsdom environment a Buffer fails postgres-js's `instanceof Uint8Array` check, so it was sent as
- * text and any value with a NUL byte (every PNG) failed with 22021. Writing bytea hex text (`\x...`) works
- * in both. It relies on postgres-js `infer: false` (the default): with `infer: true` the string would be typed
- * and double-encoded. tests/integration/render-snapshot.test.ts round-trips bytes containing 0x00.
- */
-const bytea = customType<{ data: Buffer; driverData: Buffer | string }>({
-  dataType() {
-    return "bytea";
-  },
-  toDriver(value) {
-    return `\\x${value.toString("hex")}`;
-  },
-  fromDriver(value) {
-    return typeof value === "string" ? Buffer.from(value.replace(/^\\x/, ""), "hex") : value;
-  },
-});
 
 export const tenants = pgTable(
   "tenants",
@@ -114,6 +98,8 @@ export const clinics = pgTable(
     logoAssetId: uuid("logo_asset_id"),
     /** Sharing by link (WhatsApp, email) is off until the owner turns it on (Plan 1D). Turning it off kills every link of the clinic. */
     sharingEnabled: boolean("sharing_enabled").notNull().default(false),
+    /** The clinic's default custom pad (Plan 2A). null: the built-in rx_template applies, as before. */
+    customTemplateId: uuid("custom_template_id"),
     createdAt: createdAt(),
   },
   (t) => [
@@ -126,6 +112,8 @@ export const clinics = pgTable(
       columns: [t.tenantId, t.logoAssetId],
       foreignColumns: [clinicAssets.tenantId, clinicAssets.id],
     }),
+    index("clinics_tenant_custom_template_idx").on(t.tenantId, t.customTemplateId),
+    foreignKey({ name: "clinics_custom_template_fk", columns: [t.tenantId, t.customTemplateId], foreignColumns: [templates.tenantId, templates.id] }),
     check("clinics_rx_template_check", sql`rx_template in ('general', 'paediatric', 'derma')`),
     check("clinics_rx_paper_size_check", sql`rx_paper_size in ('A4', 'A5')`),
     check("clinics_rx_labels_check", sql`rx_labels in ('en', 'hi', 'bilingual')`),
@@ -215,6 +203,8 @@ export const doctors = pgTable(
     designation: text("designation"),
     registrationCouncil: text("registration_council"),
     signatureAssetId: uuid("signature_asset_id"),
+    /** This doctor's own custom pad (Plan 2A); wins over the clinic default when usable (decision 9). */
+    templateId: uuid("template_id"),
     consultationFeePaise: integer("consultation_fee_paise").notNull().default(0),
     createdAt: createdAt(),
   },
@@ -239,5 +229,7 @@ export const doctors = pgTable(
       columns: [t.tenantId, t.signatureAssetId],
       foreignColumns: [clinicAssets.tenantId, clinicAssets.id],
     }),
+    index("doctors_tenant_template_idx").on(t.tenantId, t.templateId),
+    foreignKey({ name: "doctors_template_fk", columns: [t.tenantId, t.templateId], foreignColumns: [templates.tenantId, templates.id] }),
   ],
 );

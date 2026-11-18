@@ -15,6 +15,7 @@ import {
   users,
   visits,
 } from "@/server/db/schema";
+import { insertTemplate } from "../helpers/templates";
 
 // Migration 0010: visits.doctor_id, visits.branch_id and prescriptions.template_version_id had no foreign key at
 // all, so a row could point at another clinic's doctor, branch or template version. They become composite
@@ -45,11 +46,9 @@ async function world(tenantId: string) {
   const [clinic] = await adminDb.insert(clinics).values({ tenantId, name: "Ref clinic" }).returning();
   const [branch] = await adminDb.insert(branches).values({ tenantId, clinicId: clinic.id, name: "Ref branch" }).returning();
   const [doctor] = await adminDb.insert(doctors).values({ tenantId, regNo: "REF-1" }).returning();
-  const [template] = await adminDb.insert(templates).values({ tenantId, name: "Ref template" }).returning();
-  const [version] = await adminDb
-    .insert(templateVersions)
-    .values({ tenantId, templateId: template.id, version: 1 })
-    .returning();
+  const { templateId, versionId } = await insertTemplate(tenantId, { publish: true });
+  const [template] = await adminDb.select().from(templates).where(eq(templates.id, templateId));
+  const [version] = await adminDb.select().from(templateVersions).where(eq(templateVersions.id, versionId));
   const [patient] = await adminDb.insert(patients).values({ tenantId, name: "Ref patient" }).returning();
   return { clinic, branch, doctor, template, version, patient };
 }
@@ -168,7 +167,9 @@ describe("delete rules", () => {
 
     await adminDb.delete(doctors).where(eq(doctors.id, own.doctor.id));
     await adminDb.delete(branches).where(eq(branches.id, own.branch.id));
-    await adminDb.delete(templates).where(eq(templates.id, own.template.id)); // cascades to its versions
+    const spare = await insertTemplate(tenantA);
+    await adminDb.update(prescriptions).set({ templateVersionId: spare.versionId }).where(eq(prescriptions.id, rx.id));
+    await adminDb.delete(templates).where(eq(templates.id, spare.templateId)); // cascades to its draft version
 
     const [v] = await adminDb.select().from(visits).where(eq(visits.id, visit.id));
     expect(v).toMatchObject({ tenantId: tenantA, doctorId: null, branchId: null });

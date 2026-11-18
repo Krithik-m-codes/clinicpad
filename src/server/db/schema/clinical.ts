@@ -21,6 +21,8 @@ import { shareLinks } from "./sharing";
 import type { Investigation, Vitals } from "../../../lib/domain/rx-options";
 import { patientImports } from "./imports";
 import { branches, doctors, tenants } from "./tenancy";
+// templateVersions is only used inside lazy config callbacks (prescriptions, prescription_outputs).
+import { templateVersions } from "./templates";
 
 const pk = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
 const createdAt = () =>
@@ -163,6 +165,12 @@ export const prescriptions = pgTable(
     index("prescriptions_tenant_parent_idx").on(t.tenantId, t.parentPrescriptionId),
     check("prescriptions_status_check", sql`status in ('draft', 'finalized', 'amended')`),
     check("prescriptions_not_own_parent_check", sql`parent_prescription_id is distinct from id`),
+    // Plan 2A: a set template_version_id is the version the frozen snapshot names (text comparison: never a cast error).
+    // A null column is allowed because tenant offboarding nulls it (ON DELETE SET NULL) before the row itself goes.
+    check(
+      "prescriptions_template_version_snapshot_check",
+      sql`status = 'draft' or render_snapshot is null or template_version_id is null or (render_snapshot #>> '{layout,template,templateVersionId}') is not distinct from template_version_id::text`,
+    ),
     uniqueIndex("prescriptions_one_open_amendment")
       .on(t.parentPrescriptionId)
       .where(sql`${t.status} = 'draft' and ${t.parentPrescriptionId} is not null`),
@@ -237,52 +245,6 @@ export const prescriptionItems = pgTable(
   ],
 );
 
-export const templates = pgTable(
-  "templates",
-  {
-    id: pk(),
-    tenantId: uuid("tenant_id")
-      .notNull()
-      .references(() => tenants.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
-    kind: text("kind").notNull().default("html"),
-    status: text("status").notNull().default("draft"),
-    createdAt: createdAt(),
-  },
-  (t) => [
-    index("templates_tenant_idx").on(t.tenantId),
-    // Target of the composite same-tenant foreign key from template_versions.
-    unique("templates_tenant_id_uq").on(t.tenantId, t.id),
-  ],
-);
-
-export const templateVersions = pgTable(
-  "template_versions",
-  {
-    id: pk(),
-    tenantId: uuid("tenant_id")
-      .notNull()
-      .references(() => tenants.id, { onDelete: "cascade" }),
-    templateId: uuid("template_id").notNull(),
-    version: integer("version").notNull(),
-    fileKey: text("file_key"),
-    mapping: jsonb("mapping").$type<Record<string, string>>(),
-    publishedAt: timestamp("published_at", { withTimezone: true }),
-    createdAt: createdAt(),
-  },
-  (t) => [
-    // Target of the composite same-tenant foreign key from prescriptions.template_version_id.
-    unique("template_versions_tenant_id_uq").on(t.tenantId, t.id),
-    unique("template_versions_template_version_unique").on(t.templateId, t.version),
-    // Same-tenant reference: a version can only belong to a template of its own tenant.
-    foreignKey({
-      name: "template_versions_template_fk",
-      columns: [t.tenantId, t.templateId],
-      foreignColumns: [templates.tenantId, templates.id],
-    }).onDelete("cascade"),
-  ],
-);
-
 export const auditEvents = pgTable(
   "audit_events",
   {
@@ -340,6 +302,10 @@ export const prescriptionOutputs = pgTable(
     rendererVersion: text("renderer_version"),
     /** Set only for kind 'shared_pdf': the link the patient opened (no actor then). */
     shareLinkId: uuid("share_link_id"),
+    /** Set exactly when template_key is 'overlay': the frozen template version that drew this output (Plan 2A). */
+    templateVersionId: uuid("template_version_id"),
+    /** chromium (Gotenberg PDF) or browser (HTML handed to a print dialog); null for rows written before Plan 2A. */
+    engine: text("engine"),
     createdAt: createdAt(),
   },
   (t) => [
@@ -361,6 +327,14 @@ export const prescriptionOutputs = pgTable(
     check("rx_outputs_page_count_check", sql`page_count is null or page_count between 1 and 50`),
     check("rx_outputs_byte_size_check", sql`byte_size is null or byte_size >= 0`),
     check("rx_outputs_sha256_check", sql`html_sha256 ~ '^[0-9a-f]{64}$'`),
-    check("rx_outputs_template_key_check", sql`template_key in ('general', 'paediatric', 'derma')`),
+    check("rx_outputs_template_key_check", sql`template_key in ('general', 'paediatric', 'derma', 'overlay')`),
+    check("rx_outputs_template_version_check", sql`(template_key = 'overlay') = (template_version_id is not null)`),
+    check("rx_outputs_engine_check", sql`engine is null or engine in ('chromium', 'browser')`),
+    index("rx_outputs_template_version_idx").on(t.tenantId, t.templateVersionId),
+    foreignKey({
+      name: "rx_outputs_template_version_fk",
+      columns: [t.tenantId, t.templateVersionId],
+      foreignColumns: [templateVersions.tenantId, templateVersions.id],
+    }),
   ],
 );

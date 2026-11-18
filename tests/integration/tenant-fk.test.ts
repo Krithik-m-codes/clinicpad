@@ -15,6 +15,7 @@ import {
   tenants,
   visits,
 } from "@/server/db/schema";
+import { insertBackgroundFile, MINIMAL_OVERLAY_DEFINITION } from "../helpers/templates";
 
 // RLS only checks a row's OWN tenant_id, and foreign-key checks run without RLS. A single-column key therefore
 // happily points at another tenant's row. These tests pin the composite (tenant_id, x_id) keys that close that.
@@ -299,10 +300,11 @@ async function seedPhase0(tenant: string, templateVersion = 1) {
     .insert(doctors)
     .values({ tenantId: tenant, primaryBranchId: branch.id, regNo: "FK-1" })
     .returning();
-  const [template] = await adminDb.insert(templates).values({ tenantId: tenant, name: "Tenant FK template" }).returning();
+  const fileId = await insertBackgroundFile(tenant, `tfk-${tenant}-${templateVersion}-${Math.random()}`);
+  const [template] = await adminDb.insert(templates).values({ tenantId: tenant, name: "Tenant FK template", kind: "overlay" }).returning();
   const [version] = await adminDb
     .insert(templateVersions)
-    .values({ tenantId: tenant, templateId: template.id, version: templateVersion })
+    .values({ tenantId: tenant, templateId: template.id, version: templateVersion, fileId, definition: MINIMAL_OVERLAY_DEFINITION, paperSize: "A4", labels: "en" })
     .returning();
   return { clinic, branch, doctor, template, version };
 }
@@ -353,7 +355,15 @@ const phase0Relations: Phase0Relation[] = [
     name: "template_versions.template_id -> templates (cascade)",
     constraint: "template_versions_template_fk",
     crossInsert: (c, x) =>
-      c.insert(templateVersions).values({ tenantId: tenantA, templateId: x.foreign.template.id, version: 9 }),
+      c.insert(templateVersions).values({
+        tenantId: tenantA,
+        templateId: x.foreign.template.id,
+        version: 9,
+        fileId: x.own.version.fileId,
+        definition: MINIMAL_OVERLAY_DEFINITION,
+        paperSize: "A4",
+        labels: "en",
+      }),
     crossRepoint: (c, x) =>
       c
         .update(templateVersions)
@@ -362,7 +372,15 @@ const phase0Relations: Phase0Relation[] = [
     sameInsert: (c, x) =>
       c
         .insert(templateVersions)
-        .values({ tenantId: tenantA, templateId: x.own.template.id, version: 9 })
+        .values({
+          tenantId: tenantA,
+          templateId: x.own.template.id,
+          version: 9,
+          fileId: x.own.version.fileId,
+          definition: MINIMAL_OVERLAY_DEFINITION,
+          paperSize: "A4",
+          labels: "en",
+        })
         .returning({ id: templateVersions.id }),
     sameRepoint: (c, x) =>
       c
