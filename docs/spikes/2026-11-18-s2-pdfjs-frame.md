@@ -146,3 +146,56 @@ Values later tasks copy:
 - Task 16 also keeps the plan's rule that the frame origin comes from `NEXT_PUBLIC_APP_URL` (override 9).
 - The plan's `frame.mjs` has no change to its message protocol; only worker creation, `getDocument` options and the CSP differ.
 - Re-run the probe against any later pdfjs-dist upgrade; 6.x needs an API port (`doc.destroy`).
+
+
+## Addendum: advisory GHSA-hq66-cqwq-w95j (2026-11-18)
+
+S3's `npm audit` flagged the chosen pdfjs-dist 5.7.284. This addendum supersedes the version and the "6.x needs an API port" line above.
+
+### The advisory
+
+- GHSA-hq66-cqwq-w95j = CVE-2026-16633, severity high, CWE-79, published 2026-08-06 (upstream: mozilla/pdf.js security advisory; Bugzilla 2055885). Affected: `>= 5.6.83, < 6.2.108`; first patched 6.2.108. No 5.x backport exists (5.7.284 is the last 5.x release; the npm versions after it are 6.0.227, 6.1.200, 6.2.108, 6.3.289, 6.4.299, 6.5.438).
+- Text (the advisory is short): opening a malicious PDF while PDF.js is configured with `enableScripting: true` (the default of the ready-made viewer) and no CSP that blocks `script-src` runs unrestricted attacker JavaScript in the hosting origin. Workarounds given by upstream: set `enableScripting` to `false`, or set a CSP. I could not read the upstream commit; the exact bug (which scripting or annotation path) is not stated in the advisory text.
+
+### Exploitable in our deployment?
+
+Verdict: **no, on the facts below; but fix it anyway** (npm audit and any scanner will keep reporting high, and the fix costs one line).
+
+- Both upstream workarounds are already in the design: scripting is never turned on (we call the bare `getDocument` API, not the viewer; `isEvalSupported:false`, `enableXfa:false`, `quickjs-eval.wasm` is not served), and the frame has a strict CSP (`default-src 'none'`, `script-src` limited to `/pdf-frame/` plus `'wasm-unsafe-eval'`, `connect-src` limited to `/pdf-frame/`).
+- Even with script execution inside the frame, `sandbox="allow-scripts"` without `allow-same-origin` gives an opaque origin: no cookies, no storage, no parent DOM, no app endpoints (verified in S2 for all three engines). The `hostile-js` fixture (OpenAction JavaScript with fetch, URI action) produced no request in 5.7.284 and in both 6.x runs below.
+- Residual risk: an attacker script inside the frame could still tamper with the PNG it returns to the parent (the parent must keep treating the reply as untrusted bytes) and burn CPU; neither is new.
+
+### Is the 6.x `doc.destroy` failure a real API change? Yes, and it is adapted in one line
+
+In 6.x `PDFDocumentProxy` has no `destroy()` (checked in `build/pdf.mjs` and `types/src/display/api.d.ts`); teardown lives on the loading task, `PDFDocumentLoadingTask.destroy(): Promise<void>`, which also exists in 5.7.284 (where `doc.destroy()` merely called it). Adaptation in the frame:
+
+```js
+const task = pdfjs.getDocument(opts);
+const doc = await task.promise;
+try { /* getPage, render */ } finally { await task.destroy(); }   // was: await doc.destroy()
+```
+
+The message protocol is unchanged. All other options used (`wasmUrl`, `standardFontDataUrl`, `iccUrl`, `cMapUrl`, `useWasm`, `isEvalSupported`, `enableXfa`, `disableRange/Stream/AutoFetch`, `GlobalWorkerOptions.workerSrc`, `page.render({canvasContext, viewport})`) worked unchanged. The `wasm/` directory has the same 13 files in 5.7.284 and 6.2.108 (same three wasm binaries needed; `quickjs-eval.*` stays unserved).
+
+### Test (scratch copy outside the repo, S2 harness with the one-line change, fake worker, wasm on, explicit CSP origin; run F)
+
+Same 11 fixtures and 15 jobs as run A, in Chromium 158.0.8127.18, Firefox 159.0, WebKit 27.2:
+
+| Version | Chromium | Firefox | WebKit |
+|---|---|---|---|
+| 6.2.108 (smallest fixed) | 15/15 ok | 15/15 ok | 15/15 ok |
+| 6.5.438 (latest) | 15/15 ok | 15/15 ok | 15/15 ok |
+
+For every job the image size and non-white percentage matched 5.7.284 (run A) within 0.3 points (zero differences), no blank renders (JPEG scan, CCITT, JBIG2-MMR, JPEG 2000, Devanagari x2, rotated page, hostile-js, huge page clamped to 3600 px), isolation probes unchanged (parent, cookie, localStorage, other-host and out-of-frame fetches all blocked; origin `null`), and the server saw no request beyond fixtures and `/frame`. The cookie observation in the main finding is unchanged (browser behaviour, not version dependent). Not re-checked: real Safari, scanner-made JBIG2, encrypted PDFs (the existing human checks stay open and must be run against the final version).
+
+### Recommendation
+
+**Upgrade to `pdfjs-dist@6.5.438` (exact, `--save-exact`) with the `task.destroy()` adaptation.** 6.2.108 (the smallest patched version) is an equal fallback pin if the controller wants the minimum jump; both passed identically. Do not stay on 5.7.284 (it is vulnerable and unpatchable; the mitigations are already in place, so documenting them would be a fallback, not a fix) and there is no 5.x backport. Task 16 must: pin the exact version, use `task.destroy()`, keep `PDFJS_VERSION` in the ADR, and re-run the probe on any later bump.
+
+| Version | Licence | Published | integrity (npm) | shasum |
+|---|---|---|---|---|
+| 6.5.438 (recommended) | Apache-2.0 | 2026-11-01 (17 days old) | `sha512-vg8Pw1x+AFKy4AMDvhuWl5cOYV8d698UoEANoFFhc79hqXDnZQqnOXoxw3HG907WHOg1JYOvLhP756boddFxpA==` | `e7f8986ec4ea04057b5d9d2f0e5b63ea94d2303f` |
+| 6.2.108 (fallback) | Apache-2.0 | 2026-07-28 | `sha512-YxFb+SQcodN2rnX9Tn3dHYlqfb7NjlzzfONPpJd+AKoKtUjEdevTfbC07d5TcczzOK6261auRkP/M8OBHs9vFQ==` | `1e0ce0f4b3a034f953dbbe2334ab01fbddf0eb30` |
+| 5.7.284 (superseded) | Apache-2.0 | 2026-04-27 | `sha512-h4EdYQczmGhbOlqc3PPZwxevn7ApdWPbovAuWXOB/DjIyigSnwfy2oze7c6mRcSr9XgLp3eN3EeL4DyySTPMFw==` | `01d9ff1d7ccd15245bdec8524a6770feb77fbb23` |
+
+The bundled wasm licences (`LICENSE_JBIG2`, `LICENSE_OPENJPEG`, `LICENSE_QCMS` and the `LICENSE_PDFJS_*` files) ship with the package in 6.x as in 5.x; Task 16 copies them verbatim as before.
