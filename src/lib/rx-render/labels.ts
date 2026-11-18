@@ -159,6 +159,7 @@ const STATUS_TEXT = {
     en: "SUPERSEDED by a newer version. Do not dispense from this copy.",
     hi: "नए संस्करण द्वारा निरस्त। इस प्रति से दवा न दें।",
   },
+  sampleWatermark: { en: "SAMPLE · NOT A PRESCRIPTION", hi: "नमूना · यह पर्चा नहीं है" },
   legacyNote: {
     en: "Printed with the clinic, doctor and patient details on file today: this prescription was finalized before print snapshots were recorded.",
     hi: "आज दर्ज क्लिनिक, चिकित्सक और रोगी विवरण के साथ मुद्रित: यह पर्चा प्रिंट स्नैपशॉट दर्ज होने से पहले अंतिम किया गया था।",

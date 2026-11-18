@@ -1,4 +1,5 @@
 import type { Investigation, Vitals } from "@/lib/domain/rx-options";
+import type { OverlayDefinition } from "./overlay-definition";
 import type { RenderSnapshot } from "./snapshot";
 
 export const BUILTIN_TEMPLATES = ["general", "paediatric", "derma"] as const;
@@ -79,7 +80,13 @@ export type RxDocument = {
 
 export type ImageAsset = { mime: "image/png" | "image/jpeg"; base64: string; width: number; height: number };
 
-export type RenderAssets = { logo: ImageAsset | null; signature: ImageAsset | null; fontCss: string };
+/** screen: in-app preview. print: paper (printer offset; no background on pre-printed stationery). pdf: digital copy. */
+export type RenderTarget = "screen" | "print" | "pdf";
+
+/** A custom overlay pad, loaded and hash-verified by the server (template-resolution.ts) before rendering. */
+export type OverlayInput = { templateVersionId: string; definition: OverlayDefinition; background: ImageAsset };
+
+export type RenderAssets = { logo: ImageAsset | null; signature: ImageAsset | null; fontCss: string; overlay?: OverlayInput | null };
 
 export type PaperSpec = {
   size: PaperSize;
