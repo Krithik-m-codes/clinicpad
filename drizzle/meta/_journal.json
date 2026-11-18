@@ -197,6 +197,13 @@
       "when": 1795016904486,
       "tag": "0027_phase2a_template_freeze",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1795019741260,
+      "tag": "0028_phase2a_designer_role",
+      "breakpoints": true
     }
   ]
 }

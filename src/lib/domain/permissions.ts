@@ -13,9 +13,9 @@ const MATRIX = {
   "catalogue.write": ["owner", "doctor"],
   "settings.clinic": ["owner"],
   "settings.profile": ["owner", "doctor"],
-  // Plan 2A Template Studio. Doctors write and assign only within their own profile (checked in the services).
-  "template.read": ["owner", "doctor"],
-  "template.write": ["owner", "doctor"],
+  // Plan 2A Template Studio. Doctors write and assign only within their own profile; designers never touch patients (checked in the services).
+  "template.read": ["owner", "doctor", "designer"],
+  "template.write": ["owner", "doctor", "designer"],
   "template.publish": ["owner"],
   "template.assign": ["owner", "doctor"],
 } as const satisfies Record<string, readonly string[]>;

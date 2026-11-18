@@ -177,11 +177,17 @@ export const memberships = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     role: memberRole("role").notNull(),
     status: memberStatus("status").notNull().default("active"),
+    // Set for temporary members (designers, Plan 2A); null means the membership does not expire.
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => [
     unique("memberships_tenant_user_unique").on(t.tenantId, t.userId),
     index("memberships_user_idx").on(t.userId),
+    // A designer (concierge template setup, Plan 2A) is a temporary member: the membership must expire. The role is
+    // compared as text because a new enum value cannot be used in the migration that adds it (one transaction).
+    check("memberships_designer_expiry_check", sql`role::text <> 'designer' or expires_at is not null`),
+    check("memberships_expiry_check", sql`expires_at is null or expires_at > created_at`),
   ],
 );
 

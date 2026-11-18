@@ -69,7 +69,7 @@ describe("can", () => {
 });
 
 describe("role x action matrix", () => {
-  const roles = ["owner", "doctor", "reception", "nurse", "accountant", "pharmacist"] as const;
+  const roles = ["owner", "doctor", "reception", "nurse", "accountant", "pharmacist", "designer"] as const;
   const granted: Record<Action, readonly string[]> = {
     "patient.read": ["owner", "doctor", "reception", "nurse"],
     "patient.write": ["owner", "doctor", "reception"],
@@ -85,8 +85,8 @@ describe("role x action matrix", () => {
     "catalogue.write": ["owner", "doctor"],
     "settings.clinic": ["owner"],
     "settings.profile": ["owner", "doctor"],
-    "template.read": ["owner", "doctor"],
-    "template.write": ["owner", "doctor"],
+    "template.read": ["owner", "doctor", "designer"],
+    "template.write": ["owner", "doctor", "designer"],
     "template.publish": ["owner"],
     "template.assign": ["owner", "doctor"],
   };
@@ -124,5 +124,26 @@ describe("pad settings permissions", () => {
     for (const role of ["reception", "nurse", "pharmacist", "accountant", "mystery"]) {
       expect(can(role, "settings.profile")).toBe(false);
     }
+  });
+});
+
+describe("template permissions", () => {
+  it("lets designers work on templates and nothing else", () => {
+    expect(can("designer", "template.read")).toBe(true);
+    expect(can("designer", "template.write")).toBe(true);
+    // Record<Action, true> makes typecheck fail when a new action is added without a decision here.
+    const every: Record<Action, true> = {
+      "patient.read": true, "patient.write": true, "patient.archive": true, "patient.import": true,
+      "rx.read": true, "rx.draft": true, "rx.finalize": true, "rx.amend": true, "consent.capture": true, "rx.share": true,
+      "catalogue.read": true, "catalogue.write": true, "settings.clinic": true, "settings.profile": true,
+      "template.read": true, "template.write": true, "template.publish": true, "template.assign": true,
+    };
+    const others = (Object.keys(every) as Action[]).filter((a) => a !== "template.read" && a !== "template.write");
+    for (const action of others) expect(can("designer", action), action).toBe(false);
+  });
+
+  it("lets only owners publish", () => {
+    expect(can("owner", "template.publish")).toBe(true);
+    for (const role of ["doctor", "designer", "reception", "nurse", "pharmacist", "accountant"]) expect(can(role, "template.publish")).toBe(false);
   });
 });

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { count, eq } from "drizzle-orm";
 import { can } from "@/lib/domain/permissions";
 import { DEFAULT_TIME_ZONE, isValidTimeZone } from "@/lib/rx-render/format";
@@ -10,6 +11,8 @@ export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const session = await requireSession();
+  // A designer sets up pad templates only: no patient, prescription or clinic numbers (Plan 2A).
+  if (session.role === "designer") redirect("/templates");
   const { tenantId } = session;
 
   const data = await withTenant(tenantId, async (tx) => {

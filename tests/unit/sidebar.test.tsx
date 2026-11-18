@@ -32,4 +32,19 @@ describe("Sidebar", () => {
     expect(screen.getByRole("link", { name: /my profile/i })).toHaveAttribute("href", "/settings/profile");
     expect(screen.queryByRole("link", { name: /^settings$/i })).not.toBeInTheDocument();
   });
+
+  it("shows a designer only the pad templates", () => {
+    render(<Sidebar role="designer" clinicName="Sunrise" />);
+    expect(screen.getAllByRole("link").map((link) => link.textContent)).toEqual(["Pad templates"]);
+  });
+
+  it("shows pad templates to owners and doctors, never to reception", () => {
+    for (const role of ["owner", "doctor"]) {
+      const { unmount } = render(<Sidebar role={role} clinicName="Sunrise" />);
+      expect(screen.getByRole("link", { name: "Pad templates" })).toHaveAttribute("href", "/templates");
+      unmount();
+    }
+    render(<Sidebar role="reception" clinicName="Sunrise" />);
+    expect(screen.queryByRole("link", { name: "Pad templates" })).not.toBeInTheDocument();
+  });
 });

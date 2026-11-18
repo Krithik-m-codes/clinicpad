@@ -65,7 +65,8 @@ export async function cleanupClinic(email: string): Promise<void> {
 /** Changes the role of the clinic's signed-in user; roles are re-read on every request. */
 export async function setRole(email: string, role: string): Promise<void> {
   await withAdminSql(async (sql) => {
-    await sql`update memberships set role = ${role}
+    await sql`update memberships set role = ${role},
+      expires_at = case when ${role} = 'designer' then now() + interval '7 days' else null end
       where user_id = (select id from users where email = ${email})`;
   });
 }
