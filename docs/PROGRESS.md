@@ -1,8 +1,8 @@
 # ClinicPad — Progress Tracker
 
-**Last updated:** 2026-11-17
-**Current phase:** Phase 1C — Pad renderer, server PDF, print (code complete; automated gate passed locally 2026-11-17). Phases 1A and 1B are code complete too; 1D (sharing, CSV import, filters, hardening) is not started. Phase 0 ops items (staging etc.) still open.
-**Overall status:** 🟡 `node scripts/verify-gate-0.mjs` PASSED locally on 2026-11-12, 2026-11-16 (Phase 1A tests) and 2026-11-17 (Phase 1B tests, then Phase 1C tests); not yet deployed to staging
+**Last updated:** 2026-11-18
+**Current phase:** Phase 1D — Sharing, consent, CSV import, history, hardening (code complete; automated gate passed locally 2026-11-18). Phase 1 is code complete; the exit criteria that need people are open (section 4.11). Phase 0 ops items (staging etc.) still open.
+**Overall status:** 🟡 `node scripts/verify-gate-0.mjs` PASSED locally on 2026-11-12, 2026-11-16, 2026-11-17 (Phases 1B and 1C) and 2026-11-18 (Phase 1D: 2,121 tests, 51 e2e); not yet deployed to staging
 
 This is the live source of truth for *what is actually true*. Update it at the end of every work session. Do not mark a task done without evidence (command output, link, screenshot, or commit hash).
 
@@ -15,8 +15,8 @@ This is the live source of truth for *what is actually true*. Update it at the e
 | Product stage | pre-alpha / foundation |
 | Codebase origin | copy of `doctor-prescription-app` |
 | Git initialized | yes (`97a4af0`) |
-| Tests passing | 1,604 unit/integration passed + 1 skipped in 70 files, and 49 e2e (41 passed, 8 skipped: the opt-in screenshot tests; smoke 6, patients 4, prescriptions 6, clinical-form 3, pad-settings 2, rx-output 4, rx-visual 24), on 2026-11-17 (`npm run test`; `node scripts/verify-gate-0.mjs`; `npm run test:visual` 24 passed) |
-| Build status | `build:web` and `build:desktop` pass with strict type/lint (inside `verify-gate-0` on 2026-11-17; `build:desktop` also run alone after the last code change, exit 0, `git status --short` clean) |
+| Tests passing | 2,121 unit/integration passed + 1 skipped in 103 files, and 59 e2e (51 passed, 8 skipped: the opt-in screenshot tests), on 2026-11-18 (`node scripts/verify-gate-0.mjs`; `npm run test:visual` 24 passed) |
+| Build status | `build:web` and `build:desktop` pass with strict type/lint (inside `verify-gate-0` on 2026-11-18; `build:desktop` also run alone afterwards, exit 0, tree clean apart from documentation; `drizzle-kit generate`: no schema changes) |
 | Paying clinics | 0 |
 | Design partners | 0 |
 | MRR | ₹0 |
@@ -30,7 +30,7 @@ This is the live source of truth for *what is actually true*. Update it at the e
 | Phase | Status | Started | Completed | Evidence |
 |---|---|---|---|---|
 | 0 — Foundation | 🟡 in progress | 2026-11-06 | — | `node scripts/verify-gate-0.mjs` PASSED 2026-11-12 |
-| 1 — Prescription MVP | 🟡 in progress (1A patients + prescription core, 1B clinical form, catalogue, autosave and 1C pad renderer, PDF, print code complete; 1D sharing, CSV import, filters, hardening not started) | 2026-11-12 | — | see sections 4.8 to 4.10; `node scripts/verify-gate-0.mjs` PASSED 2026-11-17 (1,604 tests + 41 e2e passed, 8 skipped) |
+| 1 — Prescription MVP | 🟡 code complete (1A–1D); exit criteria needing design partners open (section 4.11) | 2026-11-12 | — | see sections 4.8 to 4.11; `node scripts/verify-gate-0.mjs` PASSED 2026-11-18 (2,121 tests + 51 e2e passed, 8 skipped) |
 | 2 — Template Studio | ⚪ not started | — | — | — |
 | 3 — Clinic operations | ⚪ not started | — | — | — |
 | 4 — Offline + desktop | ⚪ not started | — | — | — |
@@ -158,7 +158,7 @@ A box is ticked only for evidence seen on 2026-11-16 (after migration 0009 lande
 
 **Phase 1A known limitations and follow-ups**
 
-- Age label uses the UTC date, and date-of-birth validation uses UTC "today"; both move to the clinic timezone in Plan 1D.
+- Age label uses the UTC date, and date-of-birth validation uses UTC "today"; both move to the clinic timezone in Plan 1D. — resolved in Plan 1D (`b89284b`)
 - Phone edge cases: a leading invisible character or `tel:` prefix, and `+0091`, are not normalized.
 - Name cleanup strips `\p{Cf}` characters, which also removes zero-width-space separators between words.
 - Item ids are not stable across `saveDraft` (items are deleted and re-inserted).
@@ -170,18 +170,18 @@ A box is ticked only for evidence seen on 2026-11-16 (after migration 0009 lande
 - e2e tests may be flaky before hydration; they should wait for a hydration signal — resolved in Plan 1B (`8ab9734`; the editor is disabled until hydrated and `waitForEditor` in `tests/e2e/helpers.ts` waits for it).
 - Phase 0 carry-overs: staging deploy and restore drill, first CI run on GitHub (a remote exists now), pre-commit hook (needs owner approval to set `core.hooksPath`), 360 px visual check, MFA design note.
 - Documented immutability limitations (TRUNCATE, disabled triggers, replica role, insert of an already-finalized row, no successor check on `finalized -> amended`): ADR-0023.
-- Patient archive UI and unarchive: only the service `archivePatient` exists (no server action, no screen, no way back). Owner: Plan 1D.
+- Patient archive UI and unarchive: only the service `archivePatient` exists (no server action, no screen, no way back). Owner: Plan 1D. — resolved in Plan 1D (`70ffe3e`)
 - No way to discard a draft or withdraw an open amendment (Plan 1B) — resolved in Plan 1B (`f4959ad`, tests pinned in `4c3aa62`).
 - `repeatPrescription` ignores an open amendment on the source; decide together with discard (Plan 1B) — resolved in Plan 1B (`f4959ad`, ADR-0031).
 - Superseded and draft views are unmarked for read-only roles, and the finalized view reads the LIVE patient row (name, allergies); a snapshot at finalization is needed (Plan 1C) — resolved in Plan 1C (`d7f5567`, `75da6e3`; the allergy banner stays live by decision, ADR-0032).
 - `/prescriptions/:path*` is missing from the middleware matcher (Plan 1C) — resolved in Plan 1C (`bc4bd07`).
-- The app role can `DELETE` from `tenant_counters`; revoke it (Plan 1D).
-- Triggers: add a BEFORE INSERT guard (`status = 'draft'`), a finalized-child precondition for the `finalized -> amended` flip, and CHECK constraints on the status columns (Plan 1D).
+- The app role can `DELETE` from `tenant_counters`; revoke it (Plan 1D). — resolved in Plan 1D (`7fd5657`)
+- Triggers: add a BEFORE INSERT guard (`status = 'draft'`), a finalized-child precondition for the `finalized -> amended` flip, and CHECK constraints on the status columns (Plan 1D). — resolved in Plan 1D (`7fd5657`)
 - `doctorIdFor` can pick an arbitrary row because `doctors` has no `unique (tenant_id, user_id)` — resolved in Plan 1B (migration 0010, `023e716`).
-- e2e `seedPatients` bypasses `tenant_counters` (Plan 1D).
-- The dev database holds leaked test tenants and users from aborted runs; write a sweep script (Plan 1D).
+- e2e `seedPatients` bypasses `tenant_counters` (Plan 1D). — resolved in Plan 1D (`a83e068`)
+- The dev database holds leaked test tenants and users from aborted runs; write a sweep script (Plan 1D). — resolved in Plan 1D (`748d627`)
 - An owner without a doctor profile can finalize a prescription: a human decision is needed before any pilot (Plan 1C warns before finalizing and prints no doctor block, ADR-0032; the decision itself is still open).
-- Date of birth uses the UTC date, so a newborn registered between 00:00 and 05:30 IST is rejected as "in the future" (Plan 1D; must land before paediatric or maternity pilots).
+- Date of birth uses the UTC date, so a newborn registered between 00:00 and 05:30 IST is rejected as "in the future" (Plan 1D; must land before paediatric or maternity pilots). — resolved in Plan 1D (`b89284b`)
 
 **Gate 0 evidence block** (fill at review):
 
@@ -219,17 +219,17 @@ A box is ticked only for evidence seen on 2026-11-17 at commit `4c3aa62` (code) 
 **Phase 1B known limitations and follow-ups** (from the review ledger; "owner" is the plan that should take it)
 
 - The `sample_data` medicine list is unreviewed: spelling errors (for example "Glimepride") and 23 duplicate names with differing generic names (the seed keeps the first). It needs a clinical review before any pilot; it is not a licensed drug database (Phase 6; ADR-0028). The seed test pins some typo-bearing values and will need updating with the data.
-- Temperature is stored in °F only (Plan 1D or a locale pass).
+- Temperature is stored in °F only (Plan 1D or a locale pass). — decided in Plan 1D: stays °F until Phase 3 (ADR-0041)
 - Reception and pharmacist roles now read history, examination notes and vitals through `rx.read`: a data-minimisation decision is needed before any pilot (ADR-0030; Plan 1D).
 - An owner without a doctor profile can finalize, and such a prescriber has no favourites (Plan 1C warns before finalizing and prints no doctor block, ADR-0032; the decision itself is still open).
 - Autosave limits (ADR-0029; Plan 1D or Phase 4): Next serialises server actions, so a hung finalize delays the resumed autosave and the page refresh; `dispose()` skips the final save while a finalize runs, so edits that exist only in the finalize payload are lost if finalize fails before saving and the doctor navigates away mid-finalize; the ambiguous-conflict text is not set after an `exclusive` unknown outcome; one invalid field blocks the whole snapshot (the status now says everything since the last save is unsaved and names the field, for example "medicines 3 · dose"); a halted, held or failing engine still cannot save on unmount, which is why soft navigation (links, back and forward) now asks "You have changes that are not saved. Leave anyway?" in that state (`src/components/rx/use-leave-guard.ts`; it prompts when something is unsaved and the engine is halted, held, finalizing, retrying, in doubt after an ambiguous failure, or has a save in flight; an edit still in the debounce is sent by `dispose()` and never prompts; the sign-out form is guarded too, via `data-leave-guard`); a finalize conflict with nothing unsaved now enters the conflict halt (Keep / Load); after an unknown finalize outcome the page is re-read (`router.refresh`) only when the browser is online and the flush left nothing unsaved, otherwise (offline) a check runs on the next `online` event; online but unreadable, the text says to use Reload and promises no re-check, and Finalize is disabled while offline; a flush on a timed-out in-flight save retries once and then resolves.
 - Discard: no concurrency tests for repeat-vs-amend or withdraw-vs-finalize-of-the-child (analysis in ADR-0023 says safe); a discarded draft cannot be restored (ADR-0031).
-- Missing indexes on the new foreign-key columns `visits(tenant_id, doctor_id)`, `visits(tenant_id, branch_id)`, `prescriptions(tenant_id, template_version_id)`, which matter for offboarding scans at scale (Plan 1D).
-- Periodicity, dose ranges and `duration_value > 0` are checked by Zod only, not by database CHECK constraints; CHECKs and policies of migration 0012 exist only in SQL, not in the Drizzle schema (Plan 1D).
-- No catalogue-wide RLS guard test (every table with `tenant_id` has forced RLS and a `tenant_isolation` policy); `tenant_medicines.created_by` has no foreign key (Plan 1D).
-- `tenant_counters` still grants `DELETE` to the app role, and the e2e `seedPatients` still bypasses the counters (Plan 1D, as in 4.8).
-- The development database holds leaked test tenants from aborted runs; a sweep script is still to be written (Plan 1D, as in 4.8).
-- The patient archive UI and unarchive remain open (ruled out of Plan 1B; Plan 1D).
+- Missing indexes on the new foreign-key columns `visits(tenant_id, doctor_id)`, `visits(tenant_id, branch_id)`, `prescriptions(tenant_id, template_version_id)`, which matter for offboarding scans at scale (Plan 1D). — resolved in Plan 1D (`a83e068`)
+- Periodicity, dose ranges and `duration_value > 0` are checked by Zod only, not by database CHECK constraints; CHECKs and policies of migration 0012 exist only in SQL, not in the Drizzle schema (Plan 1D). — resolved in Plan 1D (`a83e068`)
+- No catalogue-wide RLS guard test (every table with `tenant_id` has forced RLS and a `tenant_isolation` policy); `tenant_medicines.created_by` has no foreign key (Plan 1D). — resolved in Plan 1D (`7fd5657, a83e068`)
+- `tenant_counters` still grants `DELETE` to the app role, and the e2e `seedPatients` still bypasses the counters (Plan 1D, as in 4.8). — resolved in Plan 1D (`7fd5657, a83e068`)
+- The development database holds leaked test tenants from aborted runs; a sweep script is still to be written (Plan 1D, as in 4.8). — resolved in Plan 1D (`748d627`)
+- The patient archive UI and unarchive remain open (ruled out of Plan 1B; Plan 1D). — resolved in Plan 1D (`70ffe3e`)
 - Smaller deferred items: `cleanText` applies NFC before the invisible-character strip; `expectedRevision` is not validated like `baseRevision`; no column-classification guard test for amend/repeat copying (a new visit column could be copied or dropped silently); `getSessionContext` and `requireSession` duplicate logic; an unreviewed seed gap (a wrong-schema CSV header skips every row and exits 0).
 - Not built, with their owners: nurse vitals entry (Phase 3, ADR-0030), Hindi labels for the new option codes (Plan 1D), the offline outbox (Phase 4), advice templates and medicine bundles, clinic-learned complaint and diagnosis suggestions, and an undo for discarded drafts (unscheduled; ADR-0031).
 - Uploaded logos and signatures are stripped of EXIF/GPS and other metadata at upload (Plan 1C final fix, ADR-0035); assets stored before that are dev data and may still carry it. Assets are capped at 20 logos and 50 signatures per clinic (Plan 1C Task 6 fix round); the cap is checked inside the upload transaction without a lock, so two simultaneous uploads can overshoot by one.
@@ -261,21 +261,71 @@ A box is ticked only for evidence seen on 2026-11-17 at commit `38fdb5d` (the co
 - Demo seed prescriptions have no snapshot and print with the "finalized before print snapshots were recorded" note.
 - A draft preview is not re-checked against a concurrent save (it may mix two saves for a moment; finalized copies are frozen).
 - Every `rx.read` role (reception, nurse, pharmacist) can print and download the full clinical content: part of the data-minimisation decision in 4.9 (Plan 1D).
-- The PDF concurrency limiter is per process and has no fairness or abort plumbing (Plan 1D, with sharing). A print counts when its HTML is served, not when the dialog is confirmed (ADR-0033).
+- The PDF concurrency limiter is per process and has no fairness or abort plumbing (Plan 1D, with sharing). A print counts when its HTML is served, not when the dialog is confirmed (ADR-0033). — abort plumbing resolved in Plan 1D (`d63435a`, `9cbc9f6`); still per process
 - The asset cap (20 logos, 50 signatures per clinic) can overshoot by one under two simultaneous uploads; no malware scan of uploaded images (Phase 2.1); no PDF cache (ADR-0033).
-- A Next dev-server `TypeError: controller[kState].transformAlgorithm is not a function` is logged once during the `pad-settings` role e2e test; the test passes and the cause is not investigated (Plan 1D).
-- "Page x of y" in the PDF footer is English only (no Devanagari font in the footer template; Plan 1D).
+- A Next dev-server `TypeError: controller[kState].transformAlgorithm is not a function` is logged once during the `pad-settings` role e2e test; the test passes and the cause is not investigated (Plan 1D). — resolved in Plan 1D: dev-only, 0 of 12 under `next start` (`1984351`)
+- "Page x of y" in the PDF footer is English only (no Devanagari font in the footer template; Plan 1D). — decided in Plan 1D: stays English (ADR-0041)
 
 **Plan 1C pilot follow-ups (added in the final fix wave)**
 
 - HUMAN DECISION: an owner without a doctor profile can finalize (the pad then prints no doctor block); decide whether finalize must require a doctor profile with a name and registration number before any pilot.
 - HUMAN DECISION: data minimisation for reception and pharmacist, who can print and download full clinical content (part of 4.9).
 - Ops: production Gotenberg on a private network with no egress and `GOTENBERG_URL` set; run the CI Gotenberg job on GitHub; verify `outputFileTracingIncludes` (fonts) at the first deployment.
-- Bug (Plan 1D): a date of birth is read as UTC midnight and shown or aged in IST in places; fix the UTC/IST handling.
+- Bug (Plan 1D): a date of birth is read as UTC midnight and shown or aged in IST in places; fix the UTC/IST handling. — resolved in Plan 1D (`b89284b`)
 - HUMAN: Hindi label review, an actual Safari print check, and clinical review of the sample medicine list.
-- Plan 1D: reproduce the dev-server `TransformStream` TypeError under `next start` to see whether it is dev-only.
+- Plan 1D: reproduce the dev-server `TransformStream` TypeError under `next start` to see whether it is dev-only. — resolved in Plan 1D (`1984351`): dev-only
 - Optional: run a corpus of hostile payloads against `checkSelfContained()` in a real browser.
 - Presentation is not frozen (templates, labels, CSS, fonts); each output records `renderer_version` (ADR-0032), so bump `RENDERER_VERSION` when printed output changes.
+
+### 4.11 Phase 1D checklist (sharing, consent, CSV import, history, hardening)
+
+A box is ticked only for evidence seen on 2026-11-18 at commit `4eb54f1` (the last code commit; the later commits are documentation): `node scripts/verify-gate-0.mjs` ended `Gate 0 verification PASSED` after `npm run lint` (0 errors, 2 existing warnings), `npm run typecheck` clean, `npm run test` = `Test Files 103 passed (103)`, `Tests 2121 passed | 1 skipped (2122)`, `build:web` and `build:desktop` OK, and the e2e suite `51 passed`, `8 skipped` (the opt-in screenshot tests). Then `npm run test:visual` = `24 passed` with no baseline change, `npm run build:desktop` exit 0 with `git status --short` showing only documentation edits (no `.desktop-stash`, `src/app/s` restored), and `npx drizzle-kit generate` = "No schema changes, nothing to migrate". Migrations 0017 to 0023.
+
+- [x] Rows born as drafts; superseding needs a finalized successor; status vocabularies; counter DELETE/TRUNCATE revoked; RLS forced and tenant-scoped on every tenant table (`tests/integration/integrity-1d.test.ts`, `rls-guard.test.ts`)
+- [x] Every CHECK declared in the Drizzle schema; periodicity, dose and duration checks; FK-column indexes; `tenant_medicines.created_by` composite key; test-tenant sweep (`schema-checks.test.ts`, `tenant-fk.test.ts`, `tests/unit/sweep-rules.test.ts`, `sweep-test-tenants.test.ts`)
+- [x] DOB and ages on the clinic's calendar; a newborn at 00:30 IST registers (`tests/unit/clinic-date.test.ts`, `tests/integration/patients-dates.test.ts`)
+- [x] Patient history: date, doctor, status and text filters, pages, Open / Print / Download / Repeat; archive and restore (`patient-history.test.ts`, `patient-archive.test.ts`, `tests/unit/prescription-history.test.tsx`, `tests/e2e/patient-history.spec.ts`)
+- [x] CSV import: decoding, delimiters, mapping, Excel repairs, validation report, duplicate decisions, idempotent and concurrent-safe commit, formula-safe problem-row download (`tests/unit/{csv,csv-decode,patient-import-rows}.test.ts`, `patient-import.test.ts`, `patient-import-hardening.test.ts`, `patient-imports-schema.test.ts`, `tests/unit/import-wizard.test.tsx`, `tests/e2e/patient-import.spec.ts`)
+- [x] Consent log with version and method; withdrawal and archive revoke links; per-clinic sharing switch, off by default (`sharing-schema.test.ts`, `consent.test.ts`, `tests/unit/consent-card.test.tsx`)
+- [x] Share links hashed, 7 days, 10 opens, revocable; public interstitial and PDF; uniform 404; previews never count; rate limits; PDF abort (`tests/unit/{share-token,rate-limit,share-snapshot}.test.ts`, `share-links.test.ts`, `share-route.test.ts`, `rx-output-http.test.ts`, `gotenberg.test.ts`)
+- [x] WhatsApp `wa.me` link and email provider behind consent; masked share log; Share panel; nurses and pharmacists cannot share (`tests/unit/{recipient,wa-link,email-provider,share-panel}.test.ts(x)`, `sharing.test.ts`, `prescription-page.test.tsx`, `tests/e2e/sharing.spec.ts`; the e2e opens the link in real Chromium and the form POST returns the PDF)
+- [x] Hindi option labels in one place (printed output unchanged); in-app not-found; skip link; keyboard-only registration (`tests/unit/rx-option-labels.test.ts`, `tests/e2e/keyboard.spec.ts`)
+- [x] Vendored React patch and Next 15.5.29 (`tests/unit/vendored-react-ping.test.ts`; `pad-settings` 12 of 12 under `next start`, ADR-0042)
+- [x] Desktop export unchanged with `src/app/s` stashed (`npm run build:desktop`, clean tree)
+- [x] `node scripts/verify-gate-0.mjs` PASSED with the Phase 1D tests; `npm run test:visual` 24 passed, no baseline changed
+
+**Phase 1 exit criteria: evidence so far**
+
+| Exit criterion (ROADMAP §3) | Automated evidence | What still needs people | Status |
+|---|---|---|---|
+| A repeat prescription is finalized, printed and shared in under 60 seconds (5 real users) | `prescriptions.spec.ts` (repeat), `rx-output.spec.ts` (print), `sharing.spec.ts` (WhatsApp link), `patient-history.spec.ts` (repeat from the list) | Time it with 5 real users at design-partner clinics; open a shared link from Android Chrome and the WhatsApp in-app browser | open |
+| A new patient is registered in under 30 seconds by a receptionist | `keyboard.spec.ts` (keyboard-only registration; printed 1.0 s in the gate run, in automation) | Time it with receptionists | open |
+| PDF output is visually consistent across Chrome, Safari and the print dialog | `rx-visual.spec.ts` (Chromium and Gotenberg, 24 screenshots passed against the reviewed baselines) | Print one pad from Safari | open |
+| Finalized prescriptions are immutable; amendments create v2 with a reason and an audit event | `immutability.test.ts`, `immutability-races.test.ts`, `integrity-1d.test.ts`, `prescriptions-lifecycle.test.ts` | none | met (automated) |
+| 5 design-partner clinics use it for 10 working days with no data-loss incident | none | The pilot itself (needs staging, see section 5) | open |
+| Render failure rate < 1%; p95 finalize < 800 ms online | Local tests only | Staging metrics under real use | open |
+| CSV import of the existing `sample_data/*.csv` shape works with a validation report | `patient-import.test.ts`, `import-wizard.test.tsx`, `patient-import.spec.ts` (patients, `sample_data/patients_template.csv`); `catalogue-seed.test.ts` (the catalogue lists) | none | met (automated) |
+
+**Phase 1D known limitations and follow-ups**
+
+- HUMAN DECISION (still open): may an owner without a doctor profile finalize (sections 4.8–4.10)?
+- HUMAN DECISION (still open): data minimisation for reception and pharmacists (`rx.read` unchanged; `rx.share` excludes nurses and pharmacists by default).
+- HUMAN DECISION: WhatsApp Cloud API vs a BSP (ADR-0010, open decision #2). Not built; `wa.me` manual send only, delivery status unknown ("prepared").
+- HUMAN: legal review of the English consent text and native-speaker review of every Hindi string (pad labels, option labels, consent text, share pages) before any clinic turns sharing on; sharing stays off per clinic until then.
+- HUMAN DECISION: the email provider's data residency and legal basis for cross-border processing (Resend); the email carries clinic name, Rx number and link, no clinical text (ADR-0038).
+- HUMAN/OPS: a Resend account and sender-domain DNS for email sharing. Click and open tracking is a Resend domain setting and MUST be off (a tracking redirect hands the token to the provider).
+- HUMAN DECISION: links to a superseded version stay valid for their 7 days and show a SUPERSEDED marker (no automatic revocation on amend).
+- HUMAN CHECK: open a shared link from Android Chrome and from the WhatsApp in-app browser before ticking the sharing exit criteria. Scanners that submit forms spend an open (cap 10); an Android WebView downloader may save the interstitial instead of the PDF (ADR-0037).
+- OPS: the share token is in the URL path, so host, proxy, CDN and analytics logs must not retain `/s/*` URLs. `NEXT_PUBLIC_APP_URL` must be an https origin and `GOTENBERG_URL` set in production. Set `SHARE_CLIENT_IP_HEADER` on non-Vercel hosts. Add an edge rate limit in front of `/s/`; the public-route limits and the PDF limiter are per process. Verify at the first deployment that `/s/<token>` renders the Devanagari fonts (`outputFileTracingIncludes`). Install with lifecycle scripts enabled (ADR-0042).
+- `createShareLinkIn` relies on its caller for the `rx.share` permission and the sending flow's switch and consent checks; only `src/server/services/sharing.ts` calls it (ADR-0037). Link creation takes a KEY SHARE lock on the consent, prescription and patient rows (ADR-0036).
+- Import rows that match an existing patient or an earlier row by name only (no phone match) are skip-only; whether the owner may register such rows as new (twins, namesakes) is a human decision (ADR-0039).
+- Two simultaneous shares can overshoot the per-user or per-prescription link limits by one, and two emails the daily email limit (no lock).
+- Dates in imports are always read day-first; a US-formatted file with days of 12 or less is read wrongly unless the owner notices the preview.
+- Temperature stays °F and "Page x of y" stays English (ADR-0041).
+- TransformStream dev-server error (`controller[kState].transformAlgorithm is not a function`): dev-only, 0 of 12 runs under `next start` (Task 11, `1984351`). Its production look-alike (stuck saves) was a real React bug, fixed in `9009c9d` (ADR-0042).
+- `npm audit` reports 25 vulnerabilities in other packages (follow-up; not addressed in 1D).
+- Ops: a Docker Desktop restart stops the project containers; run `docker compose up -d postgres gotenberg` before any gate run.
+- Other columns that hold a user id without a key (`patients.created_by`, `clinic_assets.created_by`, `prescription_outputs.actor_user_id`, `audit_events.actor_user_id`, `prescriptions.finalized_by`, the new `*_by` columns) are unchanged; only `tenant_medicines.created_by` was asked for.
 
 ---
 
@@ -289,7 +339,7 @@ Phase 1B is code complete and its automated gate passed locally on 2026-11-17 (s
 
 Phase 1C is code complete and its automated gate passed locally on 2026-11-17 (section 4.10); its follow-ups are listed there.
 
-**Next:** Plan 1D (sharing, CSV import, filters, hardening). Plan 1D's ADRs start at ADR-0036; its migrations start at 0016.
+**Next:** a design-partner pilot needs staging (Phase 0 carry-overs) and the human decisions listed in section 4.11; then Phase 2 (Template Studio). Phase 2's ADRs start at ADR-0043; its migrations start at 0024.
 
 ---
 
@@ -408,6 +458,13 @@ Append to §11 at the end of each working session:
 - Plan 1D, production-only stuck saves (debug after Task 11): under `next start`, saving the pad or uploading a logo sometimes stayed on "Saving…"/"Uploading…" forever. Root cause: a React bug in the build Next 15.5.2 bundles (a ping that arrives during the render is dropped, facebook/react#36134), hit when a `revalidatePath` action response streams in. Fixed by `scripts/patch-react-ping.mjs` on `postinstall`, guarded by `tests/unit/vendored-react-ping.test.ts`. Evidence: pad-settings 5 of 12 runs failed before, 24 of 24 passed after under `next start`, 12 of 12 under dev; full dev e2e 51 passed, 8 skipped; `npm run test` 2,121 passed + 1 skipped. Task 12 should record this as an ADR. Report: `.superpowers/sdd/2026-11-17-phase-1d-sharing-import-hardening/debug-pad-settings-report.md`.
 
 - Plan 1D, public share route (Task 9b fix round): verify at the first deployment that `/s/<token>` renders a PDF with the Devanagari fonts on the host (`outputFileTracingIncludes` lists the font files for `/s/**` as for `/prescriptions/**`; it cannot be proven by a local build), and set `SHARE_CLIENT_IP_HEADER` if the host is not Vercel (production logs once when no client address header arrives).
+
+### 2026-11-18 — Phase 1D: sharing, consent, CSV import, history, hardening
+- Did: shipped Phase 1D on `phase-1-prescription-mvp` (`7fd5657` to `4eb54f1`): database hardening (migrations 0017 to 0023: rows born as drafts, successor check, CHECKs mirrored in the schema, RLS guard, sweep script), clinic-timezone dates, patient history filters with archive and restore, patient CSV import with duplicate decisions, an append-only consent log, hashed expiring share links with the public `/s/<token>` route, `wa.me` and email sharing behind a per-clinic switch with a masked share log, Hindi option labels, in-app not-found, skip link, and a Next 15.5.29 upgrade with a vendored React patch (stuck server actions under `next start`). Decisions ADR-0036 to ADR-0042.
+- Evidence: see section 4.11 (`npm run test` 103 files / 2,121 passed + 1 skipped; `node scripts/verify-gate-0.mjs` PASSED, e2e 51 passed and 8 skipped; `npm run test:visual` 24 passed; `npm run build:desktop` exit 0).
+- Blocked by: nothing for the automated gate. Staging, CI on GitHub, pre-commit hook, 360 px check and MFA note remain open; the human decisions in section 4.11 gate any pilot.
+- Next: staging and a design-partner pilot, then Phase 2 (ADRs from ADR-0043, migrations from 0024).
+- Gotchas: rows are born as drafts (insert then UPDATE to finalize); a `finalized -> amended` flip needs a finalized child first; every CHECK must also be declared in the Drizzle schema; `as("reception")` returns a new random user per call (capture one context when asserting on it); `/s/` is outside the middleware and must stay session-less; the e2e sharing spec needs Gotenberg up for its PDF branch; production-mode sharing needs an https app URL and `GOTENBERG_URL`; `npm install --ignore-scripts` skips the React patch; a Docker Desktop restart stops the containers.
 
 ---
 

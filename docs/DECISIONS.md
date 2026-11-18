@@ -595,6 +595,144 @@ The engine (`src/server/pdf/`) sits behind an injectable `PdfEngine` that never 
 
 ---
 
+## ADR-0036 — Consent before sharing is an append-only log; withdrawal and archive stop every link
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** DPDP-style consent needs purpose, version, timestamp, who captured it, and revocation (PRODUCT_SPEC §6.2, AGENTS.md invariant 5). WhatsApp and email providers are third parties even when the recipient is the patient.
+
+**Decision:** `patient_consents` is an append-only event log (purpose `sharing`, version such as `sharing-v1`, `granted`, method `verbal | written`, `captured_by` not null, `created_at` set by `clock_timestamp()` in a trigger); the latest event per patient and purpose is the current state, and withdrawal inserts `granted = false`. The runtime role can only insert and read; admin-level immutability applies (0022). Consent is required before every share. The consent text and its Hindi translation live in `src/lib/domain/consent.ts` under the version key (`CONSENT_VERSIONS`, typed `CONSENT_TEXT`); rewording means a new key. The card posts the version it shows and the service records it only if it is a known version. Recording and withdrawing need `consent.capture` (owner, doctor, reception) and lock the patient row `FOR UPDATE`; withdrawal and archiving revoke every open link of the patient in the same transaction (`revoke_reason` `consent_withdrawn` / `patient_archived`). A link row must cite the patient's current granted consent: trigger `share_links_target` (0023) requires the prescription finalized, a consent of the same tenant, purpose `sharing`, `granted`, belonging to the prescription's patient, with no later consent event for that patient.
+
+**Locking note (0023, ADR-0037):** creating a link takes a `KEY SHARE` lock on the cited consent row, the prescription and the patient through the composite foreign keys, and `createShareLinkIn` locks the patient row `FOR SHARE`. Consent writers lock the patient row `FOR UPDATE`, so a link insert waits for an in-flight record/withdraw/archive and a link can never survive a concurrent withdrawal. The target trigger reads consent without locking; that is safe because consent rows are append-only and the patient row lock serialises the writers. No sharing path locks a prescription row. Audit events (`patient.consent_recorded`, `patient.consent_withdrawn`) carry ids, purpose, version, method and counts only.
+
+**Consequences:** Full consent history as evidence; one extra row per change. The English text needs legal review and the Hindi text a native speaker before any clinic turns sharing on (sharing is off per clinic until then, ADR-0038).
+
+**Revisit trigger:** ABDM consent artefacts (Phase 5), marketing consent, or a regulator's required wording.
+
+---
+
+## ADR-0037 — Share links: hashed, short-lived, revocable, count-limited, opened through a two-step public route
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** A patient must open their prescription from a WhatsApp or email message without an account, while link previews, mail scanners, guessing, and a forwarded message must not expose it, and every opening must be audited.
+
+**Decision:** A link is 32 random bytes (base64url, 43 characters); only its SHA-256 is stored (`share_links.token_hash`, unique). It points at one `finalized` prescription of its own tenant (trigger `share_links_target`), lives 7 days, opens at most 10 times, and can be withdrawn; the runtime role may only add one to `open_count` and revoke once (trigger `share_links_rules`), never delete; an insert trigger pins `open_count = 0`, no revocation fields and `created_at = now()`. `/s/<token>` is the only route without a session: GET answers an interstitial page with no patient, clinic or clinical data and a POST button, so previews and scanners never count an open or render anything; POST renders the frozen pad through the existing renderer, a separate public limiter (concurrency 1, small queue, one in-flight render per link) and `PdfEngine`, then, in one transaction that re-checks every condition (link state, sharing switch, patient not archived, current granted consent, abort signal), counts the open, writes a `prescription_outputs` row (kind `shared_pdf`, no actor, `share_link_id`) and audits `prescription.share_opened` (actor null). A malformed, unknown, expired, used-up, withdrawn or switched-off link, and a cross-site POST, all get the identical 404; a failed render answers 503 and burns nothing; a double tap answers its own 503 ("already opening", `Retry-After`). Every response is `no-store`, `noindex`, `no-referrer`, `nosniff`; HTML responses carry a `default-src 'none'` CSP and the PDF carries `frame-ancestors 'none'` plus `X-Frame-Options: DENY`. A link is refused at creation unless the prescription's `renderSnapshot` was frozen at finalize (`snapshotSource = "finalize"`); the open-time check stays as a backstop.
+
+**Token policy (override 8):** the token lookup runs through `withShareToken`, which sets `app.share_token_hash` with a transaction-local `set_config`, and one RLS policy, `share_link_by_token` (SELECT, `clinicpad_app`), written exactly as in migration 0022:
+
+```sql
+create policy share_link_by_token on share_links for select to clinicpad_app
+  using (token_hash = nullif(current_setting('app.share_token_hash', true), ''));
+```
+
+It is the single allow-listed exception in `tests/integration/rls-guard.test.ts` (the guard compares the full expression). Everything after the lookup runs in `withTenant`; never `adminDb`.
+
+**POST origin rule:** when `Sec-Fetch-Site` is present it alone decides (`same-origin` and `none` pass). Only when it is absent: `Origin: null` or no Origin passes, and a named Origin must equal the host of `NEXT_PUBLIC_APP_URL` (else the `Host` header). Refusals are logged without the token.
+
+**Superseded versions:** a link to a version that was later amended keeps opening for its 7 days and shows the SUPERSEDED marker; only the current version can be shared. This is a human decision (below).
+
+**Rate limits:** 10 active links per prescription and 60 links per user per hour (database counts; two simultaneous shares can overshoot by one); on the public route 20 requests per client address per minute and 30 per minute per token hash, both in memory and **per process**. The client address comes only from the header named by `SHARE_CLIENT_IP_HEADER` (the platform's trusted header, for example the one Vercel sets); a client-supplied `X-Forwarded-For` is never read. IPv6 addresses are grouped by /64. Production logs once when no such header arrives. The in-flight guard per link is also per process. The PDF limiter drops a queued render whose request was aborted (a client abort is logged as `aborted`).
+
+**Caller contract:** `createShareLinkIn` re-checks archived patient, sharing switch, current granted consent, finalized status and snapshot, but it relies on its caller for the **role permission** (`rx.share`) and the switch and consent checks of the sending flow; the Task 10 service (`src/server/services/sharing.ts`) does all of them, and nothing else may call it. The public resolve and open functions take only the token and are public by design.
+
+**Known behaviours and human checks:**
+- Link scanners and previewers that follow the form with a POST (not only GET) spend an open. GET never counts. The cap of 10 is the limit on that damage.
+- Older Android WebView downloaders (WhatsApp's in-app browser) may save the interstitial instead of the PDF, and some send neither `Origin` nor `Sec-Fetch-Site` (accepted). Check Android Chrome and the WhatsApp in-app browser by hand before ticking the sharing exit criteria.
+- Email click and open tracking is a Resend domain setting and must be off (ADR-0038); a tracking redirect would hand the token to the provider.
+- The token is in the URL **path**, so request logs (host, proxy, CDN, analytics) must not retain full URLs of `/s/*`; configure them before any pilot.
+
+**Consequences:** No PHI in URLs, previews or logs; the patient taps once more. The in-memory limits are per process: production must add an edge rate limit. Opens are counted only for completed renders.
+
+**Revisit trigger:** a stored PDF (Phase 2 storage), the WhatsApp Cloud API sending documents directly, or a patient portal with accounts.
+
+---
+
+## ADR-0038 — Sending: a wa.me link the clinic sends itself, email through a provider, sharing off per clinic
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** ADR-0010 chose the WhatsApp Cloud API behind an abstraction, but it needs Meta business verification, approved templates and credentials that do not exist yet; Phase 1 needs sharing now.
+
+**Decision:** WhatsApp sharing builds `https://wa.me/<international digits>?text=<message>` (`waMeLink`); the message names the clinic, the Rx number, the link and its expiry, never the patient or clinical text. The browser opens it from a real anchor click in a new tab (popup blockers), which works on phones and desktop. Phone input goes through `whatsAppRecipient`: Indian numbers may be typed nationally and must be mobiles (6–9), other countries need `+` and the code, and anything ambiguous is refused with what to type (`+` followed by exactly ten digits starting 6–9 answers "Did you mean +91 ...?"). Email sends the same expiring link (no attachment) through `EmailProvider`; `getEmailProvider()` builds the Resend adapter only when `RESEND_API_KEY` and a valid `EMAIL_FROM` exist, otherwise email is hidden. The request body carries no tracking fields; **click and open tracking are a Resend domain setting and must stay off** (tracking would rewrite the link and leak the token to the provider's redirect). The provider is called outside any database transaction; a failed send withdraws its link (`send_failed`). `prescription_shares` is the append-only share log (channel, masked recipient, provider, status `prepared | sent | failed`, provider id, error code; the mask has a `*` and no run of five digits); full numbers and addresses are never stored. At most 5 emails per prescription per 24 hours (a count of log rows, no lock, so two simultaneous sends can overshoot by one). `clinics.sharing_enabled` (default false) is the owner's switch, enforced in the service; off makes every link of the clinic answer 404 at once. Roles: `rx.share` = owner, doctor, reception. Tests use a fake provider and never touch the network.
+
+**Human decisions attached (not made):** the email provider's data residency and legal basis for cross-border processing (Resend is not in India; the email carries the clinic name, Rx number and link, no clinical text); the Resend account and sender-domain DNS.
+
+**Consequences:** No message leaves ClinicPad's servers for WhatsApp; delivery status is unknown ("prepared"). The Cloud API (or a BSP) can replace the `wa_link` provider behind `shareByWhatsApp` without changing links, consent or the log.
+
+**Revisit trigger:** Meta verification complete (Cloud API), BSP choice (open decision #2), delivery reconciliation (Phase 3).
+
+---
+
+## ADR-0039 — Patient CSV import: stateless dry-run and commit, Excel repairs, explicit duplicate decisions, idempotent rows
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** Clinics arrive with patient lists from Excel and other software (ROADMAP 1.1, PRODUCT_SPEC §6.2). Files come in odd encodings and formats, contain duplicates and family phones, and get uploaded twice.
+
+**Decision:** The browser keeps the file; the server re-parses it for the dry-run and for the commit, which refuses a file whose SHA-256 changed and a mapping that differs from the dry-run's (the token binds both). Caps: about 900 KB per file (Next's 1 MB server-action body limit), 5,000 rows, 40 columns, 2,000 characters per mapped cell (echoed cells are cut shorter in the report). UTF-8 (BOM stripped) and UTF-16 with a BOM are read; workbooks, BOM-less UTF-16, binary data and non-UTF-8 text are refused with what to do. The delimiter (`,` `;` tab) comes from the header line; row numbers are spreadsheet rows. Headers map to fields by aliases and the owner can change every choice. Rows pass Excel repairs (day-first dates, Excel serials, `'` and `.0` removed; two-digit years, month/day/year, a bare year and scientific-notation phones refused; a NUL refuses the row; an age column is reported, never turned into a birth date) and then the patient form's own schema and the clinic-day DOB rule.
+
+A duplicate is a normalized phone matching an active patient or an earlier row, **or** a normalized name equal to an existing patient's name with equal-or-empty DOB (so a re-import with a corrected mapping cannot duplicate, also for rows without a phone). A duplicate is skipped unless the owner chooses "register as new" or, when exactly one same-name patient matches and DOB and gender agree or one side is empty, "add missing details" (fill-only, never overwrite). An exact repeat inside the file can only be skipped, and **rows that match only by name are skip-only; that is a human decision to revisit** (twins and namesakes will be skipped until the owner registers them by hand). The dry-run returns a per-row match fingerprint (sorted matched ids and the row it duplicates); the commit honours a decision only if the fingerprint is unchanged, otherwise the row is skipped with a stale-row reason. Each imported patient stores `import_row_key` (SHA-256 of name key, phone, DOB; partial unique index), so a re-run imports nothing twice. The commit runs in one transaction under `pg_advisory_xact_lock` per tenant, allocates patient numbers as one block (`allocateNumbers`), and writes `patient_imports` (append-only job row, security in 0020), `patient.created` per patient with the import id, `patient.updated` per fill with field names, and `patient_import.committed`. The problem-row download is built in the browser by `serializeCsv`, which neutralises formula cells. Import is owner-only (`patient.import`), reached from a button on `/patients`. `sample_data/patients_template.csv` documents the shape (`.gitattributes` marks it `-text`); the existing `sample_data` catalogue lists stay loaded by `npm run db:seed:catalogue`.
+
+**Consequences:** No PHI staging table; the file travels twice. Dates are always read day-first. Imported rows carry an import id for later clean-up.
+
+**Revisit trigger:** `.xlsx` upload, files above 1 MB (would need a route handler instead of a server action), a full merge tool, or importing prescriptions.
+
+---
+
+## ADR-0040 — Database hardening of Plan 1D
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** ADR-0023 listed gaps (an INSERT of an already-finalized row; the `finalized -> amended` flip without a successor), statuses and clinical values were checked only by Zod, CHECKs lived only in SQL, three foreign-key columns had no index, `tenant_medicines.created_by` had no key, the runtime role could delete counters, and no test covered RLS across the whole schema.
+
+**Decision:** 0017: rows of `prescriptions` and `visits` are born as drafts (BEFORE INSERT, `23000`); the flip to `amended` requires a finalized child of the same tenant that is not the row itself, and `draft -> amended` is refused (also through `INSERT ... ON CONFLICT DO UPDATE`); `parent_prescription_id` may not equal `id`; closed status vocabularies; `tenant_counters` DELETE/TRUNCATE revoked. 0018: periodicity, quarter-step dose (0–99) and duration (1–365) CHECKs on items and favourites; indexes on `visits(tenant_id, doctor_id)`, `visits(tenant_id, branch_id)`, `prescriptions(tenant_id, template_version_id)`, `prescriptions(tenant_id, parent_prescription_id)`; `tenant_medicines (tenant_id, created_by) -> memberships (tenant_id, user_id) ON DELETE SET NULL (created_by)`. 0019 to 0023 add the import and sharing tables with their security, triggers and indexes on every new composite key (`patients(tenant_id, import_id)`, `prescription_outputs(tenant_id, share_link_id)`). New CHECKs are added `NOT VALID` and validated in the same migration when every row passes, so a development database with leftovers still migrates (`npm run db:sweep-test-tenants` removes old test tenants: only local databases, only tenants whose members all use `@example.com`, older than an hour, never `demo-clinic`). Every CHECK is also declared in the Drizzle schema, and `tests/integration/schema-checks.test.ts` fails when the two lists differ; policies, grants and triggers stay in SQL, and `tests/integration/rls-guard.test.ts` requires forced RLS and an `app.tenant_id`-scoped policy (every non-null `qual` and `with_check`) on every table with a `tenant_id`, with one allow-listed exception (ADR-0037). The composite-key guard accepts parents `(tenant_id, id)` and `(tenant_id, user_id)` only. The demo seed inserts drafts and finalizes them by UPDATE; `createTestTenant` gives its user an owner membership; the e2e `seedPatients` reserves numbers through the counter.
+
+**Consequences:** ADR-0023's "INSERT of an already-finalized row" and "no successor check" limitations are closed. A constraint can remain NOT VALID on a dirty development database until it is swept; new writes are checked either way.
+
+**Revisit trigger:** a managed database that restricts triggers, or partitioning by tenant.
+
+---
+
+## ADR-0041 — Clinic-timezone dates, patient history and archive, and Plan 1D localisation choices
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** DOB validation and on-screen ages used the UTC day, so a baby born today could not be registered between 00:00 and 05:30 IST. The patient page listed prescriptions unfiltered, and archive had no UI or way back. Three localisation items were open: Hindi labels for option codes, "Page x of y" in Hindi, and a temperature unit.
+
+**Decision:** Calendar days are the clinic's (`clinicLocalDate`, `src/lib/domain/clinic-date.ts`): the Zod DOB bound is the latest date on Earth (UTC+14) and the services apply the clinic's day (the DOB input has no `max`); patient ages on screen and history date filters use the clinic's zone (an unknown zone falls back to Asia/Kolkata, never UTC). `listPatientPrescriptions` filters by clinic-local date range on `coalesce(finalized_at, created_at)`, the visit's doctor, status and diagnosis or complaint text (escaped `ILIKE`), 20 per page with a total order; malformed URL filters are ignored. Rows are labelled `Rx #N vV` and offer Open, Print, Download PDF and, for the current version, Repeat. Archive (owner, inline confirm) hides a patient from search and new prescriptions, keeps every record, revokes its share links, and is undone from "Show archived" (audit `patient.archived` with `revokedLinks`, `patient.unarchived`). Hindi labels for food relation and periodicity codes have one source (`FOOD_RELATION_LABELS_HI`, `PERIODICITY_LABELS_HI` in `rx-options.ts`, reusing the legacy strings); printed output is unchanged. "Page x of y" stays English with Western digits in every label language (the Gotenberg footer cannot rely on the embedded Devanagari font; Western digits are normal on Indian pads). The temperature unit stays °F until Phase 3 nurse vitals: a unit setting changes the frozen snapshot (`v` bump), the autosave payload, the renderer and the golden files.
+
+**Consequences:** Dates agree between the form, the list, the pad and the filters. A native speaker still has to review all Hindi strings (pad labels, option labels, consent text, share pages).
+
+**Revisit trigger:** a clinic outside India, a UI language switch, or Phase 3 vitals.
+
+---
+
+## ADR-0042 — Next.js 15.5.29 and a vendored React patch (facebook/react#36134), applied on postinstall
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** Under `next start`, saving the pad or uploading a logo sometimes stayed on "Saving…" / "Uploading…" until a reload (5 of 12 runs of `pad-settings.spec.ts`). The server action had completed. Cause: the React build that Next 15.5.x bundles (`next/dist/compiled/react-dom`) drops a ping that arrives synchronously during the render while the exit status is "suspended with delay", so the transition lane is marked suspended and never retried. A `revalidatePath` action response that streams in over several packets triggers it (any same-page RSC refresh can: import, sharing, consent, `router.refresh()`). The upstream fix is facebook/react#36134 (merged 2026-03-24); no Next 15.x release contains it. Detail: `.superpowers/sdd/2026-11-17-phase-1d-sharing-import-hardening/debug-pad-settings-report.md`.
+
+**Decision:** Upgrade `next` and `eslint-config-next` from 15.5.2 to 15.5.29 (exact pins; the latest 15.5.x; 15.5.2 also predated the December 2025 RSC security fixes). The bundled React in 15.5.29 still has the bug, so `scripts/patch-react-ping.mjs` runs on `postinstall` and applies the upstream change to the vendored `react-dom` and `react-dom-experimental` client, profiling and testing builds (10 files): in the render-phase branch it records `workInProgressRootPingedLanes |= pingedLanes`. It is idempotent (marker comment) and warns on code it does not recognise. `tests/unit/vendored-react-ping.test.ts` runs the real scheduler against the vendored React and fails when the bug is present, which is what a Next upgrade or a missing patch would cause.
+
+**Risk:** an install with `--ignore-scripts` (`npm ci --ignore-scripts`, a host that disables lifecycle scripts, some Docker builds) ships the bug again, silently for users; the unit test catches it in CI only if CI installs with scripts. `npm install next@...` does not re-patch until `postinstall` runs (run `node scripts/patch-react-ping.mjs` by hand). Deployment must install with scripts enabled, or run the script before `next build`. We patch third-party vendored code, which needs the owner's sign-off.
+
+**Removal condition:** a Next release that contains react#36134 (the fix is in React 19.2+ builds after 2026-03-24; Next 16.3 canaries carry it). Then delete the script, the `postinstall` entry and the test, and drop the AGENTS.md note.
+
+**Consequences:** `pad-settings` 24 of 24 under `next start` (12 of 12 on 15.5.29). `npm audit` still reports 25 vulnerabilities in other packages (follow-up, not addressed here).
+
+**Revisit trigger:** any Next upgrade (the script warns on unknown code), or React's release of the fix in a stable Next.
+
+---
+
 ## 19. Open decisions
 
 | # | Question | Options | Owner | Needed by |
