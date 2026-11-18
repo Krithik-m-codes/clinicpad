@@ -169,7 +169,7 @@ describe("createLimiter", () => {
 describe("middleware matcher", () => {
   it("guards the app pages including prescriptions, and leaves login and the API alone", async () => {
     const { config } = await import("@/middleware");
-    expect(config.matcher).toEqual(["/dashboard/:path*", "/patients/:path*", "/prescriptions/:path*", "/settings/:path*"]);
+    expect(config.matcher).toEqual(["/dashboard/:path*", "/patients/:path*", "/prescriptions/:path*", "/settings/:path*", "/templates", "/templates/((?!uploads$).+)"]);
     const patterns = config.matcher.map((m) => new RegExp(`^${m.replace("/:path*", "(?:/.*)?")}$`));
     const guarded = (path: string) => patterns.some((p) => p.test(path));
     expect(guarded("/prescriptions/abc/pdf")).toBe(true);

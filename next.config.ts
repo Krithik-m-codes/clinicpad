@@ -21,6 +21,7 @@ const nextConfig: NextConfig = {
         outputFileTracingIncludes: {
           "/prescriptions/**": PRESCRIPTION_FONTS,
           "/s/**": PRESCRIPTION_FONTS,
+          "/templates/**": PRESCRIPTION_FONTS,
         },
       }),
   typescript: { ignoreBuildErrors: false },

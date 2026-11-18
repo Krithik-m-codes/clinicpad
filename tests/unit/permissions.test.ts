@@ -85,6 +85,10 @@ describe("role x action matrix", () => {
     "catalogue.write": ["owner", "doctor"],
     "settings.clinic": ["owner"],
     "settings.profile": ["owner", "doctor"],
+    "template.read": ["owner", "doctor"],
+    "template.write": ["owner", "doctor"],
+    "template.publish": ["owner"],
+    "template.assign": ["owner", "doctor"],
   };
   const actions = Object.keys(granted) as Action[];
 

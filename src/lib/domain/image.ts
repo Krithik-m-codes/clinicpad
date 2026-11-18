@@ -5,6 +5,24 @@ export type ImageCheck = { ok: true; info: ImageInfo } | { ok: false; message: s
 /** Logos and signatures. maxSide also stops decompression bombs (a tiny file that decodes to gigabytes). */
 export const IMAGE_LIMITS = { maxBytes: 512 * 1024, minSide: 16, maxSide: 2000 } as const;
 
+export type SizeLimits = { maxBytes: number; minSide: number; maxSide: number };
+
+/**
+ * Pad backgrounds (Plan 2A, overrides 3 and 16b). Embedded into every printed document and PDF, so bounded to 1 MB
+ * (the client recompresses a JPEG from the pdf.js frame to fit); portrait A-series proportions (A4 and A5 share
+ * 1 : 1.414). Keep in step with the template_files CHECKs (0025).
+ */
+export const BACKGROUND_LIMITS = { maxBytes: 1024 * 1024, minLongSide: 1100, maxLongSide: 3600, aspect: Math.SQRT2, aspectTolerance: 0.0425 } as const;
+
+const BACKGROUND_SIZE: SizeLimits = { maxBytes: BACKGROUND_LIMITS.maxBytes, minSide: 1, maxSide: BACKGROUND_LIMITS.maxLongSide };
+
+/** A progressive JPEG decodes once per scan; a file with hundreds of tiny scans is a CPU bomb for the renderer. */
+export const MAX_JPEG_SCANS = 64;
+
+function sizeText(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${bytes / 1024 / 1024} MB` : `${bytes / 1024} KB`;
+}
+
 const NOT_AN_IMAGE = "Upload a PNG or JPEG image.";
 const DAMAGED = "The image file is damaged. Export it again as a PNG or JPEG.";
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -23,8 +41,8 @@ function ascii(b: Uint8Array, offset: number, length: number): string {
   return String.fromCharCode(...b.subarray(offset, offset + length));
 }
 
-function withSize(mime: ImageMime, width: number, height: number): ImageCheck {
-  const { minSide, maxSide } = IMAGE_LIMITS;
+function withSize(mime: ImageMime, width: number, height: number, limits: SizeLimits): ImageCheck {
+  const { minSide, maxSide } = limits;
   if (width < minSide || height < minSide) return fail(`The image is too small: use at least ${minSide} × ${minSide} pixels.`);
   if (width > maxSide || height > maxSide) {
     return fail(`The image is too large: use at most ${maxSide} × ${maxSide} pixels. Resize it and try again.`);
@@ -33,7 +51,7 @@ function withSize(mime: ImageMime, width: number, height: number): ImageCheck {
 }
 
 /** Walks every chunk; the file must end exactly at IEND, so nothing can hide after it. */
-function inspectPng(b: Uint8Array): ImageCheck {
+function inspectPng(b: Uint8Array, limits: SizeLimits): ImageCheck {
   if (b.length < 8 + 25 + 12 || u32(b, 8) !== 13 || ascii(b, 12, 4) !== "IHDR") return fail(DAMAGED);
   const width = u32(b, 16);
   const height = u32(b, 20);
@@ -46,7 +64,7 @@ function inspectPng(b: Uint8Array): ImageCheck {
     if (next > b.length) return fail(DAMAGED);
     if (type === "IEND") {
       if (next !== b.length) return fail("The image has extra data after its end. Save the image as a plain JPEG or PNG and try again.");
-      return withSize("image/png", width, height);
+      return withSize("image/png", width, height, limits);
     }
     offset = next;
   }
@@ -58,7 +76,7 @@ function inspectPng(b: Uint8Array): ImageCheck {
  * scan's entropy-coded data (stuffed FF00 and RSTn skipped) up to the next real marker. The file
  * must end exactly at that EOI, so nothing can hide after it, and it needs one frame and a scan.
  */
-function inspectJpeg(b: Uint8Array): ImageCheck {
+function inspectJpeg(b: Uint8Array, limits: SizeLimits): ImageCheck {
   if (b[b.length - 2] !== 0xff || b[b.length - 1] !== 0xd9) return fail("The image file is incomplete. Export it again.");
   let offset = 2;
   let frame: { width: number; height: number } | null = null;
@@ -73,7 +91,7 @@ function inspectJpeg(b: Uint8Array): ImageCheck {
     if (marker === 0xd9) {
       if (!frame || scans === 0) return fail(DAMAGED);
       if (offset + 2 !== b.length) return fail("The image has extra data after its end. Save the image as a plain JPEG or PNG and try again.");
-      return withSize("image/jpeg", frame.width, frame.height);
+      return withSize("image/jpeg", frame.width, frame.height, limits);
     }
     if (marker === 0x00 || marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) return fail(DAMAGED);
     if (marker === 0x01) {
@@ -92,6 +110,7 @@ function inspectJpeg(b: Uint8Array): ImageCheck {
     if (marker !== 0xda) continue;
     if (!frame) return fail(DAMAGED); // scan before any frame header
     scans += 1;
+    if (scans > MAX_JPEG_SCANS) return fail("The image is too complex (too many scans). Export it again as a plain JPEG or PNG.");
     // Entropy-coded data: runs until a marker that is neither FF00 (stuffed) nor RSTn.
     while (offset < b.length) {
       if (b[offset] !== 0xff) {
@@ -113,12 +132,30 @@ function inspectJpeg(b: Uint8Array): ImageCheck {
  * and checks the size limits. Only PNG and JPEG are accepted: SVG can carry scripts and
  * external references, and other formats are not needed for logos or signatures.
  */
-export function inspectImage(bytes: Uint8Array): ImageCheck {
+export function inspectImage(bytes: Uint8Array, limits: SizeLimits = IMAGE_LIMITS): ImageCheck {
   if (bytes.length === 0) return fail("The file is empty.");
-  if (bytes.length > IMAGE_LIMITS.maxBytes) return fail(`The image is larger than ${IMAGE_LIMITS.maxBytes / 1024} KB.`);
-  if (PNG_SIGNATURE.every((value, index) => bytes[index] === value)) return inspectPng(bytes);
-  if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return inspectJpeg(bytes);
+  if (bytes.length > limits.maxBytes) return fail(`The image is larger than ${sizeText(limits.maxBytes)}.`);
+  if (PNG_SIGNATURE.every((value, index) => bytes[index] === value)) return inspectPng(bytes, limits);
+  if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return inspectJpeg(bytes, limits);
   return fail(NOT_AN_IMAGE);
+}
+
+/**
+ * A pad background: PNG or JPEG identified from its bytes, at most 1 MB, upright, long side 1,100 to 3,600 px
+ * (about 130 to 430 dpi on A4), and A-series proportions within 3 %, so it is never stretched on the page.
+ */
+export function inspectBackground(bytes: Uint8Array): ImageCheck {
+  const check = inspectImage(bytes, BACKGROUND_SIZE);
+  if (!check.ok) return check;
+  const { width, height } = check.info;
+  if (width > height) return fail("Rotate the image so the pad stands upright (portrait), then upload it again.");
+  if (height < BACKGROUND_LIMITS.minLongSide) {
+    return fail(`The image is too small for a pad: use at least ${BACKGROUND_LIMITS.minLongSide} pixels on the long side (scan at 150 dpi or more).`);
+  }
+  if (Math.abs(height / width - BACKGROUND_LIMITS.aspect) > BACKGROUND_LIMITS.aspectTolerance) {
+    return fail("Crop the image to the edges of the pad: it must have A4 or A5 proportions (1 : 1.41).");
+  }
+  return check;
 }
 
 /** PNG chunks kept: what decoding needs plus colour and density hints. Text, EXIF, time and everything unknown is dropped. */

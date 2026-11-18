@@ -1,6 +1,7 @@
 import { checkSelfContained } from "@/lib/rx-render/self-contained";
 import type { RenderedDocument } from "@/lib/rx-render/types";
 import { countPdfPages, PDF_LIMITS, PDF_MESSAGES, type PdfEngine, type PdfFailureCode, type PdfOutcome } from "./engine";
+import { readCapped } from "@/server/http/read-capped";
 
 export type GotenbergOptions = {
   baseUrl: string;
@@ -46,34 +47,6 @@ export function gotenbergForm(doc: RenderedDocument): FormData {
   return form;
 }
 
-/**
- * Reads a body while counting bytes; stops (and cancels the stream) once `maxBytes` is exceeded,
- * so a hostile or broken service cannot make us buffer more than the cap.
- */
-async function readCapped(response: Response, maxBytes: number): Promise<ArrayBuffer | "too_large"> {
-  const reader = response.body?.getReader();
-  if (!reader) return new ArrayBuffer(0);
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      return "too_large";
-    }
-    chunks.push(value);
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out.buffer;
-}
-
 async function discard(response: Response): Promise<void> {
   await response.body?.cancel().catch(() => undefined);
 }
@@ -105,7 +78,7 @@ export async function postHtmlToGotenberg(options: GotenbergOptions, form: FormD
 
   let pdf: ArrayBuffer | "too_large";
   try {
-    pdf = await readCapped(response, maxBytes);
+    pdf = await readCapped(response.body, maxBytes);
   } catch (error) {
     return failure(isTimeout(error) ? "pdf_timeout" : "pdf_failed");
   }
@@ -148,7 +121,7 @@ export function createGotenbergEngine(options: GotenbergOptions): PdfEngine {
           await discard(response);
           return { up: false, detail: `status ${response.status}` };
         }
-        const body = await readCapped(response, 4096);
+        const body = await readCapped(response.body, 4096);
         if (body === "too_large") return { up: false, detail: "unexpected response" };
         const parsed = JSON.parse(new TextDecoder().decode(body)) as { status?: unknown };
         return parsed.status === "up" ? { up: true, detail: "up" } : { up: false, detail: "reported down" };

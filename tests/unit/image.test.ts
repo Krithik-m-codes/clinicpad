@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { IMAGE_LIMITS, inspectImage, stripImageMetadata } from "@/lib/domain/image";
+import { BACKGROUND_LIMITS, IMAGE_LIMITS, inspectBackground, inspectImage, stripImageMetadata } from "@/lib/domain/image";
 import { JPEG_EXIF_GPS, JPEG_SOS, jpegSegment, jpegWithSegments, makeJpegCustom, makeJpegHeader, makePng, pngWithChunks } from "../helpers/images";
 
 const bytes = (b: Buffer) => new Uint8Array(b);
@@ -261,5 +261,44 @@ describe("stripImageMetadata", () => {
     expect(Buffer.compare(Buffer.from(stripImageMetadata(bytes(png)) ?? []), png)).toBe(0);
     expect(stripImageMetadata(bytes(Buffer.from("not an image")))).toBeNull();
     expect(stripImageMetadata(bytes(makePng(64, 32).subarray(0, 60)))).toBeNull();
+  });
+});
+
+describe("inspectBackground (pad backgrounds)", () => {
+  it("accepts A4 and A5 proportioned PNG and JPEG scans", () => {
+    expect(inspectBackground(makePng(1240, 1754))).toEqual({ ok: true, info: { mime: "image/png", width: 1240, height: 1754 } });
+    expect(inspectBackground(makeJpegCustom(1654, 2339))).toEqual({ ok: true, info: { mime: "image/jpeg", width: 1654, height: 2339 } });
+  });
+
+  it.each([
+    ["too small (long side under 1,100 px)", makePng(700, 990), "too small for a pad"],
+    ["too large (long side over 3,600 px)", makeJpegCustom(2600, 3700), "too large"],
+    ["US Letter proportions", makePng(850, 1100), "A4 or A5 proportions"],
+    ["a square phone photo", makeJpegCustom(1500, 1500), "A4 or A5 proportions"],
+    ["a sideways (landscape) scan", makePng(1754, 1240), "upright"],
+    ["a 1 x 10,000 strip", makeJpegCustom(1, 10000), "too large"],
+    ["bytes hidden after the PNG end", Buffer.concat([makePng(1240, 1754), Buffer.from("MZ payload")]), "extra data after its end"],
+  ])("refuses %s", (_label, bytes, message) => {
+    const check = inspectBackground(bytes);
+    expect(check.ok).toBe(false);
+    if (!check.ok) expect(check.message).toContain(message);
+  });
+
+  it("refuses more than 1 MB before looking at the content", () => {
+    expect(BACKGROUND_LIMITS.maxBytes).toBe(1024 * 1024);
+    expect(inspectBackground(new Uint8Array(BACKGROUND_LIMITS.maxBytes + 1))).toEqual({ ok: false, message: "The image is larger than 1 MB." });
+  });
+
+  it("caps the number of JPEG scans at 64 (progressive JPEG decode cost)", () => {
+    const scans = (n: number) => Array.from({ length: n }, () => Buffer.from([0x12, 0x34]));
+    expect(inspectBackground(makeJpegCustom(1240, 1754, { progressive: true, scans: scans(64) })).ok).toBe(true);
+    const over = inspectBackground(makeJpegCustom(1240, 1754, { progressive: true, scans: scans(65) }));
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.message).toContain("too complex");
+  });
+
+  it("keeps the logo and signature limits unchanged", () => {
+    expect(inspectImage(makePng(2100, 1000)).ok).toBe(false);
+    expect(inspectImage(makePng(1000, 500)).ok).toBe(true);
   });
 });
