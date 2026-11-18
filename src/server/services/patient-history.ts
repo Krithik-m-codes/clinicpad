@@ -24,6 +24,8 @@ export type HistoryRow = {
   doctorName: string | null;
   createdAt: Date;
   finalizedAt: Date | null;
+  /** Set when the prescription was finalized on a custom overlay pad (Plan 2A). */
+  templateVersionId: string | null;
 };
 export type HistoryDoctor = { id: string; name: string };
 export type HistoryPage = { rows: HistoryRow[]; hasMore: boolean; filters: HistoryFilters; doctors: HistoryDoctor[]; timeZone: string };
@@ -100,6 +102,7 @@ export async function listPatientPrescriptions(ctx: ServiceContext, patientId: s
         doctorName: doctors.displayName,
         createdAt: prescriptions.createdAt,
         finalizedAt: prescriptions.finalizedAt,
+        templateVersionId: prescriptions.templateVersionId,
       })
       .from(prescriptions)
       .innerJoin(visits, eq(visits.id, prescriptions.visitId))

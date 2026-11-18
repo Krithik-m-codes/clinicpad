@@ -14,6 +14,7 @@ import { BoxCanvas } from "./box-canvas";
 import { BoxInspector } from "./box-inspector";
 import { EditorDirtyProvider } from "./editor-dirty";
 import { FlowInspector } from "./flow-inspector";
+import { PrintInspector } from "./print-inspector";
 import { useOverflowWarnings } from "./use-overflow-warnings";
 
 type Props = {
@@ -168,6 +169,7 @@ export function TemplateEditor({ templateId, name, fileId, paper, labels: initia
             }}
             dispatch={dispatch}
           />
+          <PrintInspector templateId={templateId} paper={paper} definition={state.definition} dirty={dirty} dispatch={dispatch} />
         </div>
       </div>
       {dirty ? <p className="text-sm text-muted-foreground">Save the draft to preview or publish these changes.</p> : null}

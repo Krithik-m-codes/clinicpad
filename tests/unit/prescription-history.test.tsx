@@ -20,6 +20,7 @@ const row = (overrides: Partial<HistoryRow>): HistoryRow => ({
   doctorName: "Dr Shah",
   createdAt: new Date("2026-11-16T18:00:00.000Z"),
   finalizedAt: new Date("2026-11-16T19:00:00.000Z"),
+  templateVersionId: null,
   ...overrides,
 });
 

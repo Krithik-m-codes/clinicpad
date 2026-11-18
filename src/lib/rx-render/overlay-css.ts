@@ -4,7 +4,7 @@ import type { PaperSpec } from "./types";
 const ALIGN = { left: "left", center: "center", right: "right" } as const;
 
 /** A validated length as CSS text. A non-finite number cannot come from a parsed definition: it is a bug, so it throws. */
-function n(value: number): string {
+export function n(value: number): string {
   if (!Number.isFinite(value)) throw new Error("overlay css: a length is not a finite number");
   const rounded = Math.round(value * 10) / 10;
   return String(rounded === 0 ? 0 : rounded);

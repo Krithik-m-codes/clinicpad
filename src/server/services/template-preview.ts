@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { can } from "@/lib/domain/permissions";
 import { isUuid } from "@/lib/domain/ids";
 import { fail, ok, type Result } from "@/lib/result";
+import { renderAlignmentCheck } from "@/lib/rx-render/overlay-alignment";
 import { overlayDefinitionSchema } from "@/lib/rx-render/overlay-definition";
 import { renderPrescription } from "@/lib/rx-render/render";
 import { sampleDocument, type SampleKind } from "@/lib/rx-render/samples";
@@ -168,5 +169,25 @@ export async function listPreviewPrescriptions(ctx: ServiceContext): Promise<Res
       .orderBy(desc(prescriptions.createdAt))
       .limit(10);
     return ok(rows.map((r) => ({ id: r.id, label: `${r.name} · ${r.status === "draft" || r.rxNo === null ? "draft" : `Rx ${r.rxNo}`}` })));
+  });
+}
+
+/**
+ * The alignment page for a template's open draft (else its current version): template.read only, no patient data, so
+ * nothing is logged. Like previews, a stored version is never refused for geometry (the renderer clamps); a damaged one
+ * fails closed.
+ */
+export async function renderTemplateAlignment(ctx: ServiceContext, templateId: string): Promise<Result<string>> {
+  if (!can(ctx.role, "template.read") || !isUuid(templateId)) return NOT_FOUND();
+  return withTenant(ctx.tenantId, async (tx): Promise<Result<string>> => {
+    const version = await pickVersion(tx, ctx.tenantId, templateId, null);
+    if (!version) return NOT_FOUND();
+    const paperSize = pickOption(PAPER_SIZES, version.paperSize, "A4");
+    const parsed = overlayDefinitionSchema.safeParse(version.definition);
+    if (!parsed.success) return fail("invalid", "This pad version is damaged and cannot be shown.");
+    const markup = renderAlignmentCheck(parsed.data, paperSize, loadFontCss());
+    const check = checkSelfContained(markup);
+    if (!check.ok) throw new Error(`Alignment check is not self-contained: ${check.reason}`);
+    return ok(markup);
   });
 }

@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { browserFamily, overlayPrintsInBrowser, PRINT_PDF_HINT } from "@/lib/templates/print-support";
 
-type Props = { prescriptionId: string; fileName: string };
+type Props = { prescriptionId: string; fileName: string; /** The prescription prints on a custom overlay pad (Plan 2A). */ printsOnOverlay?: boolean };
 
 const PRINT_FAILED = "The prescription could not be prepared for printing. Reload the page and sign in again if asked.";
 const SIGNED_OUT = "Your session ended. Reload the page and sign in again.";
@@ -12,7 +13,7 @@ const PREPARE_TIMEOUT_MS = 20_000;
 /** Some browsers print asynchronously; the frame must outlive print() and goes on afterprint or after this long. */
 const PRINT_FRAME_LIFETIME_MS = 60_000;
 
-export function OutputActions({ prescriptionId, fileName }: Props) {
+export function OutputActions({ prescriptionId, fileName, printsOnOverlay = false }: Props) {
   const router = useRouter();
   const [busy, setBusy] = useState<"print" | "pdf" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +50,14 @@ export function OutputActions({ prescriptionId, fileName }: Props) {
   }, [dropFrame]);
 
   function print() {
+    // Overlay pads print from HTML only where the S1 check passed (override 16); elsewhere the paper PDF opens in a new
+    // tab (window.open runs synchronously in the click, so popup blockers allow it). The server logs it as a print.
+    if (printsOnOverlay && !overlayPrintsInBrowser(browserFamily(navigator.userAgent, "userAgentData" in navigator))) {
+      setError(null);
+      window.open(`/prescriptions/${prescriptionId}/pdf?purpose=print`, "_blank", "noopener");
+      router.refresh();
+      return;
+    }
     setError(null);
     setBusy("print");
     dropFrame();
@@ -168,6 +177,7 @@ export function OutputActions({ prescriptionId, fileName }: Props) {
           {busy === "pdf" ? "Generating PDF…" : "Download PDF"}
         </Button>
       </div>
+      {printsOnOverlay ? <p className="text-xs text-muted-foreground">{PRINT_PDF_HINT}</p> : null}
       {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}

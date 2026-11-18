@@ -108,6 +108,7 @@ export default async function PrescriptionPage({ params }: { params: Promise<{ i
         printedWithout={printedWithout}
         outputs={outputs?.ok ? outputs.value : null}
         timeZone={printable?.ok ? printable.value.document.snapshot.clinic.timezone : "Asia/Kolkata"}
+        printsOnOverlay={rx.status !== "draft" && rx.templateVersionId !== null}
       />
       {share?.ok ? <SharePanel data={share.value} canCaptureConsent={can(session.role, "consent.capture")} isOwner={session.role === "owner"} /> : null}
 

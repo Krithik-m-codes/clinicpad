@@ -268,3 +268,48 @@ describe("OutputActions download", () => {
     await waitFor(() => expect(screen.getByText(/appear to be offline/)).toBeInTheDocument());
   });
 });
+
+describe("OutputActions on an overlay pad", () => {
+  const FIREFOX = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0";
+  const CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const setAgent = (value: string) => Object.defineProperty(window.navigator, "userAgent", { value, configurable: true });
+
+  it("prints through the paper PDF in a new tab where the browser cannot print overlays", () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    // An unknown print engine is never trusted with overlays.
+    setAgent("Mozilla/5.0 (UnknownOS) UnknownBrowser/1.0");
+    render(<OutputActions prescriptionId={ID} fileName="Rx-1-v1.pdf" printsOnOverlay />);
+    fireEvent.click(screen.getByRole("button", { name: /print/i }));
+    expect(open).toHaveBeenCalledWith(`/prescriptions/${ID}/pdf?purpose=print`, "_blank", "noopener");
+    expect(document.querySelector("iframe")).toBeNull();
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("does the same in Firefox (the S1 default) and tells people to print the PDF at 100 percent", () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    setAgent(FIREFOX);
+    render(<OutputActions prescriptionId={ID} fileName="Rx-1-v1.pdf" printsOnOverlay />);
+    expect(screen.getByText(/Actual size/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /print/i }));
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the print frame on an overlay pad in Chromium", () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    setAgent(CHROME);
+    render(<OutputActions prescriptionId={ID} fileName="Rx-1-v1.pdf" printsOnOverlay />);
+    fireEvent.click(screen.getByRole("button", { name: /print/i }));
+    expect(open).not.toHaveBeenCalled();
+    expect(document.querySelector("iframe")).not.toBeNull();
+  });
+
+  it("keeps the print frame for built-in pads", () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    setAgent(FIREFOX);
+    render(<OutputActions prescriptionId={ID} fileName="Rx-1-v1.pdf" />);
+    fireEvent.click(screen.getByRole("button", { name: /print/i }));
+    expect(open).not.toHaveBeenCalled();
+    expect(document.querySelector("iframe")).not.toBeNull();
+    expect(screen.queryByText(/Actual size/)).toBeNull();
+  });
+});

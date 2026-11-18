@@ -21,6 +21,8 @@ export type RxOutputPanelProps = {
   printedWithout: PrintGap[];
   outputs: OutputSummary | null;
   timeZone: string;
+  /** The prescription prints on a custom overlay pad (Plan 2A). */
+  printsOnOverlay?: boolean;
 };
 
 const GAP_TEXT: Record<Exclude<ProfileGap, "noDoctorProfile">, string> = {
@@ -110,7 +112,7 @@ export function RxOutputPanel(p: RxOutputPanelProps) {
         </Button>
       ) : (
         <>
-          <OutputActions prescriptionId={p.prescriptionId} fileName={p.fileName} />
+          <OutputActions prescriptionId={p.prescriptionId} fileName={p.fileName} printsOnOverlay={p.printsOnOverlay} />
           <p className="text-xs text-muted-foreground">{lastPrinted(p.outputs, p.timeZone)}</p>
         </>
       )}

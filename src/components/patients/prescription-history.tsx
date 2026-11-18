@@ -70,7 +70,7 @@ export function PrescriptionHistory({ patientId, page, canRepeat }: Props) {
               </p>
               {r.status !== "draft" ? (
                 <div className="flex flex-wrap items-start gap-3">
-                  <OutputActions prescriptionId={r.id} fileName={pdfFileName(r)} />
+                  <OutputActions prescriptionId={r.id} fileName={pdfFileName(r)} printsOnOverlay={r.templateVersionId !== null} />
                   {canRepeat && r.status === "finalized" ? <RepeatForm action={repeatAction.bind(null, r.id)} /> : null}
                 </div>
               ) : null}
