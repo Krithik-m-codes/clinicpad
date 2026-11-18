@@ -142,7 +142,7 @@ describe("GET /prescriptions/[id]/pdf", () => {
 
     const events = await auditFor(finalizedId, "prescription.pdf_downloaded");
     expect(events).toHaveLength(1);
-    expect(events[0].after).toEqual({ outputId: outputs[0].id, version: 1, template: "general", paperSize: "A4", pageCount: 2 });
+    expect(events[0].after).toEqual({ outputId: outputs[0].id, version: 1, template: "general", paperSize: "A4", pageCount: 2, engine: "chromium" });
     expect(JSON.stringify(events[0])).not.toContain("Route");
     expect(JSON.stringify(events[0])).not.toContain("Rx-");
   });

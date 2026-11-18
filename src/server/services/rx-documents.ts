@@ -5,10 +5,11 @@ import { isUuid } from "@/lib/domain/ids";
 import { prescriptionItems, prescriptions, visits } from "@/server/db/schema";
 import { withTenant, type TenantTx } from "@/server/db/tenant";
 import { parseRenderSnapshot, type RenderSnapshot } from "@/lib/rx-render/snapshot";
-import type { ImageAsset, RxDocument, RxStatus } from "@/lib/rx-render/types";
+import type { ImageAsset, OverlayInput, RxDocument, RxStatus } from "@/lib/rx-render/types";
 import type { ServiceContext } from "./context";
 import { assetKey, loadImageAssets } from "./assets";
-import { buildRenderSnapshot } from "./render-snapshot";
+import { buildDraftSnapshot, buildRenderSnapshot } from "./render-snapshot";
+import { loadOverlayIn, TEMPLATE_DAMAGED_MESSAGE } from "./template-resolution";
 import { toItemView, toVisitView } from "./rx-mapping";
 
 export type RxDocumentBundle = {
@@ -16,6 +17,8 @@ export type RxDocumentBundle = {
   document: RxDocument;
   logo: ImageAsset | null;
   signature: ImageAsset | null;
+  /** The frozen custom pad, loaded and hash-verified; null for built-in pads and when assets were not requested. */
+  overlay: OverlayInput | null;
 };
 
 export type VersionRef = { id: string; version: number };
@@ -89,7 +92,7 @@ export async function loadRxDocumentIn(
     snapshot = parsed;
     snapshotSource = "finalize";
   } else {
-    snapshot = await buildRenderSnapshot(tx, {
+    const sources = {
       tenantId: tenantId,
       patientId: row.visit.patientId,
       // A pre-1C finalized row is signed by its finalizer. A draft is signed by nobody yet: its would-be signer is the
@@ -97,7 +100,16 @@ export async function loadRxDocumentIn(
       prescriberUserId: status === "draft" ? (viewer.canFinalize ? viewer.userId : null) : row.rx.finalizedBy,
       visitDoctorId: status === "draft" ? null : row.visit.doctorId,
       at: row.rx.finalizedAt ?? new Date(),
-    });
+    };
+    if (status === "draft") {
+      // A draft previews on the pad its would-be signer would get (Plan 2A); a damaged pad fails closed here too.
+      const built = await buildDraftSnapshot(tx, sources);
+      if (!built.ok) return built;
+      snapshot = built.value;
+    } else {
+      // Rows finalized before Plan 1C have no snapshot; they keep printing on the built-in pad.
+      snapshot = await buildRenderSnapshot(tx, sources);
+    }
     snapshotSource = "live";
     // A draft never embeds a signature image, whoever views it.
     if (status === "draft") snapshot = { ...snapshot, doctor: { ...snapshot.doctor, signatureAssetId: null } };
@@ -125,18 +137,28 @@ export async function loadRxDocumentIn(
     items: items.map(toItemView),
   };
 
-  if (opts.withAssets === false) return ok({ prescriptionId: id, document, logo: null, signature: null });
+  if (opts.withAssets === false) return ok({ prescriptionId: id, document, logo: null, signature: null, overlay: null });
   const { logoAssetId } = snapshot.clinic;
   const { signatureAssetId } = snapshot.doctor;
   const assets = await loadImageAssets(tx, tenantId, [
     { id: logoAssetId, kind: "logo" },
     { id: signatureAssetId, kind: "signature" },
   ]);
+  let overlay: OverlayInput | null = null;
+  if (snapshot.layout.template.kind === "overlay") {
+    // The column written at finalize must name the same version as the frozen snapshot (a draft has no column yet).
+    if (status !== "draft" && row.rx.templateVersionId !== snapshot.layout.template.templateVersionId) {
+      return fail("invalid", TEMPLATE_DAMAGED_MESSAGE);
+    }
+    overlay = await loadOverlayIn(tx, tenantId, snapshot.layout);
+    if (!overlay) return fail("invalid", TEMPLATE_DAMAGED_MESSAGE);
+  }
   return ok({
     prescriptionId: id,
     document,
     logo: logoAssetId ? (assets.get(assetKey("logo", logoAssetId)) ?? null) : null,
     signature: signatureAssetId ? (assets.get(assetKey("signature", signatureAssetId)) ?? null) : null,
+    overlay,
   });
 }
 

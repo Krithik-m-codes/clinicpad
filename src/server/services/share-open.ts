@@ -1,7 +1,6 @@
 import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { fail, ok, type Result } from "@/lib/result";
 import { pdfFileName } from "@/lib/rx-render/format";
-import { RENDERER_VERSION } from "@/lib/rx-render/render";
 import { patients, prescriptionOutputs, prescriptions, shareLinks, visits } from "@/server/db/schema";
 import { withShareToken } from "@/server/db/share-token";
 import { withTenant } from "@/server/db/tenant";
@@ -13,7 +12,7 @@ import { recordSystemAudit } from "./audit";
 import { currentSharingConsentIn } from "./consent";
 import { primaryClinic } from "./render-snapshot";
 import { loadRxDocumentIn } from "./rx-documents";
-import { htmlSha256, renderDocument } from "./rx-output";
+import { htmlSha256, outputTemplateColumns, overlayPdfTooLarge, renderDocument } from "./rx-output";
 import { linkGone, linkStatus, type ShareLinkSummary } from "./share-link-core";
 
 const UNAVAILABLE = "The prescription cannot be shown right now.";
@@ -82,7 +81,9 @@ async function render(
   if (!loaded.ok || loaded.value.document.status === "draft" || loaded.value.document.snapshotSource !== "finalize") return linkGone();
   const bundle = loaded.value;
 
-  const rendered = renderDocument(bundle);
+  if (overlayPdfTooLarge(bundle)) return fail("unavailable", UNAVAILABLE);
+  const columns = outputTemplateColumns(bundle);
+  const rendered = renderDocument(bundle, "pdf");
   const engine = deps.engine ?? getPdfEngine();
   const run = await (deps.limiter ?? publicPdfLimiter).run(() => engine.render(rendered, { signal: deps.signal }), { signal: deps.signal });
   if (run.busy || run.aborted === true) return fail("unavailable", UNAVAILABLE);
@@ -139,19 +140,25 @@ async function render(
         actorUserId: null,
         kind: "shared_pdf",
         shareLinkId: linkId,
-        templateKey: bundle.document.snapshot.layout.template.kind === "builtin" ? bundle.document.snapshot.layout.template.key : "overlay",
+        ...columns,
+        engine: "chromium",
         paperSize: rendered.paper.size,
         pageCount: outcome.pageCount,
         byteSize: outcome.pdf.byteLength,
         htmlSha256: htmlSha256(rendered.html),
-        rendererVersion: RENDERER_VERSION,
       })
       .returning({ id: prescriptionOutputs.id });
     await recordSystemAudit(tx, tenantId, {
       action: "prescription.share_opened",
       entityType: "prescription",
       entityId: bundle.prescriptionId,
-      after: { linkId, outputId: output.id, version: bundle.document.version, openCount: updated.openCount },
+      after: {
+        linkId,
+        outputId: output.id,
+        version: bundle.document.version,
+        openCount: updated.openCount,
+        ...(columns.templateVersionId ? { templateVersionId: columns.templateVersionId } : {}),
+      },
     });
     return "counted";
   });
