@@ -21,6 +21,7 @@ const SERVER_ONLY = [
   "src/app/api/catalogue",
   "src/app/api/clean-data",
   "src/app/s", // public share links (server only)
+  "src/app/pdf-frame", // PDF reader frame for Template Studio (server only)
   "src/app/page.tsx", // server redirect to /dashboard; replaced below
   "src/middleware.ts",
 ];
