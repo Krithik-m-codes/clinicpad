@@ -3,7 +3,7 @@ import { renderPrescription, footerTemplate } from "@/lib/rx-render/render";
 import { checkSelfContained } from "@/lib/rx-render/self-contained";
 import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES, type RenderAssets, type RxDocument, type RxItem } from "@/lib/rx-render/types";
 import { translations } from "@/lib/translations";
-import { DEVANAGARI, HOSTILE, TINY_PNG, documentFixture, item, manyItems, snapshot, visit } from "../fixtures/rx-documents";
+import { DEVANAGARI, HOSTILE, TINY_PNG, documentFixture, item, manyItems, snapshot, visit, withLayout } from "../fixtures/rx-documents";
 
 const NO_ASSETS: RenderAssets = { logo: null, signature: null, fontCss: "" };
 const parse = (markup: string) => new DOMParser().parseFromString(markup, "text/html");
@@ -47,9 +47,6 @@ function hostileDocument(overrides: Partial<RxDocument> = {}): RxDocument {
   });
 }
 
-function withLayout(doc: RxDocument, layout: Partial<RxDocument["snapshot"]["layout"]>): RxDocument {
-  return { ...doc, snapshot: { ...doc.snapshot, layout: { ...doc.snapshot.layout, ...layout } } };
-}
 
 describe("hostile text", () => {
   for (const key of BUILTIN_TEMPLATES) {

@@ -5,7 +5,7 @@ import { resolveGotenbergUrl } from "@/server/pdf";
 import type { RenderedDocument } from "@/lib/rx-render/types";
 import { countPdfPages, PDF_LIMITS } from "@/server/pdf/engine";
 import { renderPrescription } from "@/lib/rx-render/render";
-import { documentFixture } from "../fixtures/rx-documents";
+import { documentFixture, withLayout } from "../fixtures/rx-documents";
 import { fakePdfBytes } from "../helpers/fake-pdf-engine";
 
 const BASE = "http://gotenberg.test";
@@ -105,7 +105,7 @@ describe("createGotenbergEngine.render", () => {
 
   it("sends A5 paper size, all four margins and the print media type", async () => {
     const a5Doc = documentFixture();
-    const a5 = renderPrescription({ ...a5Doc, snapshot: { ...a5Doc.snapshot, layout: { ...a5Doc.snapshot.layout, paperSize: "A5" } } }, { logo: null, signature: null, fontCss: "" });
+    const a5 = renderPrescription(withLayout(a5Doc, { paperSize: "A5" }), { logo: null, signature: null, fontCss: "" });
     const { calls, impl } = recorder(async () => pdfResponse(1));
     await createGotenbergEngine({ baseUrl: BASE, fetch: impl }).render(a5);
     const form = calls[0].init?.body as FormData;

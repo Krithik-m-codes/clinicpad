@@ -33,7 +33,7 @@ describe("row-copy column rules", () => {
         expect(rules[column], column).toBe("reset");
       }
     }
-    expect(keysWith(AMEND_PRESCRIPTION_COLUMNS, "copy")).toEqual(["rxNo", "templateVersionId"]);
+    expect(keysWith(AMEND_PRESCRIPTION_COLUMNS, "copy")).toEqual(["rxNo"]);
     expect(keysWith(REPEAT_PRESCRIPTION_COLUMNS, "copy")).toEqual([]);
   });
 

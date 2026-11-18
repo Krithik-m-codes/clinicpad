@@ -105,7 +105,7 @@ export const AMEND_PRESCRIPTION_COLUMNS = {
   version: "reset",
   draftRevision: "reset",
   status: "reset",
-  templateVersionId: "copy",
+  templateVersionId: "reset", // an amendment resolves its own pad at its own finalize (Plan 2A, Q15)
   pdfUrl: "reset",
   parentPrescriptionId: "reset",
   amendmentReason: "reset",

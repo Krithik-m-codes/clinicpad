@@ -9,7 +9,7 @@ import { DOCUMENT_CSP, renderPrescription } from "@/lib/rx-render/render";
 import { PAPER } from "@/lib/rx-render/paper";
 import { BUILTIN_TEMPLATES, PAPER_SIZES } from "@/lib/rx-render/types";
 import { loadFontCss } from "@/server/rx-render/fonts";
-import { DEVANAGARI, documentFixture, manyItems, snapshot, visit } from "../fixtures/rx-documents";
+import { DEVANAGARI, documentFixture, manyItems, snapshot, visit, withLayout } from "../fixtures/rx-documents";
 
 const run = promisify(execFile);
 const GOTENBERG_FLAGS = [
@@ -74,7 +74,7 @@ describe.skipIf(!health.up)(`real Gotenberg at ${baseUrl} (skipped when it is no
     snapshot: snapshot({ patient: { name: DEVANAGARI.name } }),
     visit: visit({ advice: DEVANAGARI.advice }),
   });
-  const a5Doc = { ...a4Doc, snapshot: { ...a4Doc.snapshot, layout: { ...a4Doc.snapshot.layout, paperSize: "A5" as const } } };
+  const a5Doc = withLayout(a4Doc, { paperSize: "A5" });
 
   it("renders 30 medicines with Devanagari on more A5 pages than A4 pages", { timeout: 120_000 }, async () => {
     const a4 = await engine.render(renderPrescription(a4Doc, fonts));

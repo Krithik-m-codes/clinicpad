@@ -17,7 +17,8 @@ export function overlayInput(definition: OverlayDefinition = overlayDefinition()
   return { templateVersionId: OVERLAY_VERSION_ID, definition, background: TINY_PNG };
 }
 
-/** A finalized prescription for the overlay above (Task 13 points its layout at OVERLAY_VERSION_ID). */
+/** A finalized prescription that prints on OVERLAY_VERSION_ID (override anything, the layout included). */
 export function overlayDocument(overrides: Parameters<typeof documentFixture>[0] = {}): RxDocument {
-  return documentFixture(overrides);
+  const { layout, ...rest } = overrides;
+  return documentFixture({ ...rest, layout: { template: { kind: "overlay", templateVersionId: OVERLAY_VERSION_ID, contentSha256: OVERLAY_HASH }, ...layout } });
 }

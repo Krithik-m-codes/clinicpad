@@ -55,7 +55,8 @@ async function recordOutput(
   kind: OutputKind,
   pdf: { pageCount: number; byteSize: number } | null,
 ): Promise<void> {
-  const template = bundle.document.snapshot.layout.template.key;
+  const ref = bundle.document.snapshot.layout.template;
+  const template = ref.kind === "builtin" ? ref.key : "overlay";
   await withTenant(ctx.tenantId, async (tx) => {
     const [row] = await tx
       .insert(prescriptionOutputs)

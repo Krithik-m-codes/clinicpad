@@ -1,4 +1,4 @@
-import type { RenderSnapshot } from "@/lib/rx-render/snapshot";
+import { snapshotWithLayout, type RenderSnapshot } from "@/lib/rx-render/snapshot";
 import type { ImageAsset, PadLayout, RxDocument, RxItem, RxVisit } from "@/lib/rx-render/types";
 
 /** Text that must print literally: never markup, never a fetch. Non-printing characters are \u escapes. */
@@ -38,9 +38,10 @@ type SnapshotOverrides = {
   layout?: Partial<PadLayout>;
 };
 
+/** Built-in pads freeze as version 1 (same shape as ever); only an overlay pad freezes as version 2 (Plan 2A override 4). */
 export function snapshot(overrides: SnapshotOverrides = {}): RenderSnapshot {
-  return {
-    v: 1,
+  const layout: PadLayout = { template: { kind: "builtin", key: "general" }, paperSize: "A4", labels: "en", ...overrides.layout };
+  const base = {
     takenAt: "2026-11-12T05:30:00.000Z",
     patient: {
       name: "Asha Rao",
@@ -70,8 +71,8 @@ export function snapshot(overrides: SnapshotOverrides = {}): RenderSnapshot {
       signatureAssetId: null,
       ...overrides.doctor,
     },
-    layout: { template: { kind: "builtin", key: "general" }, paperSize: "A4", labels: "en", ...overrides.layout },
   };
+  return snapshotWithLayout(base, layout);
 }
 
 export function item(n: number, overrides: Partial<RxItem> = {}): RxItem {
@@ -157,4 +158,11 @@ export function documentFixture(overrides: Partial<RxDocument> & { layout?: Part
     ],
     ...rest,
   };
+}
+
+/** The same document on another layout (paper, labels or template), paired with the right snapshot version. */
+export function withLayout(doc: RxDocument, layout: Partial<PadLayout>): RxDocument {
+  const { layout: current, ...rest } = doc.snapshot;
+  const parts = { takenAt: rest.takenAt, patient: rest.patient, clinic: rest.clinic, doctor: rest.doctor };
+  return { ...doc, snapshot: snapshotWithLayout(parts, { ...current, ...layout }) };
 }

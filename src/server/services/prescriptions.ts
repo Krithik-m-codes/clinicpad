@@ -38,6 +38,8 @@ export type PrescriptionView = {
   amendmentReason: string | null;
   parentPrescriptionId: string | null;
   finalizedAt: Date | null;
+  /** The frozen custom pad version, null for built-in pads and drafts (Plan 2A). */
+  templateVersionId: string | null;
   /** Read live from the patient row (allergies are [] when none). The page shows the name frozen in the finalize snapshot for finalized versions (Plan 1C). */
   patient: { id: string; name: string; patientNo: number | null; allergies: string[] };
   visit: ClinicalVisitView;
@@ -176,6 +178,7 @@ async function readSnapshot(tx: TenantTx, id: string): Promise<Result<Prescripti
     amendmentReason: row.rx.amendmentReason,
     parentPrescriptionId: row.rx.parentPrescriptionId,
     finalizedAt: row.rx.finalizedAt,
+    templateVersionId: row.rx.templateVersionId,
     patient: { ...row.patient, allergies: row.patient.allergies ?? [] },
     visit: toVisitView(row.visit),
     items: items.map(toItemView),
@@ -346,6 +349,8 @@ export async function finalizePrescription(
       });
       if (!built.ok) return built;
       const renderSnapshot = built.value;
+      // Plan 2A (ADR-0045): the resolved custom pad version is frozen with the record, in the same UPDATE.
+      const templateVersionId = renderSnapshot.layout.template.kind === "overlay" ? renderSnapshot.layout.template.templateVersionId : null;
 
       // First versions (no parent) get the next number; amendments must already carry their parent's.
       // An amendment without a number means a corrupt chain: refuse rather than allocate a second number
@@ -362,7 +367,7 @@ export async function finalizePrescription(
 
       await tx
         .update(prescriptions)
-        .set({ status: "finalized", rxNo, finalizedAt: now, finalizedBy: ctx.userId, renderSnapshot })
+        .set({ status: "finalized", rxNo, finalizedAt: now, finalizedBy: ctx.userId, renderSnapshot, templateVersionId })
         .where(eq(prescriptions.id, id));
       // Only status and finalized_at may change on a visit whose prescription is already finalized.
       await tx.update(visits).set({ status: "finalized", finalizedAt: now }).where(eq(visits.id, rx.visitId));
@@ -380,8 +385,8 @@ export async function finalizePrescription(
         entityType: "prescription",
         entityId: id,
         after: rx.parentPrescriptionId
-          ? { rxNo, version: rx.version, parentPrescriptionId: rx.parentPrescriptionId, ...summary }
-          : { rxNo, version: rx.version, ...summary },
+          ? { rxNo, version: rx.version, parentPrescriptionId: rx.parentPrescriptionId, ...summary, ...(templateVersionId ? { templateVersionId } : {}) }
+          : { rxNo, version: rx.version, ...summary, ...(templateVersionId ? { templateVersionId } : {}) },
       });
       return ok({ rxNo, version: rx.version });
     });
@@ -429,8 +434,8 @@ export async function amendPrescription(
       const [rx] = await tx
         .insert(prescriptions)
         .values({
-          // rxNo and templateVersionId are the only copied columns (AMEND_PRESCRIPTION_COLUMNS); the new
-          // version never inherits the frozen render_snapshot.
+          // rxNo is the only copied column (AMEND_PRESCRIPTION_COLUMNS); the new version never inherits the
+          // frozen render_snapshot or template version (it resolves its own pad at its own finalize).
           ...copiedColumns(source, AMEND_PRESCRIPTION_COLUMNS),
           tenantId: ctx.tenantId,
           visitId: newVisit.id,

@@ -166,10 +166,12 @@ export const prescriptions = pgTable(
     check("prescriptions_status_check", sql`status in ('draft', 'finalized', 'amended')`),
     check("prescriptions_not_own_parent_check", sql`parent_prescription_id is distinct from id`),
     // Plan 2A: a set template_version_id is the version the frozen snapshot names (text comparison: never a cast error).
-    // A null column is allowed because tenant offboarding nulls it (ON DELETE SET NULL) before the row itself goes.
+    // A finalized row that names a version must have a snapshot that names the same one (no "snapshot is null" escape).
+    // A null column is a built-in pad (no version), or a row whose version went away with its tenant: offboarding
+    // deletes the versions first and ON DELETE SET NULL then clears the column.
     check(
       "prescriptions_template_version_snapshot_check",
-      sql`status = 'draft' or render_snapshot is null or template_version_id is null or (render_snapshot #>> '{layout,template,templateVersionId}') is not distinct from template_version_id::text`,
+      sql`status = 'draft' or template_version_id is null or (render_snapshot #>> '{layout,template,templateVersionId}') is not distinct from template_version_id::text`,
     ),
     uniqueIndex("prescriptions_one_open_amendment")
       .on(t.parentPrescriptionId)

@@ -69,7 +69,19 @@ async function draftFor(tenantId: string, w: World) {
 
 /** Freeze the records the way the services do: the prescription first, then its visit. */
 async function finalize(rxId: string, visitId: string) {
-  await adminDb.update(prescriptions).set({ status: "finalized", finalizedAt: new Date() }).where(eq(prescriptions.id, rxId));
+  // A prescription that names a template version is finalized with the snapshot that names it too (0027).
+  const [named] = await adminDb.select({ templateVersionId: prescriptions.templateVersionId }).from(prescriptions).where(eq(prescriptions.id, rxId));
+  const snapshot = named.templateVersionId
+    ? { v: 2, layout: { template: { kind: "overlay", templateVersionId: named.templateVersionId, contentSha256: "c".repeat(64) } } }
+    : null;
+  await adminDb
+    .update(prescriptions)
+    .set({
+      status: "finalized",
+      finalizedAt: new Date(),
+      renderSnapshot: snapshot,
+    })
+    .where(eq(prescriptions.id, rxId));
   await adminDb.update(visits).set({ status: "finalized", finalizedAt: new Date() }).where(eq(visits.id, visitId));
 }
 

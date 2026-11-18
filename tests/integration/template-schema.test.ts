@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
@@ -48,15 +48,24 @@ async function draftRx(tenantId: string): Promise<{ rxId: string; visitId: strin
 }
 
 /** Finalizes the way finalizePrescription does: template_version_id and the snapshot in the same UPDATE. */
-function finalizeWith(rxId: string, templateVersionId: string | null, snapshotVersionId: string | null) {
+function finalizeWith(rxId: string, templateVersionId: string | null, snapshotVersionId: string | null, snapshotOverride?: unknown) {
   nextRxNo += 1;
   const template = snapshotVersionId
     ? { kind: "overlay", templateVersionId: snapshotVersionId, contentSha256: "c".repeat(64) }
     : { kind: "builtin", key: "general" };
+  const renderSnapshot = snapshotOverride === undefined ? { v: snapshotVersionId ? 2 : 1, layout: { template } } : snapshotOverride;
   return adminDb
     .update(prescriptions)
-    .set({ status: "finalized", rxNo: nextRxNo, finalizedAt: new Date(), templateVersionId, renderSnapshot: { v: 2, layout: { template } } })
+    .set({ status: "finalized", rxNo: nextRxNo, finalizedAt: new Date(), templateVersionId, renderSnapshot })
     .where(eq(prescriptions.id, rxId));
+}
+
+/** The same finalize under the application role (what the services run as); the triggers must hold there too. */
+function finalizeAsApp(tenantId: string, rxId: string, templateVersionId: string | null, renderSnapshot: unknown) {
+  nextRxNo += 1;
+  return withTenant(tenantId, (tx) =>
+    tx.update(prescriptions).set({ status: "finalized", rxNo: nextRxNo, finalizedAt: new Date(), templateVersionId, renderSnapshot }).where(eq(prescriptions.id, rxId)),
+  );
 }
 
 beforeAll(async () => {
@@ -100,6 +109,12 @@ describe("template_files", () => {
     await insertBackgroundFile(A.tenantId, "dup");
     await expectCode(adminDb.insert(templateFiles).values(fileValues(A.tenantId, "dup")), "23505");
     await insertBackgroundFile(B.tenantId, "dup");
+  });
+
+  it("forces created_at to now() on insert, so a client cannot backdate a file past the one-day delete rule", async () => {
+    const [row] = await adminDb.insert(templateFiles).values(fileValues(A.tenantId, "backdated", { createdAt: new Date(Date.now() - 10 * 86_400_000) })).returning();
+    expect(Math.abs(row.createdAt.getTime() - Date.now())).toBeLessThan(60_000);
+    await expectCode(withTenant(A.tenantId, (tx) => tx.delete(templateFiles).where(eq(templateFiles.id, row.id))), "23000");
   });
 
   it("is immutable even on the admin connection (23000)", async () => {
@@ -200,6 +215,34 @@ describe("template_versions", () => {
     await expectCode(adminDb.update(templateVersions).set({ identity: "dynamic", boundDoctorId: null, boundConfirmed: false }).where(eq(templateVersions.id, ok.versionId)), "23000");
   });
 
+  it("confirms a binding only at publish, and a published version records who published it (23514)", async () => {
+    const doctorId = await doctorOf(A.tenantId);
+    const { templateId, fileId } = await insertTemplate(A.tenantId);
+    // A draft cannot already be "confirmed" (the confirmation is part of the publishing UPDATE).
+    await expectCode(
+      adminDb.insert(templateVersions).values({ tenantId: A.tenantId, templateId, fileId, definition: MINIMAL_OVERLAY_DEFINITION, paperSize: "A4", labels: "en", version: 21, identity: "bound", boundDoctorId: doctorId, boundConfirmed: true }),
+      "23514",
+    );
+    // Publishing without published_by is refused; with it, accepted.
+    const { versionId } = await insertTemplate(A.tenantId);
+    const publish = { state: "published", contentSha256: "c".repeat(64), publishedAt: new Date() };
+    await expectCode(adminDb.update(templateVersions).set(publish).where(eq(templateVersions.id, versionId)), "23514");
+    await adminDb.update(templateVersions).set({ ...publish, publishedBy: randomUUID() }).where(eq(templateVersions.id, versionId));
+  });
+
+  it("refuses deleting a published version under the application role too (23000)", async () => {
+    const { versionId } = await insertTemplate(A.tenantId, { publish: true });
+    await expectCode(withTenant(A.tenantId, (tx) => tx.delete(templateVersions).where(eq(templateVersions.id, versionId))), "23000");
+    expect(await adminDb.select().from(templateVersions).where(eq(templateVersions.id, versionId))).toHaveLength(1);
+  });
+
+  it("insertTemplate keeps the binding it was given on an unpublished draft", async () => {
+    const doctorId = await doctorOf(A.tenantId);
+    const { versionId } = await insertTemplate(A.tenantId, { identity: "bound", boundDoctorId: doctorId });
+    const [row] = await adminDb.select().from(templateVersions).where(eq(templateVersions.id, versionId));
+    expect(row).toMatchObject({ state: "draft", identity: "bound", boundDoctorId: doctorId, boundConfirmed: false });
+  });
+
   it("lets the app role edit and delete a draft", async () => {
     const { versionId } = await insertTemplate(A.tenantId);
     await withTenant(A.tenantId, (tx) => tx.update(templateVersions).set({ labels: "hi", draftRevision: 1 }).where(eq(templateVersions.id, versionId)));
@@ -269,6 +312,22 @@ describe("prescriptions and outputs name the template version", () => {
     await expectCode(finalizeWith(rxId, versionId, versionId), "23000");
   });
 
+  it("under the application role: refuses a snapshot that names a version without kind overlay, in either column state (23000)", async () => {
+    const one = await insertTemplate(A.tenantId, { publish: true });
+    const { rxId } = await draftRx(A.tenantId);
+    const naming = { v: 2, layout: { template: { templateVersionId: one.versionId, contentSha256: "c".repeat(64) } } };
+    await expectCode(finalizeAsApp(A.tenantId, rxId, one.versionId, naming), "23000");
+    await expectCode(finalizeAsApp(A.tenantId, rxId, null, naming), "23000");
+    await expectCode(finalizeAsApp(A.tenantId, rxId, null, { v: 2, layout: { template: { kind: "overlay", templateVersionId: one.versionId, contentSha256: "c".repeat(64) } } }), "23000");
+    await expectCode(finalizeAsApp(A.tenantId, rxId, one.versionId, { v: 2, layout: { template: { kind: "builtin", templateVersionId: one.versionId } } }), "23000");
+  });
+
+  it("refuses a template version without any snapshot (23514: the old 'snapshot is null' escape is gone)", async () => {
+    const one = await insertTemplate(A.tenantId, { publish: true });
+    const { rxId } = await draftRx(A.tenantId);
+    await expectCode(finalizeWith(rxId, one.versionId, null, null), "23514");
+  });
+
   it("keeps the column and the frozen snapshot in agreement (23514)", async () => {
     const one = await insertTemplate(A.tenantId, { publish: true });
     const two = await insertTemplate(A.tenantId, { publish: true });
@@ -284,17 +343,36 @@ describe("prescriptions and outputs name the template version", () => {
     const { rxId } = await draftRx(A.tenantId);
     await finalizeWith(rxId, one.versionId, one.versionId);
     const base = { tenantId: A.tenantId, prescriptionId: rxId, kind: "browser_print", paperSize: "A4", htmlSha256: "a".repeat(64), engine: "browser" };
-    await expectCode(adminDb.insert(prescriptionOutputs).values({ ...base, templateKey: "overlay" }), "23514");
+    // The trigger (BEFORE) answers first: an output names exactly its prescription's version, in both directions.
+    await expectCode(adminDb.insert(prescriptionOutputs).values({ ...base, templateKey: "overlay" }), "23000");
+    await expectCode(adminDb.insert(prescriptionOutputs).values({ ...base, templateKey: "general" }), "23000");
     await expectCode(adminDb.insert(prescriptionOutputs).values({ ...base, templateKey: "general", templateVersionId: one.versionId }), "23514");
     await expectCode(adminDb.insert(prescriptionOutputs).values({ ...base, templateKey: "overlay", templateVersionId: one.versionId, engine: "gpu" }), "23514");
     await expectCode(adminDb.insert(prescriptionOutputs).values({ ...base, templateKey: "overlay", templateVersionId: two.versionId }), "23000");
     await adminDb.insert(prescriptionOutputs).values({ ...base, templateKey: "overlay", templateVersionId: one.versionId });
+  });
+
+  it("under the application role: a built-in prescription takes only built-in outputs, an overlay one only its own version (23000)", async () => {
+    const one = await insertTemplate(A.tenantId, { publish: true });
+    const two = await insertTemplate(A.tenantId, { publish: true });
+    const overlayRx = (await draftRx(A.tenantId)).rxId;
+    const builtinRx = (await draftRx(A.tenantId)).rxId;
+    await finalizeWith(overlayRx, one.versionId, one.versionId);
+    await finalizeWith(builtinRx, null, null);
+    const base = { tenantId: A.tenantId, kind: "browser_print", paperSize: "A4", htmlSha256: "a".repeat(64), engine: "browser" };
+    const insert = (values: typeof prescriptionOutputs.$inferInsert) => withTenant(A.tenantId, (tx) => tx.insert(prescriptionOutputs).values(values));
+    await expectCode(insert({ ...base, prescriptionId: builtinRx, templateKey: "overlay", templateVersionId: one.versionId }), "23000");
+    await expectCode(insert({ ...base, prescriptionId: overlayRx, templateKey: "general" }), "23000");
+    await expectCode(insert({ ...base, prescriptionId: overlayRx, templateKey: "overlay", templateVersionId: two.versionId }), "23000");
+    await insert({ ...base, prescriptionId: builtinRx, templateKey: "general" });
+    await insert({ ...base, prescriptionId: overlayRx, templateKey: "overlay", templateVersionId: one.versionId });
   });
 });
 
 describe("offboarding", () => {
   it("still deletes a tenant with published versions, files, assignments and outputs", async () => {
     const C = await createTestTenant("tpl-schema-off");
+    try {
     const { templateId, versionId, fileId } = await insertTemplate(C.tenantId, { publish: true });
     await adminDb.update(clinics).set({ customTemplateId: templateId }).where(eq(clinics.tenantId, C.tenantId));
     await adminDb.update(doctors).set({ templateId }).where(eq(doctors.tenantId, C.tenantId));
@@ -315,6 +393,9 @@ describe("offboarding", () => {
       expect(await adminDb.select({ id: table.id }).from(table).where(eq(table.id, id))).toHaveLength(0);
     }
     expect(await adminDb.select({ id: tenants.id }).from(tenants).where(eq(tenants.id, C.tenantId))).toHaveLength(0);
+    } finally {
+      await C.cleanup().catch(() => undefined);
+    }
   });
 });
 

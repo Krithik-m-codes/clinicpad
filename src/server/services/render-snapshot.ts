@@ -4,9 +4,10 @@ import { clinics, doctors, patients } from "@/server/db/schema";
 import type { TenantTx } from "@/server/db/tenant";
 import { fail, ok, type Result } from "@/lib/result";
 import { DEFAULT_TIME_ZONE } from "@/lib/rx-render/format";
-import { parseRenderSnapshot, type RenderSnapshot } from "@/lib/rx-render/snapshot";
-import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES, pickOption } from "@/lib/rx-render/types";
+import { parseRenderSnapshot, snapshotWithLayout, type RenderSnapshot } from "@/lib/rx-render/snapshot";
+import type { PadLayout } from "@/lib/rx-render/types";
 import { clinicLocalDate } from "@/lib/domain/clinic-date";
+import { builtinLayout, resolveTemplateIn } from "./template-resolution";
 
 // Moved to src/lib/domain/clinic-date.ts (Plan 1D); re-exported for existing importers.
 export { clinicLocalDate };
@@ -98,11 +99,10 @@ async function gather(tx: TenantTx, sources: SnapshotSources) {
 
 type Gathered = Awaited<ReturnType<typeof gather>>;
 
-function compose(found: Gathered, at: Date): RenderSnapshot {
+function compose(found: Gathered, at: Date, layout: PadLayout): RenderSnapshot {
   const { patient, clinic, doctor } = found;
   const timezone = clinic?.timezone ?? DEFAULT_TIME_ZONE;
-  return {
-    v: 1,
+  const base = {
     takenAt: at.toISOString(),
     patient: {
       name: patient?.name ?? "",
@@ -130,12 +130,9 @@ function compose(found: Gathered, at: Date): RenderSnapshot {
       registrationCouncil: doctor?.registrationCouncil ?? null,
       signatureAssetId: doctor?.signatureAssetId ?? null,
     },
-    layout: {
-      template: { kind: "builtin", key: pickOption(BUILTIN_TEMPLATES, clinic?.rxTemplate, "general") },
-      paperSize: pickOption(PAPER_SIZES, clinic?.rxPaperSize, "A4"),
-      labels: pickOption(LABEL_LANGUAGES, clinic?.rxLabels, "en"),
-    },
   };
+  // Built-in pads freeze as version 1 (unchanged shape); only a custom overlay pad is version 2 (Plan 2A override 4).
+  return snapshotWithLayout(base, layout);
 }
 
 /**
@@ -144,12 +141,14 @@ function compose(found: Gathered, at: Date): RenderSnapshot {
  * `sources.tenantId` on top of row-level security. Call it only inside withTenant().
  */
 export async function buildRenderSnapshot(tx: TenantTx, sources: SnapshotSources): Promise<RenderSnapshot> {
-  return compose(await gather(tx, sources), sources.at);
+  const found = await gather(tx, sources);
+  return compose(found, sources.at, builtinLayout(found.clinic));
 }
 
 /**
- * The snapshot finalize freezes into the record (ADR-0032), or `invalid` when it cannot be a faithful one:
- * the patient or the clinic profile is missing, or a stored value is unprintable. Nothing here allocates or writes.
+ * The snapshot finalize freezes into the record (ADR-0032, ADR-0045), or `invalid` when it cannot be a faithful one:
+ * the patient or the clinic profile is missing, a stored value is unprintable, or the signer's pad template is damaged.
+ * The pad is resolved for the finalizing doctor (template-resolution.ts). Nothing here allocates or writes.
  */
 export async function buildFinalSnapshot(tx: TenantTx, sources: SnapshotSources): Promise<Result<RenderSnapshot>> {
   const found = await gather(tx, sources);
@@ -157,7 +156,9 @@ export async function buildFinalSnapshot(tx: TenantTx, sources: SnapshotSources)
   if (!found.clinic) {
     return fail("invalid", "Set up the clinic profile (name and address) before finalizing prescriptions.");
   }
-  const snapshot = parseRenderSnapshot(compose(found, sources.at));
+  const layout = await resolveTemplateIn(tx, sources.tenantId, found.clinic, found.doctor);
+  if (!layout.ok) return layout;
+  const snapshot = parseRenderSnapshot(compose(found, sources.at, layout.value));
   if (!snapshot) {
     return fail(
       "invalid",
@@ -165,4 +166,12 @@ export async function buildFinalSnapshot(tx: TenantTx, sources: SnapshotSources)
     );
   }
   return ok(snapshot);
+}
+
+/** A draft's preview snapshot with the pad its would-be signer would get (spec section 5.3). Call it only inside withTenant(). */
+export async function buildDraftSnapshot(tx: TenantTx, sources: SnapshotSources): Promise<Result<RenderSnapshot>> {
+  const found = await gather(tx, sources);
+  const layout = await resolveTemplateIn(tx, sources.tenantId, found.clinic, found.doctor);
+  if (!layout.ok) return layout;
+  return ok(compose(found, sources.at, layout.value));
 }

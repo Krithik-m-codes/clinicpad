@@ -144,6 +144,9 @@ export const templateVersions = pgTable(
     check("template_versions_bound_doctor_check", sql`(identity = 'bound') = (bound_doctor_id is not null)`),
     // Confirmation belongs to bound versions only, and a published bound version is always confirmed.
     check("template_versions_bound_confirmed_check", sql`(identity = 'bound' or not bound_confirmed) and (state = 'draft' or identity = 'dynamic' or bound_confirmed)`),
+    // The confirmation is part of the publishing UPDATE, never of a draft; and a published version records its publisher.
+    check("template_versions_confirmed_published_check", sql`not bound_confirmed or state = 'published'`),
+    check("template_versions_published_by_check", sql`state = 'draft' or published_by is not null`),
     check("template_versions_published_check", sql`(state = 'published') = (published_at is not null and content_sha256 is not null)`),
     check("template_versions_sha256_check", sql`content_sha256 is null or content_sha256 ~ '^[0-9a-f]{64}$'`),
     check("template_versions_definition_check", sql`jsonb_typeof(definition) = 'object' and octet_length(definition::text) <= 65536`),

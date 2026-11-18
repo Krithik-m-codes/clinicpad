@@ -139,7 +139,7 @@ async function render(
         actorUserId: null,
         kind: "shared_pdf",
         shareLinkId: linkId,
-        templateKey: bundle.document.snapshot.layout.template.key,
+        templateKey: bundle.document.snapshot.layout.template.kind === "builtin" ? bundle.document.snapshot.layout.template.key : "overlay",
         paperSize: rendered.paper.size,
         pageCount: outcome.pageCount,
         byteSize: outcome.pdf.byteLength,

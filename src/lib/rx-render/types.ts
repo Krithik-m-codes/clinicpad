@@ -11,13 +11,11 @@ export type PaperSize = (typeof PAPER_SIZES)[number];
 export const LABEL_LANGUAGES = ["en", "hi", "bilingual"] as const;
 export type LabelLanguage = (typeof LABEL_LANGUAGES)[number];
 
-/**
- * Which template draws the pad. Phase 2 (Template Studio) adds { kind: "docx"; templateVersionId }
- * and { kind: "overlay"; templateVersionId } with their own renderers; callers of
- * renderPrescription() do not change.
- */
-export type TemplateRef = { kind: "builtin"; key: BuiltinTemplateKey };
+/** Which template draws the pad: a built-in key, or a frozen custom version (Plan 2A). Phase 2B adds "docx". */
+export type TemplateRef = RenderSnapshot["layout"]["template"];
+export type OverlayTemplateRef = Extract<TemplateRef, { kind: "overlay" }>;
 
+/** Which pad, paper and labels. A looser shape than the snapshot's own layout: snapshotWithLayout() pairs it with the right version. */
 export type PadLayout = { template: TemplateRef; paperSize: PaperSize; labels: LabelLanguage };
 
 export type RxStatus = "draft" | "finalized" | "amended";
