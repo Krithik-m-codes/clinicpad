@@ -23,12 +23,23 @@ export function rotatedSize(width: number, height: number, quarterTurns: number)
 
 export function cropRect(width: number, height: number, crop: Crop): { x: number; y: number; width: number; height: number } {
   const c = clampCrop(crop);
-  return {
-    x: Math.round(width * c.left),
-    y: Math.round(height * c.top),
-    width: Math.max(1, Math.round(width * (1 - c.left - c.right))),
-    height: Math.max(1, Math.round(height * (1 - c.top - c.bottom))),
-  };
+  // Round the EDGES (where the cut falls), not the sizes, so the cut ends exactly where the slider put it.
+  const x = Math.round(width * c.left);
+  const y = Math.round(height * c.top);
+  const right = Math.round(width * (1 - c.right));
+  const bottom = Math.round(height * (1 - c.bottom));
+  return { x, y, width: Math.max(1, right - x), height: Math.max(1, bottom - y) };
+}
+
+/** Decoded photos are shrunk once to this long side (the server accepts at most this much), well under iOS's canvas area cap. */
+export const MAX_DECODED_LONG_SIDE = BACKGROUND_LIMITS.maxLongSide;
+
+/** The size to shrink a decoded image to, or null when it is already small enough (or degenerate). */
+export function downscaleTarget(width: number, height: number, maxLongSide: number = MAX_DECODED_LONG_SIDE): { width: number; height: number } | null {
+  const long = Math.max(width, height);
+  if (!(width > 0) || !(height > 0) || long <= maxLongSide) return null;
+  const scale = maxLongSide / long;
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
 }
 
 /** |height / width - sqrt 2| (the server's own measure); landscape and degenerate sizes count as far off (1). */

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PaperSize } from "@/lib/rx-render/types";
-import { drawFitted } from "@/lib/templates/canvas";
+import { drawFitted, loadPreviewBitmap } from "@/lib/templates/canvas";
 import { aspectError, aspectOk, ASPECT_TOLERANCE, A_SERIES_RATIO, cropRect, NO_CROP, rotatedSize, type Crop } from "@/lib/templates/image-geometry";
 import { Button } from "@/components/ui/button";
 import { StepHeading } from "./step-heading";
@@ -12,13 +12,27 @@ export type Fitted = { paper: PaperSize; crop: Crop; turns: number };
 const SIDES: (keyof Crop)[] = ["top", "bottom", "left", "right"];
 const PREVIEW_WIDTH = 320;
 
-type Props = { bitmap: ImageBitmap; proposedPaper: PaperSize; warning?: string; onFitted: (f: Fitted) => void; onBack: () => void; busy: boolean };
+export type PdfPages = { pageCount: number; page: number };
+type Props = {
+  bitmap: ImageBitmap;
+  proposedPaper: PaperSize;
+  warning?: string;
+  pdf?: PdfPages;
+  onPage: (page: number) => void;
+  onFitted: (f: Fitted) => void;
+  onBack: () => void;
+  busy: boolean;
+  busyLabel: string;
+};
 
-export function FitStep({ bitmap, proposedPaper, warning, onFitted, onBack, busy }: Props) {
+export function FitStep({ bitmap, proposedPaper, warning, pdf, onPage, onFitted, onBack, busy, busyLabel }: Props) {
   const [crop, setCrop] = useState<Crop>(NO_CROP);
   const [turns, setTurns] = useState(0);
   const [paper, setPaper] = useState<PaperSize>(proposedPaper);
   const preview = useRef<HTMLCanvasElement>(null);
+  // The preview is drawn from a small copy of the image; a full-size photo made the canvas work needlessly heavy.
+  const [small, setSmall] = useState<{ source: ImageBitmap; bitmap: ImageBitmap } | null>(null);
+  const [drawError, setDrawError] = useState(false);
   const rotated = rotatedSize(bitmap.width, bitmap.height, turns);
   const cut = cropRect(rotated.width, rotated.height, crop);
   const ok = aspectOk(cut.width, cut.height);
@@ -26,13 +40,34 @@ export function FitStep({ bitmap, proposedPaper, warning, onFitted, onBack, busy
   const allowedPercent = Math.round((ASPECT_TOLERANCE / A_SERIES_RATIO) * 100);
 
   useEffect(() => {
+    let alive = true;
+    let made: ImageBitmap | null = null;
+    void loadPreviewBitmap(bitmap).then((b) => {
+      if (!b) return;
+      if (!alive) return b.close();
+      made = b;
+      setSmall({ source: bitmap, bitmap: b });
+    });
+    return () => {
+      alive = false;
+      made?.close();
+    };
+  }, [bitmap]);
+
+  const from = small && small.source === bitmap ? small.bitmap : bitmap;
+  useEffect(() => {
     const target = preview.current;
     if (!target) return;
-    const drawn = drawFitted(bitmap, crop, turns, { width: PREVIEW_WIDTH, height: Math.max(1, Math.round((PREVIEW_WIDTH * cut.height) / cut.width)) });
-    target.width = drawn.width;
-    target.height = drawn.height;
-    target.getContext("2d")?.drawImage(drawn, 0, 0);
-  }, [bitmap, crop, turns, cut.width, cut.height]);
+    try {
+      const drawn = drawFitted(from, crop, turns, { width: PREVIEW_WIDTH, height: Math.max(1, Math.round((PREVIEW_WIDTH * cut.height) / cut.width)) });
+      target.width = drawn.width;
+      target.height = drawn.height;
+      target.getContext("2d")?.drawImage(drawn, 0, 0);
+      setDrawError(false);
+    } catch {
+      setDrawError(true); // e.g. a canvas the browser refuses to allocate; never an uncaught throw into the error boundary
+    }
+  }, [from, crop, turns, cut.width, cut.height]);
 
   const message = ok
     ? "The proportions fit an A4 or A5 pad."
@@ -44,6 +79,19 @@ export function FitStep({ bitmap, proposedPaper, warning, onFitted, onBack, busy
     <div className="space-y-4">
       <StepHeading>Fit the pad</StepHeading>
       {warning ? <p className="text-sm text-amber-700 dark:text-amber-400">{warning}</p> : null}
+      {drawError ? <p className="text-sm text-destructive">The preview could not be drawn in this browser. Try a smaller image, or go back and choose another file.</p> : null}
+      {pdf && pdf.pageCount > 1 ? (
+        <label className="block space-y-1 text-sm">
+          <span className="font-medium">The pad is on page</span>
+          <select value={pdf.page} onChange={(e) => onPage(Number(e.target.value))} disabled={busy} className="block rounded border p-1">
+            {Array.from({ length: pdf.pageCount }, (_, i) => (
+              <option key={i + 1} value={i + 1}>
+                {i + 1} of {pdf.pageCount}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       <canvas ref={preview} role="img" aria-label="Preview of the cropped pad" className="mx-auto block h-auto max-h-[60vh] w-auto max-w-full border shadow" />
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="outline" onClick={() => setTurns((t) => t - 1)}>
@@ -66,7 +114,7 @@ export function FitStep({ bitmap, proposedPaper, warning, onFitted, onBack, busy
               value={crop[side] * 100}
               onChange={(e) => setCrop((c) => ({ ...c, [side]: Number(e.target.value) / 100 }))}
               aria-label={`Crop ${side}`}
-              aria-valuetext={`${crop[side] * 100} percent`}
+              aria-valuetext={`${Math.round(crop[side] * 1000) / 10} percent`}
               className="min-w-0 flex-1"
             />
           </label>
@@ -87,7 +135,7 @@ export function FitStep({ bitmap, proposedPaper, warning, onFitted, onBack, busy
           Choose another file
         </Button>
         <Button type="button" disabled={!ok || busy} onClick={() => onFitted({ paper, crop, turns })}>
-          {busy ? "Uploading…" : "Continue"}
+          {busy ? busyLabel : "Continue"}
         </Button>
       </div>
     </div>

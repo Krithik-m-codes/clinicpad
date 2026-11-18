@@ -10,7 +10,7 @@ const NOT_FOUND = () => new Response("Not found", { status: 404, headers: { "Cac
  * frame has an opaque origin, so its module, wasm and font fetches are cross-origin CORS requests without credentials;
  * the wildcard CORS header is on these static files only, never on anything dynamic. Anything not listed is 404.
  */
-export async function GET(_request: Request, { params }: { params: Promise<{ asset: string[] }> }): Promise<Response> {
+export async function GET(request: Request, { params }: { params: Promise<{ asset: string[] }> }): Promise<Response> {
   const { asset } = await params;
   const name = asset.join("/");
   try {
@@ -29,13 +29,19 @@ export async function GET(_request: Request, { params }: { params: Promise<{ ass
     }
     const found = frameAsset(name);
     if (!found) return NOT_FOUND();
+    // No long cache: pdf.js, the frame script and the CSP change together on an upgrade, so the browser revalidates by ETag.
+    const common = {
+      "Access-Control-Allow-Origin": "*",
+      "Cross-Origin-Resource-Policy": "cross-origin",
+      "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "no-cache",
+      ETag: found.etag,
+    };
+    if (request.headers.get("if-none-match") === found.etag) return new Response(null, { status: 304, headers: common });
     return new Response(found.body as BodyInit, {
       headers: {
+        ...common,
         "Content-Type": found.contentType,
-        "Access-Control-Allow-Origin": "*",
-        "Cross-Origin-Resource-Policy": "cross-origin",
-        "X-Content-Type-Options": "nosniff",
-        "Cache-Control": "public, max-age=3600",
       },
     });
   } catch (error) {

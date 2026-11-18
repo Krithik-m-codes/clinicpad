@@ -1,6 +1,10 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GET } from "@/app/pdf-frame/[...asset]/route";
+import { BACKGROUND_LIMITS } from "@/lib/domain/image";
+import { PDF_INTAKE_LIMITS } from "@/lib/templates/pdf-intake";
+import { FRAME_MAX_IMAGE_PIXELS, FRAME_SCRIPT } from "@/server/templates/pdf-frame-script";
+import { frameAssetNames } from "@/server/templates/pdf-frame-assets";
 
 const get = (asset: string, host = "https://clinic.example") => GET(new Request(`${host}/pdf-frame/${asset}`, { headers: { cookie: "authjs.session-token=SECRET" } }), { params: Promise.resolve({ asset: asset.split("/") }) });
 
@@ -12,6 +16,8 @@ describe("/pdf-frame", () => {
     const response = await get("frame.html");
     expect(response.status).toBe(200);
     const csp = response.headers.get("content-security-policy") ?? "";
+    // The whole policy, pinned: any widening (a new source, a dropped directive) must be a deliberate edit of this line.
+    expect(csp).toBe("sandbox allow-scripts; default-src 'none'; script-src https://clinic.example/pdf-frame/ 'wasm-unsafe-eval'; worker-src 'none'; connect-src https://clinic.example/pdf-frame/; img-src blob: data:; style-src 'unsafe-inline'; font-src data: blob:; base-uri 'none'; form-action 'none'; frame-ancestors https://clinic.example");
     expect(csp).toMatch(/^sandbox allow-scripts;/);
     expect(csp).not.toContain("allow-same-origin");
     expect(csp).toContain("script-src https://clinic.example/pdf-frame/ 'wasm-unsafe-eval';");
@@ -55,7 +61,9 @@ describe("/pdf-frame", () => {
     }
     const frame = await (await get("frame.mjs")).text();
     expect(frame).toContain("isEvalSupported: false");
-    expect(frame).toContain("enableScripting: false");
+    expect(frame).not.toMatch(/enableScripting:\s*true/);
+    expect(frame).not.toContain("quickjs");
+    expect(frame).toContain(`maxImageSize: ${FRAME_MAX_IMAGE_PIXELS}`);
     expect(frame).toContain("task.destroy()");
     expect(frame).not.toContain("useWasm: false");
   });
@@ -72,6 +80,43 @@ describe("/pdf-frame", () => {
     expect((await get("iccs/CGATS001Compat-v2-micro.icc")).status).toBe(200);
     expect((await get("standard_fonts/FoxitSerif.pfb")).status).toBe(200);
     expect((await get("wasm/LICENSE_OPENJPEG")).headers.get("content-type")).toContain("text/plain");
+  });
+
+  it("serves exactly this set of paths (a new file in pdf.js or a new route entry must be a conscious change)", () => {
+    expect(frameAssetNames()).toEqual([
+      "frame.html",
+      "frame.mjs",
+      "iccs/CGATS001Compat-v2-micro.icc",
+      "iccs/LICENSE",
+      "pdf.mjs",
+      "pdf.worker.mjs",
+      ...["LICENSE_JBIG2", "LICENSE_OPENJPEG", "LICENSE_PDFJS_JBIG2", "LICENSE_PDFJS_OPENJPEG", "LICENSE_PDFJS_QCMS", "LICENSE_QCMS", "jbig2.wasm", "openjpeg.wasm", "qcms_bg.wasm"].map((n) => `wasm/${n}`),
+      ...frameAssetNames().filter((n) => n.startsWith("standard_fonts/")),
+    ].sort());
+    const fonts = frameAssetNames().filter((n) => n.startsWith("standard_fonts/"));
+    expect(fonts.length).toBeGreaterThan(10);
+    expect(fonts.every((n) => /^standard_fonts\/([A-Za-z0-9_-]+\.(pfb|ttf)|LICENSE_[A-Z]+)$/.test(n))).toBe(true);
+    expect(frameAssetNames().some((n) => /quickjs|nowasm|cmaps/.test(n))).toBe(false);
+  });
+
+  it("revalidates by ETag instead of caching for an hour (an upgrade changes pdf.js, the script and the CSP together)", async () => {
+    const first = await get("pdf.mjs");
+    const etag = first.headers.get("etag") ?? "";
+    expect(etag).toMatch(/^"[0-9a-f]{32}"$/);
+    expect(first.headers.get("cache-control")).toBe("no-cache");
+    const again = await GET(new Request("https://clinic.example/pdf-frame/pdf.mjs", { headers: { "if-none-match": etag } }), { params: Promise.resolve({ asset: ["pdf.mjs"] }) });
+    expect(again.status).toBe(304);
+    expect(again.headers.get("access-control-allow-origin")).toBe("*");
+    expect((await get("frame.mjs")).headers.get("etag")).not.toBe(etag);
+  });
+
+  it("the frame script's limits are the shared limits, not copies that can drift", () => {
+    const constant = (name: string) => Number(new RegExp(`const ${name} = ([0-9]+);`).exec(FRAME_SCRIPT)?.[1]);
+    expect(constant("MIN_SIDE")).toBe(BACKGROUND_LIMITS.minLongSide);
+    expect(constant("MAX_SIDE")).toBe(BACKGROUND_LIMITS.maxLongSide);
+    expect(constant("MAX_JPEG_BYTES")).toBe(BACKGROUND_LIMITS.maxBytes);
+    expect(constant("MAX_PAGES")).toBe(PDF_INTAKE_LIMITS.maxPages);
+    expect(FRAME_SCRIPT).toContain("Math.min(Math.max(Number(m.dpi) || 200, 72), 300)");
   });
 
   it("never reads or sets a cookie and is not cached as private data", async () => {

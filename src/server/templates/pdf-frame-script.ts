@@ -1,17 +1,25 @@
+import { BACKGROUND_LIMITS } from "@/lib/domain/image";
+import { PDF_INTAKE_LIMITS } from "@/lib/templates/pdf-intake";
+
+/** Pixels pdf.js may decode for one embedded image (about 100 MP; the default is unlimited). A decompression-bomb guard. */
+export const FRAME_MAX_IMAGE_PIXELS = 100_000_000;
+
 /**
  * The frame's own script (ADR-0046): one message in ({ type: "render", bytes, page, dpi }), one message out (a JPEG page
- * or an error). It runs only inside <iframe sandbox="allow-scripts"> (opaque origin). pdf.js runs with scripting, eval
- * and XFA off and a fake in-frame worker (a blob module worker fails in Chromium under this sandbox, S2). The wasm
+ * or an error). It runs only inside <iframe sandbox="allow-scripts"> (opaque origin). pdf.js runs with eval and XFA
+ * off and a fake in-frame worker (a blob module worker fails in Chromium under this sandbox, S2). PDF JavaScript never
+ * runs: the bare getDocument API has no scripting option in pdfjs-dist 6 (that is a viewer option) and the quickjs
+ * engine is never served (see the route test). The wasm
  * decoders (JBIG2, JPEG 2000, colour profiles) are required: without them scans render blank without an error, so
  * `useWasm: false` is forbidden. Spike S2 and its addendum: pdfjs-dist 6.5.438, where teardown lives on the loading task.
  *
  * Plain JavaScript in a string (the browser loads it as a module); keep it free of backticks and dollar-brace.
  */
 export const FRAME_SCRIPT = `import * as pdfjs from "./pdf.mjs";
-const MIN_SIDE = 1100;
-const MAX_SIDE = 3600;
-const MAX_PAGES = 50;
-const MAX_JPEG_BYTES = 1024 * 1024;
+const MIN_SIDE = ${BACKGROUND_LIMITS.minLongSide};
+const MAX_SIDE = ${BACKGROUND_LIMITS.maxLongSide};
+const MAX_PAGES = ${PDF_INTAKE_LIMITS.maxPages};
+const MAX_JPEG_BYTES = ${BACKGROUND_LIMITS.maxBytes};
 const QUALITIES = [0.85, 0.75, 0.65, 0.5];
 const base = new URL("./", import.meta.url).href;
 pdfjs.GlobalWorkerOptions.workerSrc = new URL("./pdf.worker.mjs", import.meta.url).href;
@@ -44,7 +52,7 @@ async function render(bytes, pageNumber, dpi) {
     data: new Uint8Array(bytes),
     isEvalSupported: false,
     enableXfa: false,
-    enableScripting: false,
+    maxImageSize: ${FRAME_MAX_IMAGE_PIXELS},
     disableRange: true,
     disableStream: true,
     disableAutoFetch: true,

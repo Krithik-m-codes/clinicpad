@@ -184,6 +184,10 @@ Updating signatures is a separate job with egress: `docker compose --profile upd
 
 Uploads are scanned twice, the original and the metadata-stripped bytes that are stored, so the stored bytes are always bytes the scanner saw. CSV imports are not scanned by decision (text parsed and validated, never stored as a file). Tests never need clamd: they use `tests/helpers/fake-scanner.ts`. `tests/integration/clamav-smoke.test.ts` runs against the real container when it is up (EICAR detection, `VERSION` format, and a drift check of the container options) and skips otherwise; `CLAMAV_REQUIRED=1` or `CI=true` turns the skip into a failure. CI starts the same image and options with `CLAMAV_NO_FRESHCLAMD=true`. `tests/e2e/pad-settings.spec.ts` uploads a real logo and signature, so run it with the scanner up (`docker compose up -d postgres gotenberg clamav`).
 
+### 4.4 PDF reader frame (pdf.js)
+
+Template Studio reads an uploaded PDF in the browser, inside a sandboxed frame served from `/pdf-frame/` (pdfjs-dist, pinned exactly; no server component ever opens a PDF). Needs no extra service. Two things to know: `pdfjs-dist` declares `engines.node >=22.13.0 || >=24` (so use Node 22.13 or newer; `npm install` warns on older), and it lists `@napi-rs/canvas` as an OPTIONAL dependency for Node-side rendering. ClinicPad does not use that path, so a platform with no prebuilt binary can skip it (`npm install --omit=optional` is safe for this feature). `NEXT_PUBLIC_APP_URL` must be the public origin (https in production): the frame's CSP is built from it and the route answers 503 without it. After a pdfjs-dist upgrade run `npm run test:pdf-frame` (opt-in; starts its own dev server on port 3457, drives Chromium, Firefox and WebKit through scan, CCITT, JBIG2, JPEG 2000 and Devanagari fixtures in `tests/fixtures/pdf-intake/`).
+
 ## 5. Run the app
 
 ```powershell

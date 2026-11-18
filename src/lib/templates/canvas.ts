@@ -1,10 +1,40 @@
 import { BACKGROUND_LIMITS } from "@/lib/domain/image";
 import type { PaperSize } from "@/lib/rx-render/types";
-import { cropRect, JPEG_QUALITIES, rotatedSize, targetPixels, TARGET_UPLOAD_BYTES, UPLOAD_SCALES, type Crop } from "./image-geometry";
+import { cropRect, downscaleTarget, JPEG_QUALITIES, rotatedSize, targetPixels, TARGET_UPLOAD_BYTES, UPLOAD_SCALES, type Crop } from "./image-geometry";
 
-/** Decodes an image, applying its EXIF orientation (phone photos). Browser only. */
-export function loadBitmap(blob: Blob): Promise<ImageBitmap> {
-  return createImageBitmap(blob, { imageOrientation: "from-image" });
+/** The long side of the small bitmap the fit preview is drawn from. */
+const PREVIEW_LONG_SIDE = 1000;
+
+/** A copy of `bitmap` shrunk to `size` (the source is left open); the caller closes the result. */
+async function shrunk(bitmap: ImageBitmap, size: { width: number; height: number }): Promise<ImageBitmap> {
+  return createImageBitmap(bitmap, { resizeWidth: size.width, resizeHeight: size.height, resizeQuality: "high", imageOrientation: "none" });
+}
+
+/**
+ * Decodes an image, applying its EXIF orientation (phone photos), and shrinks it once to at most 3,600 px on the long
+ * side: a 48 MP photo would otherwise exceed the canvas area limit of older iPhones (about 16.7 MP) in the preview and
+ * the upload. The caller closes the bitmap when it replaces or drops it. Browser only.
+ */
+export async function loadBitmap(blob: Blob): Promise<ImageBitmap> {
+  const full = await createImageBitmap(blob, { imageOrientation: "from-image" });
+  const target = downscaleTarget(full.width, full.height);
+  if (!target) return full;
+  try {
+    return await shrunk(full, target);
+  } finally {
+    full.close();
+  }
+}
+
+/** A small bitmap to draw the fit preview from (null when the image is already small or the browser cannot resize); the caller closes it. */
+export async function loadPreviewBitmap(bitmap: ImageBitmap): Promise<ImageBitmap | null> {
+  const target = downscaleTarget(bitmap.width, bitmap.height, PREVIEW_LONG_SIDE);
+  if (!target || typeof createImageBitmap !== "function") return null;
+  try {
+    return await shrunk(bitmap, target);
+  } catch {
+    return null;
+  }
 }
 
 /** Rotates by quarter turns, crops, and scales into a canvas of exactly `target` pixels on a white background. */

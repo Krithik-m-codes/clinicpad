@@ -26,9 +26,15 @@ describe("autoLayout", () => {
     for (const paper of ["A4", "A5"] as const) expect(overlayGeometryIssues(autoLayout(paper, page(() => true)), paper)).toEqual([]);
   });
 
-  it("ignores NaN and out-of-range strips instead of producing NaN geometry", () => {
-    const def = autoLayout("A4", page((i) => i < 20).map((v, i) => (i === 50 ? Number.NaN : v)));
+  it("ignores NaN and Infinity strips instead of producing NaN geometry (the last letterhead strip is unusable, so the strip moves up)", () => {
+    const withBad: number[] = page((i) => i < 15 || i >= 92);
+    withBad[14] = Number.NaN;
+    withBad[13] = Number.POSITIVE_INFINITY;
+    withBad[12] = Number.NaN;
+    const def = autoLayout("A4", withBad);
     expect(overlayGeometryIssues(def, "A4")).toEqual([]);
     expect(def.boxes.every((b) => Number.isFinite(b.yMm))).toBe(true);
+    expect(def.boxes[0].yMm).toBe(38.6); // last usable inked strip is 11: (11 + 1) * 2.97 + 3
+    expect(Number.isFinite(def.flow.topMm) && Number.isFinite(def.flow.bottomMm)).toBe(true);
   });
 });

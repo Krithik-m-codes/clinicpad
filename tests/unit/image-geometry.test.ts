@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aspectError, aspectOk, clampCrop, cropRect, paperFromPdfPoints, rotatedSize, targetPixels, UPLOAD_SCALES } from "@/lib/templates/image-geometry";
+import { aspectError, aspectOk, clampCrop, cropRect, downscaleTarget, MAX_DECODED_LONG_SIDE, paperFromPdfPoints, rotatedSize, targetPixels, UPLOAD_SCALES } from "@/lib/templates/image-geometry";
 import { BACKGROUND_LIMITS } from "@/lib/domain/image";
 
 describe("image geometry", () => {
@@ -47,5 +47,23 @@ describe("image geometry", () => {
     expect(paperFromPdfPoints(841.89, 595.28)).toBe("A4");
     expect(paperFromPdfPoints(419.53, 595.28)).toBe("A5");
     expect(paperFromPdfPoints(612, 792)).toBeNull();
+  });
+
+  it("rounds the crop edges, not the sizes: the cut ends exactly where the slider says", () => {
+    expect(cropRect(10, 10, { top: 0.14, right: 0.14, bottom: 0.14, left: 0.14 })).toEqual({ x: 1, y: 1, width: 8, height: 8 });
+    for (const [w, l, r] of [[1001, 0.0123, 0.0777], [2339, 0.3, 0.45], [37, 0.11, 0.29]] as const) {
+      const c = cropRect(w, w, { top: l, right: r, bottom: r, left: l });
+      expect(c.x).toBe(Math.round(w * l));
+      expect(c.x + c.width).toBe(Math.round(w * (1 - r)));
+    }
+  });
+
+  it("downscales only photos longer than the decode limit, keeping the proportions", () => {
+    expect(MAX_DECODED_LONG_SIDE).toBe(BACKGROUND_LIMITS.maxLongSide);
+    expect(downscaleTarget(3000, 2000)).toBeNull();
+    expect(downscaleTarget(3600, 2000)).toBeNull();
+    expect(downscaleTarget(7200, 3600)).toEqual({ width: 3600, height: 1800 });
+    expect(downscaleTarget(3024, 4032 * 2)).toEqual({ width: 1350, height: 3600 });
+    expect(downscaleTarget(0, 0)).toBeNull();
   });
 });

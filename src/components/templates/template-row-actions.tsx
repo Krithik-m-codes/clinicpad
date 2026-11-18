@@ -10,8 +10,12 @@ export function TemplateRowActions({ templateId, archived, inUse }: { templateId
   const blocked = !archived && inUse;
   const run = () =>
     start(async () => {
-      const result = archived ? await unarchiveTemplateAction(templateId) : await archiveTemplateAction(templateId);
-      setError(result.error ?? null);
+      try {
+        const result = archived ? await unarchiveTemplateAction(templateId) : await archiveTemplateAction(templateId);
+        setError(result.error ?? null);
+      } catch {
+        setError("This could not be done. Check the connection and try again.");
+      }
     });
   return (
     <div className="flex flex-col items-end gap-1">

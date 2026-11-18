@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push, refresh: vi.fn() }) }));
@@ -12,9 +12,19 @@ const rasterizePdfPage = vi.fn();
 vi.mock("@/lib/templates/pdf-frame-client", () => ({ rasterizePdfPage: (...args: unknown[]) => rasterizePdfPage(...args) }));
 
 const buildUploadImage = vi.fn();
+const bitmaps: { width: number; height: number; close: ReturnType<typeof vi.fn> }[] = [];
+const newBitmap = async () => {
+  const bitmap = { width: 1654, height: 2339, close: vi.fn() };
+  bitmaps.push(bitmap);
+  return bitmap;
+};
+const fitted = (_b: unknown, _c: unknown, _t: unknown, target: { width: number; height: number }) => ({ width: target.width, height: target.height });
+const loadBitmap = vi.fn(newBitmap);
+const drawFitted = vi.fn(fitted);
 vi.mock("@/lib/templates/canvas", () => ({
-  loadBitmap: vi.fn(async () => ({ width: 1654, height: 2339 })),
-  drawFitted: vi.fn((_b: unknown, _c: unknown, _t: unknown, target: { width: number; height: number }) => ({ width: target.width, height: target.height })),
+  loadBitmap: (...args: unknown[]) => (loadBitmap as (...a: unknown[]) => unknown)(...args),
+  loadPreviewBitmap: vi.fn(async () => null),
+  drawFitted: (...args: unknown[]) => (drawFitted as (...a: unknown[]) => unknown)(...args),
   buildUploadImage: (...args: unknown[]) => buildUploadImage(...args),
 }));
 
@@ -35,6 +45,9 @@ const ok = (over: Record<string, unknown> = {}) => ({ ok: true, image: new Blob(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  bitmaps.length = 0;
+  loadBitmap.mockImplementation(newBitmap);
+  drawFitted.mockImplementation(fitted);
   HTMLCanvasElement.prototype.getContext = (() => null) as unknown as HTMLCanvasElement["getContext"];
 });
 
@@ -148,5 +161,123 @@ describe("NewTemplateWizard", () => {
     expect(await screen.findByText(/limit of 20 pad templates/)).toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Place the boxes" })).toBeEnabled();
+  });
+
+  describe("page selector, stale reads, busy states and bitmaps", () => {
+    const pickPdf = async (over: Record<string, unknown> = {}) => {
+      rasterizePdfPage.mockResolvedValue(ok({ pageCount: 3, ...over }));
+      fireEvent.click(screen.getByRole("radio", { name: /^PDF/ }));
+      fireEvent.change(screen.getByLabelText("Choose the PDF"), { target: { files: [pdfFile()] } });
+      await screen.findByRole("heading", { name: "Fit the pad" });
+    };
+
+    it("lets the doctor pick another page of a multi-page PDF in the fit step, rasterizing that page from the same bytes", async () => {
+      render(<NewTemplateWizard pdfEnabled />);
+      await pickPdf();
+      const select = screen.getByLabelText("The pad is on page");
+      expect(select).toHaveValue("1");
+      expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual(["1 of 3", "2 of 3", "3 of 3"]);
+      fireEvent.change(select, { target: { value: "3" } });
+      await waitFor(() => expect(rasterizePdfPage).toHaveBeenCalledTimes(2));
+      expect(rasterizePdfPage).toHaveBeenLastCalledWith(expect.any(ArrayBuffer), { page: 3, dpi: 200 });
+      expect(rasterizePdfPage.mock.calls[1][0]).toBe(rasterizePdfPage.mock.calls[0][0]);
+      await waitFor(() => expect(screen.getByLabelText("The pad is on page")).toHaveValue("3"));
+      expect(bitmaps[0].close).toHaveBeenCalledTimes(1); // the replaced page's bitmap is released
+      expect(bitmaps[1].close).not.toHaveBeenCalled();
+    });
+
+    it("shows no page selector for a one-page PDF", async () => {
+      render(<NewTemplateWizard pdfEnabled />);
+      await pickPdf({ pageCount: 1 });
+      expect(screen.queryByLabelText("The pad is on page")).not.toBeInTheDocument();
+    });
+
+    it("keeps the current page and says why when another page cannot be read", async () => {
+      render(<NewTemplateWizard pdfEnabled />);
+      await pickPdf();
+      rasterizePdfPage.mockResolvedValue({ ok: false, code: "timeout" });
+      fireEvent.change(screen.getByLabelText("The pad is on page"), { target: { value: "2" } });
+      expect(await screen.findByText(/took too long/)).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Fit the pad" })).toBeInTheDocument();
+      expect(bitmaps[0].close).not.toHaveBeenCalled();
+    });
+
+    it("locks the source choice while a file is read, and releases the bitmap when the doctor goes back", async () => {
+      let finish: (value: unknown) => void = () => undefined;
+      rasterizePdfPage.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      render(<NewTemplateWizard pdfEnabled />);
+      fireEvent.click(screen.getByRole("radio", { name: /^PDF/ }));
+      fireEvent.change(screen.getByLabelText("Choose the PDF"), { target: { files: [pdfFile()] } });
+      expect(screen.getByRole("radio", { name: /Photo or scan/ })).toBeDisabled();
+      expect(screen.getByLabelText("Choose the PDF")).toBeDisabled();
+      finish(ok());
+      expect(await screen.findByRole("heading", { name: "Fit the pad" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: /Photo or scan/ })).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "Choose another file" }));
+      expect(screen.queryByRole("heading", { name: "Fit the pad" })).not.toBeInTheDocument();
+      expect(bitmaps[0].close).toHaveBeenCalledTimes(1);
+    });
+
+    it("releases a decoded bitmap that arrives after a newer read took over, and shows only the newer one", async () => {
+      let release: (value: unknown) => void = () => undefined;
+      loadBitmap.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)) as never);
+      rasterizePdfPage.mockResolvedValue(ok());
+      render(<NewTemplateWizard pdfEnabled />);
+      fireEvent.click(screen.getByRole("radio", { name: /^PDF/ }));
+      fireEvent.change(screen.getByLabelText("Choose the PDF"), { target: { files: [pdfFile()] } });
+      await waitFor(() => expect(loadBitmap).toHaveBeenCalledTimes(1));
+      // the guard is the generation token (the real input is disabled while busy, but a second read must still never win late)
+      fireEvent.change(screen.getByLabelText("Choose the PDF"), { target: { files: [pdfFile()] } });
+      expect(await screen.findByRole("heading", { name: "Fit the pad" })).toBeInTheDocument();
+      const late = { width: 1654, height: 2339, close: vi.fn() };
+      release(late);
+      await waitFor(() => expect(late.close).toHaveBeenCalledTimes(1));
+      expect(bitmaps[0].close).not.toHaveBeenCalled(); // the newer bitmap stays on screen
+    });
+
+    it("locks the source choice and the Continue button while the pad image uploads", async () => {
+      let done: (value: unknown) => void = () => undefined;
+      buildUploadImage.mockResolvedValue({ blob: new Blob([new Uint8Array([255, 216, 255])]), darkness: [] });
+      uploadBackground.mockReturnValue(new Promise((resolve) => (done = resolve)));
+      render(<NewTemplateWizard pdfEnabled />);
+      await pickPdf({ pageCount: 1 });
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      expect(await screen.findByRole("button", { name: "Uploading…" })).toBeDisabled();
+      expect(screen.getByRole("radio", { name: /Photo or scan/ })).toBeDisabled();
+      done({ ok: true, fileId: FILE_ID });
+      expect(await screen.findByLabelText("Name of this pad")).toBeInTheDocument();
+    });
+
+    it("stays busy after a successful creation, so a second click cannot create the pad twice", async () => {
+      buildUploadImage.mockResolvedValue({ blob: new Blob([new Uint8Array([255, 216, 255])]), darkness: [] });
+      uploadBackground.mockResolvedValue({ ok: true, fileId: FILE_ID });
+      createTemplateAction.mockResolvedValue({ ok: true, templateId: "t-9" });
+      render(<NewTemplateWizard pdfEnabled />);
+      await pickPdf({ pageCount: 1 });
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      const place = await screen.findByRole("button", { name: "Place the boxes" });
+      fireEvent.click(place);
+      await waitFor(() => expect(push).toHaveBeenCalledWith("/templates/t-9"));
+      await waitFor(() => expect(screen.getByRole("button", { name: /Place the boxes|Creating/ })).toBeDisabled());
+      expect(createTemplateAction).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows a friendly message, not an uncaught error, when the preview cannot be drawn", async () => {
+      drawFitted.mockImplementation(() => {
+        throw new Error("canvas area exceeds the maximum limit");
+      });
+      render(<NewTemplateWizard pdfEnabled />);
+      await pickPdf({ pageCount: 1 });
+      expect(await screen.findByText(/preview could not be drawn in this browser/)).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Fit the pad" })).toBeInTheDocument();
+    });
+
+    it("says so when a photo cannot be decoded", async () => {
+      loadBitmap.mockRejectedValueOnce(new Error("decode"));
+      render(<NewTemplateWizard pdfEnabled />);
+      fireEvent.click(screen.getByRole("radio", { name: /Photo or scan/ }));
+      fireEvent.change(screen.getByLabelText("Choose the photo or scan"), { target: { files: [new File([new Uint8Array(4)], "p.jpg", { type: "image/jpeg" })] } });
+      expect(await screen.findByText(/could not be opened as an image/)).toBeInTheDocument();
+    });
   });
 });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { resolveAppUrl } from "@/server/sharing/config";
@@ -19,10 +20,12 @@ export function frameCsp(env: { NODE_ENV?: string; NEXT_PUBLIC_APP_URL?: string 
   const origin = resolveAppUrl(env);
   if (!origin) return null;
   const own = `${origin}/pdf-frame/`;
-  return { csp: `sandbox allow-scripts; default-src 'none'; script-src ${own} 'wasm-unsafe-eval'; worker-src blob:; connect-src ${own}; img-src blob: data:; style-src 'unsafe-inline'; font-src data: blob:; base-uri 'none'; form-action 'none'; frame-ancestors ${origin}` };
+  return { csp: `sandbox allow-scripts; default-src 'none'; script-src ${own} 'wasm-unsafe-eval'; worker-src 'none'; connect-src ${own}; img-src blob: data:; style-src 'unsafe-inline'; font-src data: blob:; base-uri 'none'; form-action 'none'; frame-ancestors ${origin}` };
 }
 
-export type FrameAsset = { body: string | Uint8Array; contentType: string };
+export type FrameAsset = { body: string | Uint8Array; contentType: string; etag: string };
+
+const etagOf = (body: string | Uint8Array) => `"${createHash("sha256").update(body).digest("hex").slice(0, 32)}"`;
 
 const PDFJS = path.join(process.cwd(), "node_modules", "pdfjs-dist");
 const JS = "text/javascript; charset=utf-8";
@@ -54,17 +57,23 @@ function assetTable(): Map<string, Entry> {
   return t;
 }
 
-const cache = new Map<string, Uint8Array>();
+const cache = new Map<string, { bytes: Uint8Array; etag: string }>();
+
+/** Every path served (frame.html is the route's own document). The route test pins this set. */
+export function frameAssetNames(): string[] {
+  return ["frame.html", "frame.mjs", ...assetTable().keys()].sort();
+}
 
 /** A static frame asset by its path under /pdf-frame/, or null (anything not listed is 404). Files are read once from node_modules (next.config.ts traces them). */
 export function frameAsset(name: string): FrameAsset | null {
-  if (name === "frame.mjs") return { body: FRAME_SCRIPT, contentType: JS };
+  if (name === "frame.mjs") return { body: FRAME_SCRIPT, contentType: JS, etag: etagOf(FRAME_SCRIPT) };
   const entry = assetTable().get(name);
   if (!entry) return null;
-  let bytes = cache.get(name);
-  if (!bytes) {
-    bytes = new Uint8Array(readFileSync(entry.file));
-    cache.set(name, bytes);
+  let hit = cache.get(name);
+  if (!hit) {
+    const bytes = new Uint8Array(readFileSync(entry.file));
+    hit = { bytes, etag: etagOf(bytes) };
+    cache.set(name, hit);
   }
-  return { body: bytes, contentType: entry.contentType };
+  return { body: hit.bytes, contentType: entry.contentType, etag: hit.etag };
 }
