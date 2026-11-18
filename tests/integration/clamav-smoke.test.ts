@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { createClamdScanner } from "@/server/scanning/clamd";
@@ -37,9 +38,11 @@ describe.runIf(health.up)("clamd", () => {
 
   it("runs with the isolation this repo configures (config drift)", async ({ skip }) => {
     let inspected: string | null = null;
+    let containerName = "";
     for (const name of ["clinicpad-clamav", "clamav"]) {
       try {
         inspected = (await run("docker", ["inspect", name, "--format", "{{json .HostConfig}}"])).stdout;
+        containerName = name;
         break;
       } catch {
         inspected = null;
@@ -50,6 +53,15 @@ describe.runIf(health.up)("clamd", () => {
       skip();
       return;
     }
+    // The running container must be the pinned image (by digest, not just by tag) and must not run freshclamd.
+    const compose = readFileSync("docker-compose.yml", "utf8");
+    const pinned = compose.match(/clamav\/clamav:[\d.]+@(sha256:[0-9a-f]{64})/)?.[1];
+    expect(pinned).toBeTruthy();
+    const imageId = (await run("docker", ["inspect", containerName, "--format", "{{.Image}}"])).stdout.trim();
+    const repoDigests = (await run("docker", ["image", "inspect", imageId, "--format", "{{json .RepoDigests}}"])).stdout;
+    expect(repoDigests, "running container image digest").toContain(pinned as string);
+    const env = JSON.parse((await run("docker", ["inspect", containerName, "--format", "{{json .Config.Env}}"])).stdout) as string[];
+    expect(env).toContain("CLAMAV_NO_FRESHCLAMD=true");
     const config = JSON.parse(inspected) as {
       CapDrop: string[] | null;
       CapAdd: string[] | null;

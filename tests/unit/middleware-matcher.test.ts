@@ -7,10 +7,14 @@ vi.mock("@/auth.config", () => ({ authConfig: {} }));
 import { createRequire } from "node:module";
 import { config } from "@/middleware";
 
-const { pathToRegexp } = createRequire(import.meta.url)("next/dist/compiled/path-to-regexp") as { pathToRegexp: (path: string) => RegExp };
+type Matcher = { regexp: string; originalSource: string };
+const { getMiddlewareMatchers } = createRequire(import.meta.url)("next/dist/build/analysis/get-page-static-info") as {
+  getMiddlewareMatchers: (matcher: unknown, nextConfig: Record<string, unknown>) => Matcher[];
+};
 
-// Next anchors each matcher entry like this (path-to-regexp, whole path).
-const matches = (path: string) => config.matcher.some((entry) => pathToRegexp(entry).test(path));
+// Next's own compilation of the matcher (the regexps it runs against each request path), not a re-implementation.
+const compiled = getMiddlewareMatchers(config.matcher, {}).map((m) => new RegExp(m.regexp));
+const matches = (path: string) => compiled.some((re) => re.test(path));
 
 describe("middleware matcher", () => {
   it("guards the app pages and the template pages", () => {

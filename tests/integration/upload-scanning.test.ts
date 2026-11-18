@@ -20,6 +20,8 @@ afterAll(async () => {
 });
 beforeEach(() => resetFakeScanner(scanner));
 
+const rejectedEvents = async () =>
+  (await adminDb.select().from(auditEvents).where(and(eq(auditEvents.tenantId, A.tenantId), eq(auditEvents.action, "upload.rejected")))).length;
 const assetsOf = () => adminDb.select({ id: clinicAssets.id }).from(clinicAssets).where(eq(clinicAssets.tenantId, A.tenantId));
 
 describe("logo and signature uploads are scanned before anything is stored", () => {
@@ -45,15 +47,24 @@ describe("logo and signature uploads are scanned before anything is stored", () 
   it("refuses when the scanner is unavailable, stores nothing, and does not audit", async () => {
     scanner.next = { status: "unavailable", reason: "timeout" };
     const before = (await assetsOf()).length;
+    const eventsBefore = await rejectedEvents();
     const result = await setClinicLogo(A.as("owner"), { bytes: makePng(121, 60, [4, 5, 6]) }, { scanner });
     expect(result).toMatchObject({ ok: false, code: "unavailable", message: SCAN_MESSAGES.unavailable, field: "image" });
     expect((await assetsOf()).length).toBe(before);
+    expect(await rejectedEvents()).toBe(eventsBefore);
   });
 
   it("does not scan a file that is not an image at all", async () => {
     const result = await setClinicLogo(A.as("owner"), { bytes: new TextEncoder().encode("<svg onload=alert(1)>") }, { scanner });
     expect(result).toMatchObject({ ok: false, code: "invalid", field: "image" });
     expect(scanner.calls).toBe(0);
+  });
+
+  it("records the scanner that cleared a logo in its audit event", async () => {
+    const result = await setClinicLogo(A.as("owner"), { bytes: makePng(123, 60, [3, 3, 3]) }, { scanner });
+    expect(result.ok).toBe(true);
+    const events = await adminDb.select().from(auditEvents).where(and(eq(auditEvents.tenantId, A.tenantId), eq(auditEvents.action, "clinic.logo_set")));
+    expect(events.at(-1)?.after).toMatchObject({ scanEngine: "fake-scanner 1.0" });
   });
 
   it("removing a logo needs no scan", async () => {

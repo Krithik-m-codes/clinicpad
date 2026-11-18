@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { fail, invalidFrom, ok, type Result } from "@/lib/result";
 import { can } from "@/lib/domain/permissions";
-import { inspectImage } from "@/lib/domain/image";
+import { inspectImage, stripImageMetadata } from "@/lib/domain/image";
 import type { MalwareScanner } from "@/server/scanning/scanner";
 import { scanOrRefuse } from "@/server/scanning/uploads";
 import { clinics, doctors } from "@/server/db/schema";
@@ -151,12 +151,30 @@ export async function internalAttachDoctorSignature(tx: TenantTx, tenantId: stri
   return ok(null);
 }
 
-/** Bytes that are not an image are refused without a scan; an image is scanned before any transaction opens. */
-async function scanImage(ctx: ServiceContext, image: UploadedImage, entityType: string, kind: string, scanner?: MalwareScanner): Promise<Result<null>> {
+type ScannedImage = { bytes: Uint8Array; engine: string };
+
+/**
+ * Bytes that are not an image are refused without a scan. An image is stripped of metadata and re-inspected, then
+ * scanned (the original too) before any transaction opens; the stripped bytes are what the caller stores, so the
+ * stored bytes are exactly bytes the scanner saw (stripping is idempotent, storeImageAsset strips again to the same).
+ */
+async function scanImage(ctx: ServiceContext, image: UploadedImage, entityType: string, kind: string, scanner?: MalwareScanner): Promise<Result<ScannedImage>> {
   const precheck = inspectImage(image.bytes);
   if (!precheck.ok) return fail("invalid", precheck.message, "image");
-  const scanned = await scanOrRefuse(ctx, image.bytes, { action: "upload.rejected", entityType, kind, field: "image" }, scanner);
-  return scanned.ok ? ok(null) : scanned;
+  const stripped = stripImageMetadata(image.bytes);
+  const check = stripped ? inspectImage(stripped) : null;
+  if (!stripped || !check?.ok) {
+    await withTenant(ctx.tenantId, (tx) =>
+      recordAudit(tx, ctx, { action: "upload.rejected", entityType, after: { kind, reasonCode: "damaged", byteSize: image.bytes.length } }),
+    );
+    return fail("invalid", "The image file is damaged. Export it again as a PNG or JPEG.", "image");
+  }
+  const audit = { action: "upload.rejected", entityType, kind, field: "image" };
+  const original = await scanOrRefuse(ctx, image.bytes, audit, scanner);
+  if (!original.ok) return original;
+  const same = Buffer.compare(Buffer.from(stripped), Buffer.from(image.bytes)) === 0;
+  const scanned = same ? original : await scanOrRefuse(ctx, stripped, audit, scanner);
+  return scanned.ok ? ok({ bytes: stripped, engine: scanned.value.engine }) : scanned;
 }
 
 export async function setClinicLogo(
@@ -165,20 +183,22 @@ export async function setClinicLogo(
   deps: { scanner?: MalwareScanner } = {},
 ): Promise<Result<{ assetId: string | null }>> {
   if (!can(ctx.role, "settings.clinic")) return fail("forbidden", CLINIC_FORBIDDEN);
+  let scanned: ScannedImage | null = null;
   if (image !== null) {
-    const scanned = await scanImage(ctx, image, "clinic", "logo", deps.scanner);
-    if (!scanned.ok) return scanned;
+    const result = await scanImage(ctx, image, "clinic", "logo", deps.scanner);
+    if (!result.ok) return result;
+    scanned = result.value;
   }
   return withTenant(ctx.tenantId, async (tx): Promise<Result<{ assetId: string | null }>> => {
     const clinic = await primaryClinic(tx, ctx.tenantId);
     if (!clinic) return NO_CLINIC();
-    if (image === null) {
+    if (image === null || scanned === null) {
       if (clinic.logoAssetId === null) return ok({ assetId: null });
       await tx.update(clinics).set({ logoAssetId: null }).where(and(eq(clinics.tenantId, ctx.tenantId), eq(clinics.id, clinic.id)));
       await recordAudit(tx, ctx, { action: "clinic.logo_removed", entityType: "clinic", entityId: clinic.id });
       return ok({ assetId: null });
     }
-    const stored = await storeImageAsset(tx, ctx, "logo", image.bytes);
+    const stored = await storeImageAsset(tx, ctx, "logo", scanned.bytes);
     if (!stored.ok) return stored;
     const attached = await internalAttachClinicLogo(tx, ctx.tenantId, clinic.id, stored.value.id);
     if (!attached.ok) return attached;
@@ -186,7 +206,7 @@ export async function setClinicLogo(
       action: "clinic.logo_set",
       entityType: "clinic",
       entityId: clinic.id,
-      after: { assetId: stored.value.id, byteSize: stored.value.byteSize, width: stored.value.width, height: stored.value.height },
+      after: { assetId: stored.value.id, byteSize: stored.value.byteSize, width: stored.value.width, height: stored.value.height, scanEngine: scanned.engine },
     });
     return ok({ assetId: stored.value.id });
   });
@@ -238,20 +258,22 @@ export async function setDoctorSignature(
   deps: { scanner?: MalwareScanner } = {},
 ): Promise<Result<{ assetId: string | null }>> {
   if (!can(ctx.role, "settings.profile")) return fail("forbidden", PROFILE_FORBIDDEN);
+  let scanned: ScannedImage | null = null;
   if (image !== null) {
-    const scanned = await scanImage(ctx, image, "doctor", "signature", deps.scanner);
-    if (!scanned.ok) return scanned;
+    const result = await scanImage(ctx, image, "doctor", "signature", deps.scanner);
+    if (!result.ok) return result;
+    scanned = result.value;
   }
   return withTenant(ctx.tenantId, async (tx): Promise<Result<{ assetId: string | null }>> => {
     const doctor = await ownDoctor(tx, ctx.tenantId, ctx.userId);
     if (!doctor) return NO_DOCTOR();
-    if (image === null) {
+    if (image === null || scanned === null) {
       if (doctor.signatureAssetId === null) return ok({ assetId: null });
       await tx.update(doctors).set({ signatureAssetId: null }).where(and(eq(doctors.tenantId, ctx.tenantId), eq(doctors.id, doctor.id)));
       await recordAudit(tx, ctx, { action: "doctor.signature_removed", entityType: "doctor", entityId: doctor.id });
       return ok({ assetId: null });
     }
-    const stored = await storeImageAsset(tx, ctx, "signature", image.bytes);
+    const stored = await storeImageAsset(tx, ctx, "signature", scanned.bytes);
     if (!stored.ok) return stored;
     const attached = await internalAttachDoctorSignature(tx, ctx.tenantId, doctor.id, stored.value.id);
     if (!attached.ok) return attached;
@@ -259,7 +281,7 @@ export async function setDoctorSignature(
       action: "doctor.signature_set",
       entityType: "doctor",
       entityId: doctor.id,
-      after: { assetId: stored.value.id, byteSize: stored.value.byteSize, width: stored.value.width, height: stored.value.height },
+      after: { assetId: stored.value.id, byteSize: stored.value.byteSize, width: stored.value.width, height: stored.value.height, scanEngine: scanned.engine },
     });
     return ok({ assetId: stored.value.id });
   });

@@ -27,16 +27,40 @@ describe("engine image pins", () => {
   });
 
   it("gives the ClamAV container the same hardening in compose and CI", () => {
-    const compose = read("docker-compose.yml");
-    const ci = read(".github/workflows/ci.yml");
-    for (const text of [compose, ci]) {
-      for (const cap of ["CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]) expect(text).toContain(cap);
-      expect(text).toContain("no-new-privileges:true");
-      expect(text).toContain("CLAMAV_NO_FRESHCLAMD");
-      expect(text).toContain("2500m");
-      expect(text).toContain("/var/log/clamav:uid=100,gid=101");
+    const composeText = read("docker-compose.yml");
+    const compose = serviceBlock(composeText, "clamav");
+    const ciText = read(".github/workflows/ci.yml");
+    const start = ciText.indexOf("docker run -d --name clamav");
+    expect(start).toBeGreaterThan(-1);
+    const ci = ciText.slice(start, ciText.indexOf("clamav/clamav:", start));
+    for (const [name, text] of [["compose clamav service", compose], ["ci docker run", ci]] as const) {
+      for (const cap of ["CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]) expect(text, `${name} ${cap}`).toContain(cap);
+      expect(text, name).toContain("no-new-privileges:true");
+      expect(text, name).toMatch(/CLAMAV_NO_FRESHCLAMD[=:]\s*"?true/);
+      expect(text, name).toContain("/var/log/clamav:uid=100,gid=101");
+      expect(text, name).toMatch(/cap_drop:\s+- ALL|--cap-drop ALL/);
     }
-    expect(ci).toContain("--read-only");
     expect(compose).toMatch(/read_only: true/);
+    expect(compose).toMatch(/mem_limit: 2500m/);
+    expect(compose).toMatch(/pids_limit: 256/);
+    expect(compose).toMatch(/clamav\/clamav:1\.4\.6@sha256:[0-9a-f]{64}/);
+    expect(ci).toContain("--read-only");
+    expect(ci).toContain("--memory 2500m");
+    expect(ci).toContain("--pids-limit 256");
+    // The scanner must never run freshclam on its own: no freshclamd, and only the update job has egress.
+    expect(compose).not.toMatch(/CLAMAV_NO_FRESHCLAMD:\s*"?false/);
+    const update = serviceBlock(composeText, "clamav-update");
+    expect(update).toMatch(/mem_limit:/);
+    expect(update).toMatch(/pids_limit:/);
   });
 });
+
+/** The text of one top-level compose service (two-space indented key up to the next one). */
+function serviceBlock(text: string, name: string): string {
+  const lines = text.split(String.fromCharCode(10));
+  const from = lines.findIndex((l) => l.trimEnd() === `  ${name}:`);
+  expect(from, `service ${name}`).toBeGreaterThan(-1);
+  let to = lines.findIndex((l, i) => i > from && /^ {2}\S[^:]*:\s*$/.test(l));
+  if (to === -1) to = lines.length;
+  return lines.slice(from, to).join("\n");
+}

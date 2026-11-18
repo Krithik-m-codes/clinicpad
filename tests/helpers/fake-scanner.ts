@@ -1,6 +1,6 @@
 import type { MalwareScanner, ScanOutcome } from "@/server/scanning/scanner";
 
-export type FakeScanner = MalwareScanner & { calls: number; sizes: number[]; next: ScanOutcome; up: boolean };
+export type FakeScanner = MalwareScanner & { calls: number; sizes: number[]; buffers: Buffer[]; next: ScanOutcome; up: boolean };
 
 const CLEAN: ScanOutcome = { status: "clean", engine: "fake-scanner 1.0" };
 
@@ -8,11 +8,13 @@ export function createFakeScanner(next: ScanOutcome = CLEAN): FakeScanner {
   const scanner: FakeScanner = {
     calls: 0,
     sizes: [],
+    buffers: [],
     next,
     up: true,
     async scan(bytes) {
       scanner.calls += 1;
       scanner.sizes.push(bytes.length);
+      scanner.buffers.push(Buffer.from(bytes));
       return scanner.next;
     },
     async health() {
@@ -28,6 +30,7 @@ export const sharedFakeScanner = createFakeScanner();
 export function resetFakeScanner(scanner: FakeScanner): void {
   scanner.calls = 0;
   scanner.sizes.length = 0;
+  scanner.buffers.length = 0;
   scanner.next = CLEAN;
   scanner.up = true;
 }

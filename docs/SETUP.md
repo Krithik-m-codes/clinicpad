@@ -116,7 +116,7 @@ Target compose stack:
 services:
   postgres:   # port 5432, db clinicpad, user clinicpad
   gotenberg:  # port 3001, document conversion
-  clamav:     # port 3310, upload scanning (optional locally)
+  clamav:     # port 3310, upload scanning (uploads are refused while it is down)
   redis:      # port 6379, queues (Phase 3+)
 ```
 
@@ -178,11 +178,11 @@ For Supabase staging, use the pooled URL in `DATABASE_URL` and the direct URL in
 
 ### 4.3 Malware scanner (ClamAV)
 
-`docker compose up -d clamav` starts the digest-pinned ClamAV image (clamd on 127.0.0.1:3310, no authentication) with the hardening of `docs/spikes/2026-11-18-s4-clamav.md`: all capabilities dropped except CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER, `no-new-privileges`, read-only root, tmpfs `/tmp`, `/run` and `/var/log/clamav`, and a 2500 MB memory limit (a signature reload doubles clamd memory for about 15 s). It runs with `CLAMAV_NO_FRESHCLAMD=true`: it never calls out, and the signatures baked into the image load in about 20 s (no multi-minute first download; the empty named volume is filled from the image on first start). The container is healthy when `docker compose ps clamav` says so. Uploads of logos, signatures and (from Task 9) template files are scanned before anything is stored; if the scanner is down they are refused with a message to try again, never accepted unscanned.
+`docker compose up -d clamav` starts the digest-pinned ClamAV image (clamd on 127.0.0.1:3310, no authentication) with the hardening of `docs/spikes/2026-11-18-s4-clamav.md`: all capabilities dropped except CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER, `no-new-privileges`, read-only root, tmpfs `/tmp`, `/run` and `/var/log/clamav`, and a 2500 MB memory limit (a signature reload doubles clamd memory for about 15 s). It runs with `CLAMAV_NO_FRESHCLAMD=true`: it never calls out, and the signatures baked into the image load in about 20 s (no multi-minute first download; the empty named volume is filled from the image on first start). The container is healthy when `docker compose ps clamav` says so. Uploads of logos, signatures and pad background images are scanned before anything is stored; if the scanner is down they are refused with a message to try again, never accepted unscanned.
 
 Updating signatures is a separate job with egress: `docker compose --profile update run --rm clamav-update`, then `docker compose restart clamav` (about 16 s; or send clamd `zRELOAD`, scans keep working). Schedule it a few times a day in staging and production. Docker does not publish ports of containers on an internal network, so on a developer machine the scanner sits on the default bridge; true egress blocking (production) needs the app in a container on the same internal network or a host firewall (open hosting question).
 
-Tests never need clamd: they use `tests/helpers/fake-scanner.ts`. `tests/integration/clamav-smoke.test.ts` runs against the real container when it is up (EICAR detection, `VERSION` format, and a drift check of the container options) and skips otherwise; `CLAMAV_REQUIRED=1` or `CI=true` turns the skip into a failure. CI starts the same image and options with `CLAMAV_NO_FRESHCLAMD=true`. `tests/e2e/pad-settings.spec.ts` uploads a real logo and signature, so run it with the scanner up (`docker compose up -d postgres gotenberg clamav`).
+Uploads are scanned twice, the original and the metadata-stripped bytes that are stored, so the stored bytes are always bytes the scanner saw. CSV imports are not scanned by decision (text parsed and validated, never stored as a file). Tests never need clamd: they use `tests/helpers/fake-scanner.ts`. `tests/integration/clamav-smoke.test.ts` runs against the real container when it is up (EICAR detection, `VERSION` format, and a drift check of the container options) and skips otherwise; `CLAMAV_REQUIRED=1` or `CI=true` turns the skip into a failure. CI starts the same image and options with `CLAMAV_NO_FRESHCLAMD=true`. `tests/e2e/pad-settings.spec.ts` uploads a real logo and signature, so run it with the scanner up (`docker compose up -d postgres gotenberg clamav`).
 
 ## 5. Run the app
 

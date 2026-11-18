@@ -99,7 +99,7 @@ services:
       start_period: 120s
 
   clamav-update:
-    # Optional signature update job (needs egress, no ports): `docker compose run --rm clamav-update`, then restart
+    # Optional signature update job (needs egress, no ports): `docker compose --profile update run --rm clamav-update`, then restart
     # clamav (or send it zRELOAD). Run it a few times a day from a scheduler in staging and production.
     image: clamav/clamav:1.4.6@sha256:4cc4350d3fded380caf1799e76c0d1c93f3fa40af99c0cb2862ec0c9b117718a
     profiles: ["update"]
@@ -120,6 +120,8 @@ services:
       - FOWNER
     security_opt:
       - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 128
 
 volumes:
   clinicpad_pg:

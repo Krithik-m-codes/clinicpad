@@ -8,6 +8,9 @@ vi.mock("@/server/scanning", async () => {
   return { getMalwareScanner: () => sharedFakeScanner };
 });
 
+import { and, eq } from "drizzle-orm";
+import { adminDb } from "@/server/db/admin";
+import { auditEvents } from "@/server/db/schema";
 import { getSessionContext } from "@/server/auth/session";
 import { templateUploadLimiter } from "@/server/http/upload-limits";
 import { GET as uploadsGet, POST as upload } from "@/app/(app)/templates/uploads/route";
@@ -123,7 +126,22 @@ describe("POST /templates/uploads", () => {
     for (let i = 0; i < 30; i += 1) expect((await post(bytes)).status).toBe(201);
     const limited = await post(bytes);
     expect(limited.status).toBe(429);
-    expect(limited.headers.get("retry-after")).toBe("600");
+    expect(limited.headers.get("retry-after")).toBe("3600");
+  });
+
+  it("audits 413 and empty refusals with counts only", async () => {
+    const rejected = async () =>
+      (await adminDb.select().from(auditEvents).where(and(eq(auditEvents.tenantId, A.tenantId), eq(auditEvents.action, "template_file.rejected")))).map(
+        (e) => e.after as Record<string, unknown>,
+      );
+    const before = (await rejected()).length;
+    expect((await post(new Uint8Array(10), { "content-length": String(1024 * 1024 + 1) })).status).toBe(413);
+    expect((await post(new Uint8Array(0))).status).toBe(422);
+    const added = (await rejected()).slice(before);
+    expect(added).toEqual([
+      { kind: "background_image", reasonCode: "too_large", byteSize: 1024 * 1024 + 1 },
+      { kind: "background_image", reasonCode: "empty", byteSize: 0 },
+    ]);
   });
 
   it("refuses GET", () => {

@@ -3,8 +3,8 @@ import { can } from "@/lib/domain/permissions";
 import { getSessionContext } from "@/server/auth/session";
 import { readCapped } from "@/server/http/read-capped";
 import { crossSiteRefusal, publicCode, statusForError } from "@/server/http/response";
-import { templateUploadLimiter } from "@/server/http/upload-limits";
-import { uploadBackground } from "@/server/services/template-files";
+import { TEMPLATE_UPLOAD_WINDOW_MS, templateUploadLimiter } from "@/server/http/upload-limits";
+import { auditUploadRefusal, uploadBackground } from "@/server/services/template-files";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -32,13 +32,22 @@ export async function POST(request: Request): Promise<Response> {
     if (!session) return json(401, { error: "unauthenticated", message: "Sign in again to upload." });
     if (!can(session.role, "template.write")) return json(404, { error: "not_found", message: "Not found." });
     if (!templateUploadLimiter.hit(`${session.tenantId}:${session.userId}`)) {
-      return json(429, { error: "unavailable", message: "Too many uploads. Wait a few minutes and try again." }, { "Retry-After": "600" });
+      return json(429, { error: "unavailable", message: "Too many uploads. Wait a few minutes and try again." }, { "Retry-After": String(Math.ceil(TEMPLATE_UPLOAD_WINDOW_MS / 1000)) });
     }
     const declared = Number(request.headers.get("content-length") ?? "0");
-    if (Number.isFinite(declared) && declared > BACKGROUND_LIMITS.maxBytes) return json(413, TOO_LARGE);
+    if (Number.isFinite(declared) && declared > BACKGROUND_LIMITS.maxBytes) {
+      await auditUploadRefusal(session, "too_large", declared);
+      return json(413, TOO_LARGE);
+    }
     const body = await readCapped(request.body, BACKGROUND_LIMITS.maxBytes);
-    if (body === "too_large") return json(413, TOO_LARGE);
-    if (body.byteLength === 0) return json(422, { error: "invalid", field: "file", message: "The file is empty." });
+    if (body === "too_large") {
+      await auditUploadRefusal(session, "too_large", null);
+      return json(413, TOO_LARGE);
+    }
+    if (body.byteLength === 0) {
+      await auditUploadRefusal(session, "empty", 0);
+      return json(422, { error: "invalid", field: "file", message: "The file is empty." });
+    }
     const result = await uploadBackground(session, new Uint8Array(body), {});
     if (!result.ok) {
       const retry: Record<string, string> = result.code === "unavailable" ? { "Retry-After": "60" } : {};

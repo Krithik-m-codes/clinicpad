@@ -21,7 +21,7 @@ export const UNUSED_FILE_DAYS = 30;
 export const TEMPLATE_UPLOAD_MESSAGES = {
   forbidden: "You cannot upload pad templates.",
   damaged: "The image file is damaged. Export it again as a PNG or JPEG.",
-  quota: `This clinic has used its ${TEMPLATE_QUOTAS.fileBytes / 1024 / 1024} MB for pad images. Delete pads you never published, or ask us to raise the limit.`,
+  quota: `This clinic has used its ${TEMPLATE_QUOTAS.fileBytes / 1024 / 1024} MB for pad images. Images that no pad version uses are removed after ${UNUSED_FILE_DAYS} days; until then ask us to raise the limit.`,
   notFound: "File not found.",
 } as const;
 
@@ -43,11 +43,11 @@ async function audit(ctx: ServiceContext, action: string, after: Record<string, 
 }
 
 /** Deletes this clinic's files that no version uses and that are older than UNUSED_FILE_DAYS, in a savepoint. */
-async function collectUnusedFiles(tx: TenantTx, tenantId: string, now: Date): Promise<void> {
+async function collectUnusedFiles(tx: TenantTx, tenantId: string, now: Date): Promise<number> {
   const cutoff = new Date(now.getTime() - UNUSED_FILE_DAYS * 86_400_000);
   try {
-    await tx.transaction(async (sp) => {
-      await sp
+    return await tx.transaction(async (sp) => {
+      const gone = await sp
         .delete(templateFiles)
         .where(
           and(
@@ -55,14 +55,22 @@ async function collectUnusedFiles(tx: TenantTx, tenantId: string, now: Date): Pr
             lt(templateFiles.createdAt, cutoff),
             sql`not exists (select 1 from ${templateVersions} v where v.tenant_id = ${templateFiles.tenantId} and v.file_id = ${templateFiles.id})`,
           ),
-        );
+        )
+        .returning({ id: templateFiles.id });
+      return gone.length;
     });
   } catch (error) {
     // A draft started using one of them meanwhile (23503) or a row is younger than the database allows (23000): keep
     // them all; the next upload tries again. Anything else is a bug.
     const { code } = pgErrorInfo(error);
     if (code !== "23503" && code !== "23000") throw error;
+    return 0;
   }
+}
+
+/** Audits a refusal that happened before the service ran (the upload route): counts only, never content. */
+export async function auditUploadRefusal(ctx: ServiceContext, reasonCode: "too_large" | "empty", byteSize: number | null): Promise<void> {
+  await audit(ctx, "template_file.rejected", { kind: "background_image", reasonCode, byteSize });
 }
 
 /**
@@ -82,24 +90,41 @@ export async function uploadBackground(
     await audit(ctx, "template_file.rejected", { kind: "background_image", reasonCode: "invalid_image", byteSize: uploaded.length });
     return fail("invalid", first.message, "file");
   }
-  const scanned = await scanOrRefuse(ctx, uploaded, { action: "template_file.rejected", entityType: "template_file", kind: "background_image", field: "file" }, deps.scanner);
-  if (!scanned.ok) return scanned;
+  // Strip and re-inspect FIRST, then scan the bytes that will be stored (stripping is idempotent). The original is
+  // scanned as well: it is what the client sent and the cheapest place to catch a known signature.
   const bytes = stripImageMetadata(uploaded);
   const check = bytes ? inspectBackground(bytes) : null;
-  if (!bytes || !check?.ok) return fail("invalid", TEMPLATE_UPLOAD_MESSAGES.damaged, "file");
+  if (!bytes || !check?.ok) {
+    await audit(ctx, "template_file.rejected", { kind: "background_image", reasonCode: "damaged", byteSize: uploaded.length });
+    return fail("invalid", TEMPLATE_UPLOAD_MESSAGES.damaged, "file");
+  }
+  const scanAudit = { action: "template_file.rejected", entityType: "template_file", kind: "background_image", field: "file" };
+  const original = await scanOrRefuse(ctx, uploaded, scanAudit, deps.scanner);
+  if (!original.ok) return original;
+  const scanned = Buffer.compare(Buffer.from(bytes), Buffer.from(uploaded)) === 0 ? original : await scanOrRefuse(ctx, bytes, scanAudit, deps.scanner);
+  if (!scanned.ok) return scanned;
   const { mime, width, height } = check.info;
   const hash = sha256(bytes);
   const quotaBytes = deps.quotaBytes ?? TEMPLATE_QUOTAS.fileBytes;
 
   return withTenant(ctx.tenantId, async (tx): Promise<Result<StoredTemplateFile>> => {
     await lockTemplateQuota(tx, ctx.tenantId);
-    await collectUnusedFiles(tx, ctx.tenantId, deps.now ?? new Date());
+    const collected = await collectUnusedFiles(tx, ctx.tenantId, deps.now ?? new Date());
+    if (collected > 0) await recordAudit(tx, ctx, { action: "template_file.collected", entityType: "template_file", after: { count: collected } });
     const [existing] = await tx
       .select({ id: templateFiles.id })
       .from(templateFiles)
       .where(and(eq(templateFiles.tenantId, ctx.tenantId), eq(templateFiles.kind, "background_image"), eq(templateFiles.sha256, hash)))
       .limit(1);
-    if (existing) return ok({ id: existing.id, mime, width, height, byteSize: bytes.length, reused: true });
+    if (existing) {
+      await recordAudit(tx, ctx, {
+        action: "template_file.uploaded",
+        entityType: "template_file",
+        entityId: existing.id,
+        after: { fileId: existing.id, kind: "background_image", sha256: hash, reused: true },
+      });
+      return ok({ id: existing.id, mime, width, height, byteSize: bytes.length, reused: true });
+    }
     const [used] = await tx
       .select({ total: sql<number>`coalesce(sum(${templateFiles.byteSize}), 0)::int` })
       .from(templateFiles)

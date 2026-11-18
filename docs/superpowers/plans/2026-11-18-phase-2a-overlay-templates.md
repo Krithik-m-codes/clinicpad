@@ -135,7 +135,7 @@ New in Plan 2A:
 - **Migrations 0024 to 0027 are created in task order (Tasks 7 and 15). Tasks that create migrations never run in parallel with each other.** After each migration, `npx drizzle-kit generate` must answer "No schema changes".
 - **New npm dependency: only `pdfjs-dist`**, installed with `--save-exact` at a 5.x release (≥ 4.2.67, the CVE-2024-4367 fix), loaded only inside the sandboxed frame, never imported by app code. Run `npm audit --omit=dev` before and after adding it and record both counts in the Task 16 commit message body. Spike folders (`spikes/`) are git-ignored and have their own `package.json`; nothing installed there reaches the app.
 - **Container images are pinned by digest** in `docker-compose.yml`, `.github/workflows/ci.yml`, and the smoke tests; `tests/unit/engine-pins.test.ts` (Task 6, extended in Task 8) fails when the three copies differ.
-- **Never commit the EICAR test string** (Windows Defender quarantines files that contain it): tests and spikes carry it base64-encoded and decode it at run time.
+- **Never commit the EICAR test string** (Windows Defender quarantines files that contain it): tests and spikes import `tests/helpers/eicar.ts`, which joins fragments at run time; neither the string nor its base64 may appear in any tracked file (grep before committing).
 
 ## Review Focus
 
@@ -821,8 +821,8 @@ import { connect } from "node:net";
 import { deflateSync } from "node:zlib";
 
 const PORT = Number(process.env.CLAMD_PORT ?? 3311);
-// The EICAR anti-virus test file, base64-encoded so no file in this folder contains it.
-const EICAR = Buffer.from("WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo=", "base64");
+// The EICAR anti-virus test file, assembled at run time from fragments (see tests/helpers/eicar.ts) so no file contains it.
+const EICAR = Buffer.from(["X5O!P%@AP[4", "\PZX54(P^)7CC)7}", "$EICAR-STANDARD-", "ANTIVIRUS-TEST-FILE!", "$H+H*"].join(""), "ascii");
 
 function talk(write) {
   return new Promise((resolve) => {
@@ -2709,21 +2709,7 @@ export function resetFakeScanner(scanner: FakeScanner): void {
 }
 ```
 
-`tests/helpers/eicar.ts`:
-
-```ts
-/**
- * The EICAR anti-virus test file. Stored base64-encoded and decoded at run time: a plain copy in the repository makes
- * Windows Defender quarantine the file. It is harmless by design.
- */
-export const EICAR = Buffer.from("WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJTEUhJEgrSCo=", "base64");
-```
-
-- [ ] **Step 8: Write the failing retrofit test (logo and signature uploads are scanned)**
-
-`tests/integration/upload-scanning.test.ts`:
-
-```ts
+`tests/helpers/eicar.ts` (implemented in Task 8; the committed file is the reference, not this plan): exports `EICAR: Buffer`, assembled at run time by joining five short fragments, so neither a contiguous EICAR string nor its plain base64 appears anywhere in the repository (Windows Defender quarantines such files). Do not paste the string into plans, tests, docs or spikes: import the helper.ts
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { adminDb } from "@/server/db/admin";
@@ -2799,16 +2785,18 @@ import { scanOrRefuse } from "@/server/scanning/uploads";
 Change `export async function setClinicLogo(ctx: ServiceContext, image: UploadedImage | null)` to take `deps: { scanner?: MalwareScanner } = {}` as a third parameter and insert, right after its `if (!can(ctx.role, "settings.clinic")) return fail("forbidden", CLINIC_FORBIDDEN);` line:
 
 ```ts
+  let scanned: ScannedImage | null = null;
   if (image !== null) {
-    // Bytes that are not an image are refused without a scan; an image is scanned before any transaction opens.
-    const precheck = inspectImage(image.bytes);
-    if (!precheck.ok) return fail("invalid", precheck.message, "image");
-    const scanned = await scanOrRefuse(ctx, image.bytes, { action: "upload.rejected", entityType: "clinic", kind: "logo", field: "image" }, deps.scanner);
-    if (!scanned.ok) return scanned;
+    // Not an image: refused without a scan. Otherwise strip metadata and re-inspect FIRST, then scan the original AND the
+    // stripped bytes (before any transaction); the stripped bytes are what storeImageAsset stores, so the stored bytes
+    // are exactly bytes the scanner saw (fix round 1).
+    const result = await scanImage(ctx, image, "clinic", "logo", deps.scanner);
+    if (!result.ok) return result;
+    scanned = result.value; // { bytes: stripped, engine }
   }
 ```
 
-Do the same in `setDoctorSignature` (after its `settings.profile` permission check), with `{ action: "upload.rejected", entityType: "doctor", kind: "signature", field: "image" }`. Nothing else in either function changes (the transaction still calls `storeImageAsset`, which inspects and strips again).
+Do the same in `setDoctorSignature` (after its `settings.profile` permission check), with `{ action: "upload.rejected", entityType: "doctor", kind: "signature", field: "image" }`. The transaction calls `storeImageAsset` with the stripped bytes (it strips again, a no-op), and the `logo_set` / `signature_set` audit payload records `scanEngine`, which also marks a development-bypass upload (`unscanned-development`).
 
 In `tests/integration/pad-settings.test.ts` and `tests/integration/settings-actions.test.ts`, add `vi` to the `vitest` import if missing and put this block right after the imports' `vi.mock` lines (or at the top, before other imports, if the file has none):
 
@@ -3429,11 +3417,18 @@ export async function uploadBackground(
     await audit(ctx, "template_file.rejected", { kind: "background_image", reasonCode: "invalid_image", byteSize: uploaded.length });
     return fail("invalid", first.message, "file");
   }
-  const scanned = await scanOrRefuse(ctx, uploaded, { action: "template_file.rejected", entityType: "template_file", kind: "background_image", field: "file" }, deps.scanner);
-  if (!scanned.ok) return scanned;
+  // Strip and re-inspect FIRST, then scan the original AND the stripped bytes (fix round 1): what is stored is what was scanned.
   const bytes = stripImageMetadata(uploaded);
   const check = bytes ? inspectBackground(bytes) : null;
-  if (!bytes || !check?.ok) return fail("invalid", TEMPLATE_UPLOAD_MESSAGES.damaged, "file");
+  if (!bytes || !check?.ok) {
+    await audit(ctx, "template_file.rejected", { kind: "background_image", reasonCode: "damaged", byteSize: uploaded.length });
+    return fail("invalid", TEMPLATE_UPLOAD_MESSAGES.damaged, "file");
+  }
+  const scanAudit = { action: "template_file.rejected", entityType: "template_file", kind: "background_image", field: "file" };
+  const original = await scanOrRefuse(ctx, uploaded, scanAudit, deps.scanner);
+  if (!original.ok) return original;
+  const scanned = Buffer.compare(Buffer.from(bytes), Buffer.from(uploaded)) === 0 ? original : await scanOrRefuse(ctx, bytes, scanAudit, deps.scanner);
+  if (!scanned.ok) return scanned;
   const { mime, width, height } = check.info;
   const hash = sha256(bytes);
   const quotaBytes = deps.quotaBytes ?? TEMPLATE_QUOTAS.fileBytes;
@@ -10882,6 +10877,8 @@ Append to `docs/DECISIONS.md` (check that ADR-0042 is the last entry first):
 **Context:** Uploads are hostile (invariant 8). Server actions are capped at 1 MB; LibreOffice and server-side PDF parsing are not needed for overlays.
 
 **Decision:** `POST /templates/uploads` (route handler, session, `template.write`, `Sec-Fetch-Site`, 30 uploads per user per hour, streamed 2 MB cap). The bytes decide the type (PNG or JPEG only, nothing after the end marker, upright, long side 1,100 to 3,600 px, A-series proportions within 3 %); ClamAV `clamd` scans them over INSTREAM before any transaction (15 s timeout; down, slow or confused means refused, fail closed; infected is audited with the signature name); metadata is stripped and the stripped bytes are hashed and stored; the original bytes and the file name are never stored or logged. Logo and signature uploads are scanned the same way. `CLAMAV_HOST`/`CLAMAV_PORT` are mandatory in production; `CLAMAV_DISABLED_FOR_DEVELOPMENT=1` works only outside production. A PDF never reaches the server: pdf.js (pinned, eval off) runs in `<iframe sandbox="allow-scripts">` served by `/pdf-frame/*` with a CSP that allows scripts only from that path, and the parent accepts only well-formed messages from that frame's opaque origin.
+
+**Scope by decision:** uploads of logos, signatures and pad backgrounds are scanned (original and stripped bytes); CSV patient import is NOT scanned (text parsed and validated, never stored as a file). Note for Tasks 15/16: a 23503 on `template_versions_file_fk` after a collectible file is deduped away must be reported as "upload the image again".
 
 **Consequences:** About 1.5 to 2 GB of memory for clamd. freshclam shares the clamd container, which therefore has egress: split it before patient documents are stored (2C).
 

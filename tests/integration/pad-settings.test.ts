@@ -30,6 +30,7 @@ import { startPrescription } from "@/server/services/prescriptions";
 import { NUL_MESSAGE } from "@/server/validation/text";
 import { newId } from "@/lib/domain/ids";
 import { JPEG_EXIF_GPS, JPEG_SOS, jpegWithSegments, makeJpegHeader, makePng, pngWithChunks } from "../helpers/images";
+import { resetFakeScanner, sharedFakeScanner } from "../helpers/fake-scanner";
 import { finalizeNow, saveDraftNow } from "../helpers/rx";
 import { createTestTenant, type TestTenant } from "../helpers/tenant";
 
@@ -176,7 +177,7 @@ describe("clinic logo", () => {
     expect(row).toMatchObject({ kind: "logo", mime: "image/png", byteSize: png.length, createdBy: A.as("owner").userId });
 
     const events = await auditFor(A.tenantId, "clinic.logo_set");
-    expect(events[0].after).toEqual({ assetId: first.value.assetId, byteSize: png.length, width: 120, height: 60 });
+    expect(events[0].after).toEqual({ assetId: first.value.assetId, byteSize: png.length, width: 120, height: 60, scanEngine: "fake-scanner 1.0" });
   });
 
   it("accepts a JPEG", async () => {
@@ -185,7 +186,7 @@ describe("clinic logo", () => {
 
   it("stores no metadata: an EXIF JPEG and a text-chunk PNG are stripped before they are saved and hashed", async () => {
     const jpeg = jpegWithSegments(makeJpegHeader(310, 110), [JPEG_EXIF_GPS]);
-    const png = pngWithChunks(makePng(77, 33), [{ type: "tEXt", data: Buffer.from("GPS  12.97 77.59", "latin1") }]);
+    const png = pngWithChunks(makePng(77, 33), [{ type: "tEXt", data: Buffer.from("GPS\u0000 12.97 77.59", "latin1") }]);
     for (const [upload, marker] of [[jpeg, "Exif"], [png, "tEXt"]] as const) {
       const stored = await setClinicLogo(A.as("owner"), { bytes: new Uint8Array(upload) });
       if (!stored.ok) throw new Error(stored.message);
@@ -199,6 +200,24 @@ describe("clinic logo", () => {
     const clean = await setClinicLogo(A.as("owner"), { bytes: new Uint8Array(makeJpegHeader(310, 110)) });
     const withExif = await setClinicLogo(A.as("owner"), { bytes: new Uint8Array(jpeg) });
     expect(clean.ok && withExif.ok && clean.value.assetId === withExif.value.assetId).toBe(true);
+  });
+
+  it("stores exactly the bytes the scanner saw (logo and signature), never an unscanned variant", async () => {
+    const png = pngWithChunks(makePng(79, 35, [7, 8, 9]), [{ type: "tEXt", data: Buffer.from("Comment x", "latin1") }]);
+    for (const [kind, set, ctx] of [
+      ["logo", setClinicLogo, A.as("owner")],
+      ["signature", setDoctorSignature, A.as("doctor")],
+    ] as const) {
+      resetFakeScanner(sharedFakeScanner);
+      const stored = await set(ctx, { bytes: new Uint8Array(png) });
+      if (!stored.ok) throw new Error(stored.message);
+      const [row] = await adminDb.select().from(clinicAssets).where(eq(clinicAssets.id, stored.value.assetId as string));
+      expect(row.kind).toBe(kind);
+      expect(sharedFakeScanner.buffers.some((seen) => Buffer.compare(seen, row.bytes) === 0)).toBe(true);
+      expect(sharedFakeScanner.buffers.some((seen) => Buffer.compare(seen, png) === 0)).toBe(true);
+      const [event] = (await auditFor(A.tenantId, kind === "logo" ? "clinic.logo_set" : "doctor.signature_set")).slice(-1);
+      expect((event.after as { scanEngine?: string }).scanEngine).toBe("fake-scanner 1.0");
+    }
   });
 
   it("keeps the same bytes as separate assets per kind", async () => {

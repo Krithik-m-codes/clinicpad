@@ -62,6 +62,59 @@ describe("uploadBackground", () => {
     expect(row.bytes.length).toBeLessThan(jpeg.length);
   });
 
+  it("scans the original and the stripped bytes, and stores exactly bytes the scanner saw", async () => {
+    const jpeg = jpegWithSegments(makeJpegCustom(1240, 1756), [JPEG_EXIF_GPS]);
+    const result = await uploadBackground(owner(), jpeg, { scanner });
+    if (!result.ok) throw new Error(result.message);
+    const [row] = await adminDb.select().from(templateFiles).where(eq(templateFiles.id, result.value.id));
+    expect(scanner.buffers.some((seen) => Buffer.compare(seen, row.bytes) === 0)).toBe(true);
+    expect(scanner.buffers.some((seen) => Buffer.compare(seen, jpeg) === 0)).toBe(true);
+    const png = backgroundPng("scan-same");
+    resetFakeScanner(scanner);
+    const plain = await uploadBackground(owner(), png, { scanner });
+    if (!plain.ok) throw new Error(plain.message);
+    const [plainRow] = await adminDb.select().from(templateFiles).where(eq(templateFiles.id, plain.value.id));
+    expect(scanner.buffers.some((seen) => Buffer.compare(seen, plainRow.bytes) === 0)).toBe(true);
+  });
+
+  it("refuses an image whose stripped bytes are infected even when the original scans clean", async () => {
+    const jpeg = jpegWithSegments(makeJpegCustom(1240, 1757), [JPEG_EXIF_GPS]);
+    let call = 0;
+    const picky = createFakeScanner();
+    picky.scan = async (bytes) => {
+      call += 1;
+      picky.buffers.push(Buffer.from(bytes));
+      return call === 1 ? { status: "clean", engine: "fake" } : { status: "infected", engine: "fake", signature: "Test.Stripped" };
+    };
+    const before = (await filesOf(A.tenantId)).length;
+    expect(await uploadBackground(owner(), jpeg, { scanner: picky })).toMatchObject({ ok: false, message: SCAN_MESSAGES.infected });
+    expect((await filesOf(A.tenantId)).length).toBe(before);
+  });
+
+  it("audits a deduped upload as reused", async () => {
+    const bytes = backgroundPng("audit-reuse");
+    await uploadBackground(owner(), bytes, { scanner });
+    await uploadBackground(owner(), bytes, { scanner });
+    const reused = (await events("template_file.uploaded")).filter((e) => (e.after as { reused?: boolean }).reused === true);
+    expect(reused.length).toBeGreaterThanOrEqual(1);
+    expect(reused[0].after).toMatchObject({ kind: "background_image", reused: true });
+    expect(Object.keys(reused[0].after as object).sort()).toEqual(["fileId", "kind", "reused", "sha256"]);
+  });
+
+  it("audits a file that is damaged after stripping", async () => {
+    const truncated = Buffer.from(makeJpegCustom(1240, 1758));
+    const broken = jpegWithSegments(truncated.subarray(0, 40), []);
+    const before = (await events("template_file.rejected")).length;
+    const result = await uploadBackground(owner(), broken, { scanner });
+    expect(result.ok).toBe(false);
+    expect((await events("template_file.rejected")).length).toBeGreaterThan(before);
+  });
+
+  it("quota message does not promise that deleting frees space at once", () => {
+    expect(TEMPLATE_UPLOAD_MESSAGES.quota).not.toMatch(/delete/i);
+    expect(TEMPLATE_UPLOAD_MESSAGES.quota).toMatch(/30 days/);
+  });
+
   it("reuses the stored row for identical bytes, and for the same image with different metadata", async () => {
     const bytes = backgroundPng("upload-dup");
     const first = await uploadBackground(owner(), bytes, { scanner });
@@ -87,12 +140,14 @@ describe("uploadBackground", () => {
   });
 
   it("refuses non-images, oversized bodies and wrong proportions without scanning, and audits the refusal", async () => {
+    const uploadedBefore = (await events("template_file.uploaded")).length;
     const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
     expect(await uploadBackground(owner(), svg, { scanner })).toMatchObject({ ok: false, code: "invalid", field: "file" });
     expect(await uploadBackground(owner(), makePng(1200, 1200), { scanner })).toMatchObject({ ok: false, code: "invalid", field: "file" });
     expect(await uploadBackground(owner(), new Uint8Array(1024 * 1024 + 1), { scanner })).toMatchObject({ ok: false, code: "invalid", field: "file" });
     expect(scanner.calls).toBe(0);
     expect((await events("template_file.rejected")).map((e) => (e.after as { reasonCode: string }).reasonCode)).toContain("invalid_image");
+    expect((await events("template_file.uploaded")).length).toBe(uploadedBefore);
   });
 
   it("refuses an infected file and a scanner that is down, storing nothing", async () => {
@@ -136,6 +191,8 @@ describe("uploadBackground", () => {
     expect((await uploadBackground(owner(), backgroundPng("gc-trigger"), { scanner })).ok).toBe(true);
     const ids = (await filesOf(A.tenantId)).map((f) => f.id);
     expect(ids).not.toContain(oldUnused);
+    const collected = await events("template_file.collected");
+    expect(collected.map((e) => e.after)).toContainEqual({ count: 1 });
     expect(ids).toEqual(expect.arrayContaining([oldUsed, recent]));
   });
 
