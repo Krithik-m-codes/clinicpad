@@ -18,9 +18,12 @@ import { fileAsImageAsset, loadTemplateFileIn } from "./template-files";
 
 /** Shown when a frozen pad no longer matches what was signed: never print something else instead. */
 export const TEMPLATE_DAMAGED_MESSAGE = "This prescription's pad template is damaged, so it cannot be printed. Contact support.";
-/** Shown when the custom pad that applies to the signer cannot be used at finalize: nothing is finalized and no number is used. */
+/**
+ * Shown when the custom pad that applies to the signer cannot be used (at finalize nothing is finalized and no number is
+ * used; in a draft preview nothing is shown). The wording fits both.
+ */
 export const TEMPLATE_UNUSABLE_MESSAGE =
-  "The custom pad for this prescription cannot be used, so it was not finalized. Ask the clinic owner to publish the pad again or switch to a built-in pad.";
+  "The custom pad for this prescription cannot be used right now. Ask the clinic owner to publish the pad again or switch to a built-in pad.";
 
 type ClinicRow = typeof clinics.$inferSelect;
 type DoctorRow = typeof doctors.$inferSelect;

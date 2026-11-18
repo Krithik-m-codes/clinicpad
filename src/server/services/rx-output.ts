@@ -65,10 +65,15 @@ const PDF_SIZE_ALLOWANCE = 1024 * 1024;
 
 const imageBytes = (image: { base64: string } | null): number => (image ? Math.floor((image.base64.length * 3) / 4) : 0);
 
-/** A rough upper bound of an overlay pad's PDF: background + logo + signature + a small allowance. 0 for built-in pads. */
+/** A rough upper bound of an overlay pad's PDF: background + logo + signature + a small allowance. Shared with the Template Studio previews. */
+export function estimateOverlayPdfBytes(background: { base64: string }, logo: { base64: string } | null, signature: { base64: string } | null): number {
+  return imageBytes(background) + imageBytes(logo) + imageBytes(signature) + PDF_SIZE_ALLOWANCE;
+}
+
+/** The estimate for a loaded prescription: 0 for built-in pads. */
 export function estimatedPdfBytes(bundle: RxDocumentBundle): number {
   if (!bundle.overlay) return 0;
-  return imageBytes(bundle.overlay.background) + imageBytes(bundle.logo) + imageBytes(bundle.signature) + PDF_SIZE_ALLOWANCE;
+  return estimateOverlayPdfBytes(bundle.overlay.background, bundle.logo, bundle.signature);
 }
 
 export function overlayPdfTooLarge(bundle: RxDocumentBundle, limit: number = PDF_LIMITS.maxPdfBytes): boolean {

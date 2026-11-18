@@ -12,6 +12,7 @@ import { discardTemplateDraftAction, saveTemplateDraftAction } from "@/server/ac
 import { Button } from "@/components/ui/button";
 import { BoxCanvas } from "./box-canvas";
 import { BoxInspector } from "./box-inspector";
+import { EditorDirtyProvider } from "./editor-dirty";
 import { FlowInspector } from "./flow-inspector";
 import { useOverflowWarnings } from "./use-overflow-warnings";
 
@@ -23,7 +24,7 @@ type Props = {
   labels: LabelLanguage;
   definition: OverlayDefinition;
   revision: number;
-  /** Preview, publish and assign panels (Task 18), shown under the editor; they read only saved drafts. */
+  /** Preview, publish and assign panels, shown under the editor; they read only the saved draft and see the unsaved flag through EditorDirtyProvider. */
   children?: React.ReactNode;
 };
 
@@ -170,7 +171,7 @@ export function TemplateEditor({ templateId, name, fileId, paper, labels: initia
         </div>
       </div>
       {dirty ? <p className="text-sm text-muted-foreground">Save the draft to preview or publish these changes.</p> : null}
-      {children}
+      <EditorDirtyProvider value={dirty}>{children}</EditorDirtyProvider>
     </div>
   );
 }
