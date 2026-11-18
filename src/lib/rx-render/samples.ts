@@ -122,3 +122,28 @@ export function sampleDocument(kind: SampleKind, base: RenderSnapshot): RxDocume
     items: SAMPLE_ITEMS,
   };
 }
+
+/** Long clinic and doctor values for the editor's overflow warnings (never printed, never a real clinic). */
+export const SAMPLE_LETTERHEAD: Extract<RenderSnapshot, { v: 1 }> = {
+  v: 1,
+  takenAt: "2026-11-18T05:30:00.000Z",
+  patient: { name: "", patientNo: null, gender: null, dob: null, ageLabel: "", allergies: [] },
+  clinic: {
+    name: "Shri Annapurna Multispeciality Clinic and Diagnostic Centre",
+    addressLines: ["Shop 4-5, Ground Floor, Sai Krupa Complex, Near Railway Station Road", "Kalyan (West), Thane, Maharashtra - 421301"],
+    phone: "0251-2345678, 98765 43210",
+    email: "appointments@annapurnaclinic.example",
+    footerLines: ["Mon-Sat 10 am to 1 pm and 5 pm to 9 pm · Sunday closed"],
+    logoAssetId: null,
+    timezone: "Asia/Kolkata",
+  },
+  doctor: {
+    name: "Dr. Venkataraman Subramaniam Ramachandran",
+    qualifications: "MBBS, MD (General Medicine), DNB (Cardiology), FACC",
+    designation: "Senior Consultant Physician and Cardiologist",
+    registrationNo: "MMC 2011/04/123456",
+    registrationCouncil: "Maharashtra Medical Council",
+    signatureAssetId: null,
+  },
+  layout: { template: { kind: "builtin", key: "general" }, paperSize: "A4", labels: "en" },
+};
