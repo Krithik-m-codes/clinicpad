@@ -56,7 +56,7 @@ describe("SharePanel", () => {
   });
 
   it("prepares the message, then opens WhatsApp only from a real link click (no popup-blocked window.open)", async () => {
-    actions.shareWhatsAppAction.mockResolvedValue({ waUrl: WA, url: "https://app.test/s/T", sentTo: "+91******3210", expiresAt: "2026-11-24T05:00:00.000Z" });
+    actions.shareWhatsAppAction.mockResolvedValue({ waUrl: WA, url: "https://app.test/s/T", sentTo: "+91******3210", recipientDisplay: "+91 98765 43210", patientName: "Asha Rao", expiresAt: "2026-11-24T05:00:00.000Z" });
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
     render(<SharePanel data={data()} canCaptureConsent isOwner={false} />);
     expect(screen.getByLabelText("WhatsApp number")).toHaveValue("98765 43210");
@@ -70,13 +70,17 @@ describe("SharePanel", () => {
     expect(open).toHaveAttribute("href", WA);
     expect(open).toHaveAttribute("target", "_blank");
     expect(open).toHaveAttribute("rel", "noopener noreferrer");
-    expect(screen.getByText(/Message ready for \+91\*\*\*\*\*\*3210/)).toBeInTheDocument();
+    const confirm = screen.getByTestId("share-confirm-number");
+    expect(confirm).toHaveTextContent("+91 98765 43210");
+    expect(confirm).toHaveTextContent("Asha Rao");
+    expect(confirm).not.toHaveTextContent("******");
+    expect(confirm.compareDocumentPosition(open) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByLabelText("Share link")).toHaveValue("https://app.test/s/T");
     expect(openSpy).not.toHaveBeenCalled();
   });
 
   it("copies the link when the clipboard is available", async () => {
-    actions.shareWhatsAppAction.mockResolvedValue({ waUrl: WA, url: "https://app.test/s/T", sentTo: "+91******3210", expiresAt: "2026-11-24T05:00:00.000Z" });
+    actions.shareWhatsAppAction.mockResolvedValue({ waUrl: WA, url: "https://app.test/s/T", sentTo: "+91******3210", recipientDisplay: "+91 98765 43210", patientName: "Asha Rao", expiresAt: "2026-11-24T05:00:00.000Z" });
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     render(<SharePanel data={data()} canCaptureConsent isOwner={false} />);

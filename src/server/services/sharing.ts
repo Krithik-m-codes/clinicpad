@@ -1,12 +1,12 @@
-import { and, count, eq, gte, isNull } from "drizzle-orm";
+import { and, countDistinct, eq, gte, isNull } from "drizzle-orm";
 import { can } from "@/lib/domain/permissions";
 import { isUuid } from "@/lib/domain/ids";
-import { emailRecipient, whatsAppRecipient } from "@/lib/domain/recipient";
+import { emailRecipient, formatInternational, isLoggableMask, RECIPIENT_MESSAGES, whatsAppRecipient } from "@/lib/domain/recipient";
 import { fail, ok, type Result } from "@/lib/result";
 import { DEFAULT_TIME_ZONE, isValidTimeZone } from "@/lib/rx-render/format";
 import { patients, prescriptionShares, prescriptions, shareLinks, visits } from "@/server/db/schema";
-import { withTenant } from "@/server/db/tenant";
-import { getEmailProvider, shareEmailMessage, type EmailMessage, type EmailProvider } from "@/server/messaging/email";
+import { withTenant, type TenantTx } from "@/server/db/tenant";
+import { getEmailProvider, shareEmailMessage, type EmailMessage, type EmailOutcome, type EmailProvider } from "@/server/messaging/email";
 import { shareMessageText, waMeLink } from "@/server/messaging/whatsapp";
 import { resolveAppUrl, shareUrl } from "@/server/sharing/config";
 import { recordAudit } from "./audit";
@@ -15,7 +15,16 @@ import type { ServiceContext } from "./context";
 import { primaryClinic } from "./render-snapshot";
 import { createShareLinkIn, listShareLinksIn, SHARE_LIMITS, type CreatedLink, type ShareLinkView } from "./share-links";
 
-export type WhatsAppShare = { linkId: string; url: string; waUrl: string; expiresAt: Date; recipientMasked: string };
+export type WhatsAppShare = {
+  linkId: string;
+  url: string;
+  waUrl: string;
+  expiresAt: Date;
+  recipientMasked: string;
+  /** The full number, for the clinic to confirm before opening WhatsApp; never logged or audited. */
+  recipientDisplay: string;
+  patientName: string;
+};
 export type EmailShare = { linkId: string; expiresAt: Date; recipientMasked: string };
 export type SharePanelData = {
   prescriptionId: string;
@@ -68,6 +77,13 @@ export async function shareByWhatsApp(
     const link = await createShareLinkIn(tx, ctx, { prescriptionId: input.prescriptionId, channel: "whatsapp" }, now);
     if (!link.ok) return link;
     const clinic = await primaryClinic(tx, ctx.tenantId);
+    const [patient] = await tx
+      .select({ name: patients.name })
+      .from(prescriptions)
+      .innerJoin(visits, eq(visits.id, prescriptions.visitId))
+      .innerJoin(patients, eq(patients.id, visits.patientId))
+      .where(and(eq(prescriptions.tenantId, ctx.tenantId), eq(prescriptions.id, link.value.prescriptionId)))
+      .limit(1);
     const [share] = await tx
       .insert(prescriptionShares)
       .values({
@@ -95,13 +111,16 @@ export async function shareByWhatsApp(
       url,
       expiresOn: dayText(link.value.expiresAt, zoneOf(clinic?.timezone)),
     });
-    return ok({ linkId: link.value.linkId, url, waUrl: waMeLink(recipient.digits, text), expiresAt: link.value.expiresAt, recipientMasked: recipient.masked });
+    return ok({ linkId: link.value.linkId, url, waUrl: waMeLink(recipient.digits, text), expiresAt: link.value.expiresAt, recipientMasked: recipient.masked, recipientDisplay: formatInternational(recipient.digits), patientName: patient?.name ?? "" });
   });
 }
 
 /**
- * Emails an expiring link (no attachment, decision 10). The link is created first (one transaction), the provider
- * is called outside any transaction, and the outcome is logged in a second one; a failed send withdraws its link.
+ * Emails an expiring link (no attachment, decision 10). Transaction 1 checks the daily cap, creates the link and logs
+ * a "prepared" row (so a send can never go unlogged and a retry cannot dodge the cap); the provider is then called
+ * outside any transaction; transaction 2 appends the outcome ("sent" or "failed"; the log is insert-only) and a failed
+ * send withdraws its link. If transaction 2 fails after a real send the email is still reported as sent: the prepared
+ * row stays as the record and still counts against the cap.
  */
 export async function shareByEmail(
   ctx: ServiceContext,
@@ -114,13 +133,16 @@ export async function shareByEmail(
   if (!provider) return fail("unavailable", NO_EMAIL);
   const recipient = emailRecipient(typeof input.email === "string" ? input.email : "");
   if (!recipient.ok) return fail("invalid", recipient.message, "email");
+  // The mask must fit the share log before a message leaves: a send that cannot be logged must not happen.
+  if (!isLoggableMask(recipient.masked)) return fail("invalid", RECIPIENT_MESSAGES.emailInvalid, "email");
   const appUrl = deps.appUrl === undefined ? resolveAppUrl(process.env) : deps.appUrl;
   if (!appUrl) return fail("unavailable", NO_APP_URL);
   const now = deps.now ?? new Date();
 
   const prepared = await withTenant(ctx.tenantId, async (tx): Promise<Result<{ link: CreatedLink; message: EmailMessage }>> => {
-    const [{ value: sentToday }] = await tx
-      .select({ value: count() })
+    // Attempts, not rows: every attempt has a prepared row and, later, an outcome row for the same link.
+    const [{ value: attempts }] = await tx
+      .select({ value: countDistinct(prescriptionShares.shareLinkId) })
       .from(prescriptionShares)
       .where(
         and(
@@ -130,7 +152,7 @@ export async function shareByEmail(
           gte(prescriptionShares.createdAt, new Date(now.getTime() - DAY_MS)),
         ),
       );
-    if (sentToday >= EMAILS_PER_PRESCRIPTION_PER_DAY) return fail("unavailable", TOO_MANY_EMAILS);
+    if (attempts >= EMAILS_PER_PRESCRIPTION_PER_DAY) return fail("unavailable", TOO_MANY_EMAILS);
     const link = await createShareLinkIn(tx, ctx, { prescriptionId: input.prescriptionId, channel: "email" }, now);
     if (!link.ok) return link;
     const clinic = await primaryClinic(tx, ctx.tenantId);
@@ -143,46 +165,80 @@ export async function shareByEmail(
       expiresOn: dayText(link.value.expiresAt, zoneOf(clinic?.timezone)),
       maxOpens: SHARE_LIMITS.maxOpens,
     });
+    const [share] = await tx
+      .insert(prescriptionShares)
+      .values({
+        tenantId: ctx.tenantId,
+        prescriptionId: link.value.prescriptionId,
+        shareLinkId: link.value.linkId,
+        channel: "email",
+        recipientMasked: recipient.masked,
+        provider: provider.name,
+        status: "prepared",
+        actorUserId: ctx.userId,
+      })
+      .returning({ id: prescriptionShares.id });
+    await recordAudit(tx, ctx, {
+      action: "prescription.shared",
+      entityType: "prescription",
+      entityId: link.value.prescriptionId,
+      after: { linkId: link.value.linkId, shareId: share.id, channel: "email", status: "prepared" },
+    });
     return ok({ link: link.value, message });
   });
   if (!prepared.ok) return prepared;
   const { link, message } = prepared.value;
 
   // Outside any transaction: a network call must never hold a database transaction open.
-  const outcome = await provider.send(message);
+  let outcome: EmailOutcome;
+  try {
+    outcome = await provider.send(message);
+  } catch {
+    outcome = { ok: false, code: "email_unavailable" };
+  }
 
-  return withTenant(ctx.tenantId, async (tx): Promise<Result<EmailShare>> => {
-    const [share] = await tx
-      .insert(prescriptionShares)
-      .values({
-        tenantId: ctx.tenantId,
-        prescriptionId: link.prescriptionId,
-        shareLinkId: link.linkId,
-        channel: "email",
-        recipientMasked: recipient.masked,
-        provider: provider.name,
-        status: outcome.ok ? "sent" : "failed",
-        providerMessageId: outcome.ok ? outcome.providerMessageId : null,
-        errorCode: outcome.ok ? null : outcome.code,
-        actorUserId: ctx.userId,
-      })
-      .returning({ id: prescriptionShares.id });
-    if (!outcome.ok) {
-      await tx
-        .update(shareLinks)
-        .set({ revokedAt: new Date(), revokedBy: ctx.userId, revokeReason: "send_failed" })
-        .where(and(eq(shareLinks.tenantId, ctx.tenantId), eq(shareLinks.id, link.linkId), isNull(shareLinks.revokedAt)));
-    }
-    await recordAudit(tx, ctx, {
-      action: "prescription.shared",
-      entityType: "prescription",
-      entityId: link.prescriptionId,
-      after: { linkId: link.linkId, shareId: share.id, channel: "email", status: outcome.ok ? "sent" : "failed" },
+  const withdraw = (tx: TenantTx) =>
+    tx
+      .update(shareLinks)
+      .set({ revokedAt: new Date(), revokedBy: ctx.userId, revokeReason: "send_failed" })
+      .where(and(eq(shareLinks.tenantId, ctx.tenantId), eq(shareLinks.id, link.linkId), isNull(shareLinks.revokedAt)));
+  const delivered: Result<EmailShare> = ok({ linkId: link.linkId, expiresAt: link.expiresAt, recipientMasked: recipient.masked });
+  try {
+    return await withTenant(ctx.tenantId, async (tx): Promise<Result<EmailShare>> => {
+      const [share] = await tx
+        .insert(prescriptionShares)
+        .values({
+          tenantId: ctx.tenantId,
+          prescriptionId: link.prescriptionId,
+          shareLinkId: link.linkId,
+          channel: "email",
+          recipientMasked: recipient.masked,
+          provider: provider.name,
+          status: outcome.ok ? "sent" : "failed",
+          providerMessageId: outcome.ok ? outcome.providerMessageId : null,
+          errorCode: outcome.ok ? null : outcome.code,
+          actorUserId: ctx.userId,
+        })
+        .returning({ id: prescriptionShares.id });
+      if (!outcome.ok) await withdraw(tx);
+      await recordAudit(tx, ctx, {
+        action: "prescription.shared",
+        entityType: "prescription",
+        entityId: link.prescriptionId,
+        after: { linkId: link.linkId, shareId: share.id, channel: "email", status: outcome.ok ? "sent" : "failed" },
+      });
+      return outcome.ok ? delivered : fail("unavailable", EMAIL_FAILED);
     });
-    return outcome.ok
-      ? ok({ linkId: link.linkId, expiresAt: link.expiresAt, recipientMasked: recipient.masked })
-      : fail("unavailable", EMAIL_FAILED);
-  });
+  } catch (error) {
+    console.error("shareByEmail outcome not logged", error instanceof Error ? error.name : typeof error);
+    if (outcome.ok) return delivered; // delivered; the prepared row is the record
+    try {
+      await withTenant(ctx.tenantId, (tx) => withdraw(tx));
+    } catch {
+      // the link reached nobody, and it expires on its own
+    }
+    return fail("unavailable", EMAIL_FAILED);
+  }
 }
 
 /** Everything the Share panel shows for one signed version (drafts have no panel). */

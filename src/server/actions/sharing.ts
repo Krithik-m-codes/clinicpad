@@ -5,7 +5,7 @@ import { requireSession } from "@/server/auth/session";
 import { revokeShareLink } from "@/server/services/share-links";
 import { shareByEmail, shareByWhatsApp } from "@/server/services/sharing";
 
-export type ShareFormState = { error?: string; field?: string; waUrl?: string; url?: string; sentTo?: string; expiresAt?: string };
+export type ShareFormState = { error?: string; field?: string; waUrl?: string; url?: string; sentTo?: string; expiresAt?: string; recipientDisplay?: string; patientName?: string };
 export type RevokeFormState = { error?: string };
 
 // Plain module constants: a "use server" file may export only async functions and types.
@@ -21,7 +21,14 @@ export async function shareWhatsAppAction(prescriptionId: string, _prev: ShareFo
     const result = await shareByWhatsApp(session, { prescriptionId, phone: formData.get("phone") });
     if (!result.ok) return { error: result.message, field: result.field };
     revalidatePath(`/prescriptions/${prescriptionId}`);
-    return { waUrl: result.value.waUrl, url: result.value.url, sentTo: result.value.recipientMasked, expiresAt: result.value.expiresAt.toISOString() };
+    return {
+      waUrl: result.value.waUrl,
+      url: result.value.url,
+      sentTo: result.value.recipientMasked,
+      recipientDisplay: result.value.recipientDisplay,
+      patientName: result.value.patientName,
+      expiresAt: result.value.expiresAt.toISOString(),
+    };
   } catch (error) {
     logFailure("shareWhatsAppAction", error);
     return { error: INTERNAL };

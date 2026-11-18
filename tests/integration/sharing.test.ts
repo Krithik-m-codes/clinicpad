@@ -39,6 +39,8 @@ describe("shareByWhatsApp", () => {
     expect(text).toContain("Asha <b>Clinic</b>");
     expect(text).not.toContain("Meena");
     expect(result.value.recipientMasked).toBe("+91******3210");
+    expect(result.value.recipientDisplay).toBe("+91 98765 43210");
+    expect(result.value.patientName).toBe(NAME);
 
     const [share] = await sharesOf(s.prescriptionId);
     expect(share).toMatchObject({ channel: "whatsapp", recipientMasked: "+91******3210", provider: "wa_link", status: "prepared", shareLinkId: result.value.linkId });
@@ -95,8 +97,73 @@ describe("shareByEmail", () => {
     expect(m.html).toContain("Asha &lt;b&gt;Clinic&lt;/b&gt;");
     expect(m.text).toMatch(/http:\/\/localhost:3000\/s\/[A-Za-z0-9_-]{43}/);
     expect(`${m.subject} ${m.text} ${m.html}`).not.toContain("Sharing Patient");
-    const [share] = await sharesOf(s.prescriptionId);
-    expect(share).toMatchObject({ channel: "email", status: "sent", provider: "fake", providerMessageId: "fake-1", recipientMasked: "M***@example.com" });
+    const rows = (await sharesOf(s.prescriptionId)).sort((a, b) => (a.status === "prepared" ? -1 : b.status === "prepared" ? 1 : 0));
+    expect(rows.map((r) => r.status)).toEqual(["prepared", "sent"]);
+    expect(rows[0]).toMatchObject({ channel: "email", provider: "fake", recipientMasked: "M***@example.com", providerMessageId: null });
+    expect(rows[1]).toMatchObject({ channel: "email", status: "sent", provider: "fake", providerMessageId: "fake-1", recipientMasked: "M***@example.com" });
+  });
+
+  it("logs a send to an address with a long digit run in its domain (the mask can never break the log)", async () => {
+    const s = await shareablePrescription(A, NAME);
+    const email = createFakeEmailProvider();
+    const result = await shareByEmail(A.as("doctor"), { prescriptionId: s.prescriptionId, email: "ravi@clinic12345.in" }, { email, appUrl: APP });
+    expect(result).toMatchObject({ ok: true, value: { recipientMasked: "r***@clinic*****.in" } });
+    expect(email.sent).toHaveLength(1);
+    expect((await sharesOf(s.prescriptionId)).map((r) => r.status).sort()).toEqual(["prepared", "sent"]);
+  });
+
+  it("writes the prepared row before the provider is called", async () => {
+    const s = await shareablePrescription(A, NAME);
+    const email = createFakeEmailProvider();
+    let seen: string[] = [];
+    const send = email.send.bind(email);
+    email.send = async (message) => {
+      seen = (await sharesOf(s.prescriptionId)).map((r) => r.status);
+      return send(message);
+    };
+    await shareByEmail(A.as("doctor"), { prescriptionId: s.prescriptionId, email: "a@example.com" }, { email, appUrl: APP });
+    expect(seen).toEqual(["prepared"]);
+  });
+
+  it("still reports success, with a prepared row kept, when the outcome cannot be logged after a real send", async () => {
+    const s = await shareablePrescription(A, NAME);
+    const email = createFakeEmailProvider();
+    email.send = async (message) => {
+      email.sent.push(message);
+      // a provider id longer than the log allows makes the second transaction fail
+      return { ok: true, providerMessageId: "x".repeat(201) };
+    };
+    const result = await shareByEmail(A.as("doctor"), { prescriptionId: s.prescriptionId, email: "a@example.com" }, { email, appUrl: APP });
+    expect(result.ok).toBe(true);
+    expect(email.sent).toHaveLength(1);
+    expect((await sharesOf(s.prescriptionId)).map((r) => r.status)).toEqual(["prepared"]);
+  });
+
+  it("counts a send whose outcome was never logged against the daily cap", async () => {
+    const s = await shareablePrescription(A, NAME);
+    const email = createFakeEmailProvider();
+    email.send = async (message) => {
+      email.sent.push(message);
+      return { ok: true, providerMessageId: "x".repeat(201) };
+    };
+    for (let i = 0; i < 5; i += 1) {
+      expect((await shareByEmail(A.as("doctor"), { prescriptionId: s.prescriptionId, email: `q${i}@example.com` }, { email, appUrl: APP })).ok).toBe(true);
+    }
+    expect(await shareByEmail(A.as("doctor"), { prescriptionId: s.prescriptionId, email: "q5@example.com" }, { email, appUrl: APP })).toMatchObject({ ok: false, code: "unavailable" });
+    expect(email.sent).toHaveLength(5);
+  });
+
+  it("treats a provider that throws as a failed send and withdraws the link", async () => {
+    const s = await shareablePrescription(A, NAME);
+    const email = createFakeEmailProvider();
+    email.send = async () => {
+      throw new Error("boom");
+    };
+    expect(await shareByEmail(A.as("doctor"), { prescriptionId: s.prescriptionId, email: "a@example.com" }, { email, appUrl: APP })).toMatchObject({ ok: false, code: "unavailable" });
+    const rows = await sharesOf(s.prescriptionId);
+    expect(rows.map((r) => r.status).sort()).toEqual(["failed", "prepared"]);
+    const [link] = await adminDb.select().from(shareLinks).where(eq(shareLinks.prescriptionId, s.prescriptionId));
+    expect(link.revokeReason).toBe("send_failed");
   });
 
   it("refuses a header-injection address before anything is created", async () => {
@@ -114,7 +181,10 @@ describe("shareByEmail", () => {
     email.failWith = "email_rejected";
     const result = await shareByEmail(A.as("doctor"), { prescriptionId: s.prescriptionId, email: "a@example.com" }, { email, appUrl: APP });
     expect(result).toMatchObject({ ok: false, code: "unavailable" });
-    const [share] = await sharesOf(s.prescriptionId);
+    const rows = await sharesOf(s.prescriptionId);
+    expect(rows.map((r) => r.status).sort()).toEqual(["failed", "prepared"]);
+    const share = rows.find((r) => r.status === "failed");
+    if (!share) throw new Error("no failed row");
     expect(share).toMatchObject({ status: "failed", errorCode: "email_rejected" });
     const [link] = await adminDb.select().from(shareLinks).where(eq(shareLinks.id, share.shareLinkId));
     expect(link.revokeReason).toBe("send_failed");

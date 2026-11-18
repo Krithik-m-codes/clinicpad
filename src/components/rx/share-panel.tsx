@@ -55,7 +55,17 @@ function WhatsAppForm({ prescriptionId, defaultPhone, timeZone }: { prescription
       {state.waUrl && state.url ? (
         <div role="status" className="space-y-2 rounded-md border bg-muted/40 p-2 text-sm">
           <p>
-            Message ready for {state.sentTo}. The link works until {untilText(state.expiresAt, timeZone)}.
+            Message ready. The link works until {untilText(state.expiresAt, timeZone)}.
+          </p>
+          <p data-testid="share-confirm-number">
+            Check before sending: this goes to <strong>{state.recipientDisplay ?? state.sentTo}</strong>
+            {state.patientName ? (
+              <>
+                {" "}
+                for <strong>{state.patientName}</strong>
+              </>
+            ) : null}
+            . A wrong number sends the prescription link to a stranger.
           </p>
           <div className="flex flex-wrap gap-2">
             <Button asChild>
