@@ -29,6 +29,8 @@ export const OVERLAY_LIMITS = {
   maxBandMm: 12,
   /** The repeating header and footer spacers of the flow table may take at most 24% of the paper height each (S1, override 16a). */
   maxSpacerMm: { A4: 71, A5: 50 },
+  /** ... and, measured on the page the printer really has (paper minus the page-number band minus the printer offset), 24% of that (override 21a). */
+  maxSpacerFraction: 0.24,
 } as const;
 
 export const SECTION_KEYS = [
@@ -108,6 +110,18 @@ export type GeometryIssue = { path: string; message: string };
 
 const EPSILON = 0.05;
 
+/**
+ * The tallest repeating header or footer spacer Chromium will repeat on every page (override 21a). It repeats a table
+ * header only while it is under about a quarter of the page area it has, which is the paper minus the page-number band,
+ * so the rule is 24% of that area, shrunk further by the worst-case printer offset (the offset pushes the spacer
+ * down by up to |offset| mm). Never above the plain 24% of the paper (maxSpacerMm).
+ */
+export function spacerLimitMm(paperSize: PaperSize, bandMm: number, offsetYMm: number): number {
+  const area = PAPER[paperSize].heightMm - bandMm - Math.abs(offsetYMm);
+  const fraction = Math.floor(area * OVERLAY_LIMITS.maxSpacerFraction * 10) / 10;
+  return Math.min(OVERLAY_LIMITS.maxSpacerMm[paperSize], fraction);
+}
+
 /** Placement problems the schema cannot see because they depend on the paper size. */
 export function overlayGeometryIssues(def: OverlayDefinition, paperSize: PaperSize): GeometryIssue[] {
   const { widthMm, heightMm } = PAPER[paperSize];
@@ -125,12 +139,15 @@ export function overlayGeometryIssues(def: OverlayDefinition, paperSize: PaperSi
   if (widthMm - def.flow.leftMm - def.flow.rightMm < OVERLAY_LIMITS.minFlowWidthMm) {
     issues.push({ path: "flow", message: `The body region is too narrow: leave at least ${OVERLAY_LIMITS.minFlowWidthMm} mm.` });
   }
-  const maxSpacer = OVERLAY_LIMITS.maxSpacerMm[paperSize];
-  if (def.flow.topMm > maxSpacer + EPSILON) {
-    issues.push({ path: "flow.topMm", message: `The space above the body is too tall: keep it within ${maxSpacer} mm (about a quarter of the page).` });
+  // The spacers as printed are at worst top + |offset| and (bottom - band) + |offset| tall, on a page of (paper - band - |offset|).
+  const offsetY = Math.abs(def.printOffsetMm.y);
+  const maxSpacer = spacerLimitMm(paperSize, band, offsetY);
+  const spacerNote = band > 0 || offsetY > 0 ? " (less when there is a page-number band or a printer offset)" : "";
+  if (def.flow.topMm + offsetY > maxSpacer + EPSILON) {
+    issues.push({ path: "flow.topMm", message: `The space above the body is too tall: keep it within ${maxSpacer} mm including the printer offset (about a quarter of the page)${spacerNote}.` });
   }
-  if (def.flow.bottomMm > maxSpacer + EPSILON) {
-    issues.push({ path: "flow.bottomMm", message: `The space below the body is too tall: keep it within ${maxSpacer} mm (about a quarter of the page).` });
+  if (Math.max(0, def.flow.bottomMm - band) + offsetY > maxSpacer + EPSILON) {
+    issues.push({ path: "flow.bottomMm", message: `The space below the body is too tall: keep it within ${maxSpacer} mm including the printer offset (about a quarter of the page)${spacerNote}.` });
   }
   return issues;
 }

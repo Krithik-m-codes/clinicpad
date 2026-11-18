@@ -5,7 +5,8 @@ import { auditEvents, clinics, doctors, prescriptions, templates, templateVersio
 import { defaultOverlayDefinition } from "@/lib/rx-render/overlay-definition";
 import { parseRenderSnapshot } from "@/lib/rx-render/snapshot";
 import { amendPrescription, finalizePrescription, repeatPrescription } from "@/server/services/prescriptions";
-import { TEMPLATE_UNUSABLE_MESSAGE } from "@/server/services/template-resolution";
+import { withTenant } from "@/server/db/tenant";
+import { loadOverlayIn, TEMPLATE_UNUSABLE_MESSAGE } from "@/server/services/template-resolution";
 import type { ServiceContext } from "@/server/services/context";
 import { finalized, newPatient, savedDraft } from "../helpers/rx-flow";
 import { insertPublishedOverlay, insertTemplate, MINIMAL_OVERLAY_DEFINITION, publishNewVersion } from "../helpers/templates";
@@ -145,6 +146,46 @@ describe("resolution at finalize", () => {
     expect(await finalizePrescription(doctor(), id, { expectedRevision: revision })).toEqual({ ok: false, code: "invalid", message: TEMPLATE_UNUSABLE_MESSAGE });
     expect((await rxRow(id)).row.status).toBe("draft");
     expect(await counter()).toBe(before);
+  });
+});
+
+describe("finalize checks the geometry again (override 21d)", () => {
+  it("refuses a pad whose spacer the print engine would not repeat: nothing finalized, no Rx number used", async () => {
+    // Stored (as if published before the rule tightened): a 71 mm top spacer plus a 10 mm printer offset on A4.
+    const tooTall = { ...structuredClone(MINIMAL_OVERLAY_DEFINITION), flow: { ...MINIMAL_OVERLAY_DEFINITION.flow, topMm: 71 }, printOffsetMm: { x: 0, y: 10 } };
+    const t = await insertPublishedOverlay(A.tenantId, { definition: tooTall });
+    await setClinicTemplate(t.templateId);
+    const counter = async () => (await adminDb.select().from(tenantCounters).where(and(eq(tenantCounters.tenantId, A.tenantId), eq(tenantCounters.name, "rx"))))[0]?.lastNo ?? 0;
+    const before = await counter();
+    const { id, revision } = await savedDraft(doctor(), patientId);
+    expect(await finalizePrescription(doctor(), id, { expectedRevision: revision })).toEqual({ ok: false, code: "invalid", message: TEMPLATE_UNUSABLE_MESSAGE });
+    expect((await rxRow(id)).row.status).toBe("draft");
+    expect(await counter()).toBe(before);
+  });
+});
+
+describe("reprint (loadOverlayIn)", () => {
+  const layoutOf = (t: { versionId: string; contentSha256: string }) => ({ template: { kind: "overlay" as const, templateVersionId: t.versionId, contentSha256: t.contentSha256 }, paperSize: "A4" as const, labels: "en" as const });
+  const load = (layout: ReturnType<typeof layoutOf>) => withTenant(A.tenantId, (tx) => loadOverlayIn(tx, A.tenantId, layout));
+
+  it("loads the exact published version, and a stored pad that no longer passes the geometry rule still reprints (no re-check)", async () => {
+    const tooTall = { ...structuredClone(MINIMAL_OVERLAY_DEFINITION), flow: { ...MINIMAL_OVERLAY_DEFINITION.flow, topMm: 71 }, printOffsetMm: { x: 0, y: 10 } };
+    const t = await insertPublishedOverlay(A.tenantId, { definition: tooTall });
+    const loaded = await load(layoutOf(t));
+    expect(loaded?.templateVersionId).toBe(t.versionId);
+    expect(loaded?.definition.flow.topMm).toBe(71);
+  });
+
+  it("returns null when only the definition was tampered with (the file and every other column untouched)", async () => {
+    const t = await insertPublishedOverlay(A.tenantId);
+    expect(await load(layoutOf(t))).not.toBeNull();
+    // Outside the app (replica mode skips the immutability trigger); the tampered value still parses under the frozen v1 schema.
+    const tampered = { ...structuredClone(MINIMAL_OVERLAY_DEFINITION), flow: { ...MINIMAL_OVERLAY_DEFINITION.flow, leftMm: 16 } };
+    await adminDb.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(templateVersions).set({ definition: tampered }).where(eq(templateVersions.id, t.versionId));
+    });
+    expect(await load(layoutOf(t))).toBeNull();
   });
 });
 

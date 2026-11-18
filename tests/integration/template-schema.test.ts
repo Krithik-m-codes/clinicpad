@@ -373,26 +373,26 @@ describe("offboarding", () => {
   it("still deletes a tenant with published versions, files, assignments and outputs", async () => {
     const C = await createTestTenant("tpl-schema-off");
     try {
-    const { templateId, versionId, fileId } = await insertTemplate(C.tenantId, { publish: true });
-    await adminDb.update(clinics).set({ customTemplateId: templateId }).where(eq(clinics.tenantId, C.tenantId));
-    await adminDb.update(doctors).set({ templateId }).where(eq(doctors.tenantId, C.tenantId));
-    const { rxId } = await draftRx(C.tenantId);
-    await finalizeWith(rxId, versionId, versionId);
-    await adminDb.insert(prescriptionOutputs).values({
-      tenantId: C.tenantId,
-      prescriptionId: rxId,
-      kind: "browser_print",
-      paperSize: "A4",
-      htmlSha256: "a".repeat(64),
-      engine: "browser",
-      templateKey: "overlay",
-      templateVersionId: versionId,
-    });
-    await C.cleanup();
-    for (const [table, id] of [[templateFiles, fileId], [templateVersions, versionId], [templates, templateId]] as const) {
-      expect(await adminDb.select({ id: table.id }).from(table).where(eq(table.id, id))).toHaveLength(0);
-    }
-    expect(await adminDb.select({ id: tenants.id }).from(tenants).where(eq(tenants.id, C.tenantId))).toHaveLength(0);
+      const { templateId, versionId, fileId } = await insertTemplate(C.tenantId, { publish: true });
+      await adminDb.update(clinics).set({ customTemplateId: templateId }).where(eq(clinics.tenantId, C.tenantId));
+      await adminDb.update(doctors).set({ templateId }).where(eq(doctors.tenantId, C.tenantId));
+      const { rxId } = await draftRx(C.tenantId);
+      await finalizeWith(rxId, versionId, versionId);
+      await adminDb.insert(prescriptionOutputs).values({
+        tenantId: C.tenantId,
+        prescriptionId: rxId,
+        kind: "browser_print",
+        paperSize: "A4",
+        htmlSha256: "a".repeat(64),
+        engine: "browser",
+        templateKey: "overlay",
+        templateVersionId: versionId,
+      });
+      await C.cleanup();
+      for (const [table, id] of [[templateFiles, fileId], [templateVersions, versionId], [templates, templateId]] as const) {
+        expect(await adminDb.select({ id: table.id }).from(table).where(eq(table.id, id))).toHaveLength(0);
+      }
+      expect(await adminDb.select({ id: tenants.id }).from(tenants).where(eq(tenants.id, C.tenantId))).toHaveLength(0);
     } finally {
       await C.cleanup().catch(() => undefined);
     }

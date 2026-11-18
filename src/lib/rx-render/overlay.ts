@@ -3,7 +3,7 @@ import { html, raw, userText, type SafeHtml } from "./html";
 import { statusText } from "./labels";
 import { signature, snapshotNote, statusBanner, watermark } from "./marks";
 import { overlayCss } from "./overlay-css";
-import { OVERLAY_LIMITS, type OverlayBox } from "./overlay-definition";
+import { spacerLimitMm, type OverlayBox } from "./overlay-definition";
 import { PAPER } from "./paper";
 import { allergies, section } from "./sections";
 import { documentCss } from "./styles";
@@ -38,22 +38,22 @@ function boxMarkup(c: Ctx, data: TemplateData, box: OverlayBox, index: number, s
  * them on every printed page; first-page boxes are absolute; the clinical body flows inside a table whose thead and tfoot
  * spacers keep it clear of the letterhead and the footer on every page, drawn by the same section and medicine renderers
  * as the built-in pads. Pure, self-contained, and inside the same safety rules (common.ts).
- * Throws (a programming or storage error, never user input) when a spacer exceeds the 24% rule the print engines need.
+ * Never throws for a stored or finalized version: a spacer taller than the print engine would repeat is clamped to
+ * that limit (publishing refuses such a pad, so this only protects pads stored before a rule tightened).
  */
-export function renderOverlay(doc: RxDocument, assets: RenderAssets, overlay: OverlayInput, options: OverlayRenderOptions): RenderedDocument {
-  const { paperSize, labels } = doc.snapshot.layout;
+export function renderOverlay(input: RxDocument, inAssets: RenderAssets, overlay: OverlayInput, options: OverlayRenderOptions): RenderedDocument {
+  const { paperSize, labels } = input.snapshot.layout;
   const def = overlay.definition;
   const full = PAPER[paperSize];
-  const maxSpacer = OVERLAY_LIMITS.maxSpacerMm[paperSize];
-  if (def.flow.topMm > maxSpacer + 0.05 || def.flow.bottomMm > maxSpacer + 0.05) {
-    throw new Error(`overlay: a spacer is taller than ${maxSpacer} mm, so the print engine would not repeat it`);
-  }
   const band = def.pageNumbers.bandMm;
   const paper: PaperSpec = { ...full, marginMm: { top: 0, right: 0, bottom: band, left: 0 } };
-  const c: Ctx = { doc, def: TEMPLATE_DEFINITIONS[def.flow.bodyStyle], lang: labels, assets, paper };
-  const data = toTemplateData(doc, labels);
   const printing = options.target === "print";
   const offset = printing ? def.printOffsetMm : { x: 0, y: 0 };
+  // A sample is never anyone's signature and has no prescription number (override 21b): enforced here whatever the caller passed.
+  const doc = options.sample ? { ...input, rxNo: null } : input;
+  const assets = options.sample ? { ...inAssets, signature: null } : inAssets;
+  const c: Ctx = { doc, def: TEMPLATE_DEFINITIONS[def.flow.bodyStyle], lang: labels, assets, paper };
+  const data = toTemplateData(doc, labels);
   const background = printing && def.background.printMode === "pdf_only" ? null : image(overlay.background);
   const title = documentTitle(doc);
 
@@ -74,7 +74,7 @@ export function renderOverlay(doc: RxDocument, assets: RenderAssets, overlay: Ov
 <title>${title}</title>
 <style>${raw(assets.fontCss)}
 ${raw(documentCss(c.def, paper))}
-${raw(overlayCss(def, full, offset))}</style>
+${raw(overlayCss(def, full, offset, spacerLimitMm(paperSize, band, offset.y)))}</style>
 </head>
 <body class="overlay paper-${paperSize.toLowerCase()} status-${doc.status} target-${options.target}" data-rx="ready">
 ${background ? html`<div class="bg">${background}</div>` : null}

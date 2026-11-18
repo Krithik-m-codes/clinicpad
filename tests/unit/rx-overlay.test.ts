@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EMPTY_FOOTER, renderOverlay, type OverlayRenderOptions } from "@/lib/rx-render/overlay";
 import { overlayCss } from "@/lib/rx-render/overlay-css";
-import type { OverlayBox } from "@/lib/rx-render/overlay-definition";
+import type { OverlayBox, OverlayDefinition } from "@/lib/rx-render/overlay-definition";
 import { PAPER } from "@/lib/rx-render/paper";
 import { checkSelfContained, MAX_DOCUMENT_CHARS } from "@/lib/rx-render/self-contained";
 import { BACKGROUND_LIMITS, IMAGE_LIMITS } from "@/lib/domain/image";
@@ -14,6 +14,7 @@ const NO_ASSETS: RenderAssets = { logo: null, signature: null, fontCss: "" };
 const SCREEN: OverlayRenderOptions = { target: "screen", sample: false };
 const parse = (markup: string) => new DOMParser().parseFromString(markup, "text/html");
 const css = (markup: string) => parse(markup).querySelector("style")?.textContent ?? "";
+const a5Definition2 = (patch: Partial<OverlayDefinition>): OverlayDefinition => ({ ...a5Definition(), ...patch });
 const box = (patch: Partial<OverlayBox>): OverlayBox => ({ id: "x", field: "patient.name", xMm: 20, yMm: 30, wMm: 60, hMm: 7, fontPt: 10, align: "left", bold: false, repeat: "every_page", ...patch });
 
 function render(doc: RxDocument = overlayDocument(), options: OverlayRenderOptions = SCREEN, input = overlayInput(), assets = NO_ASSETS) {
@@ -132,15 +133,44 @@ describe("renderOverlay", () => {
     expect(page.querySelector(".box-0 img")).toBeNull();
   });
 
+  it("never prints a signature image in a sample preview in end-of-content mode either, and the Rx number is blank", () => {
+    const sample = render(overlayDocument(), { target: "screen", sample: true }, overlayInput(), { ...NO_ASSETS, signature: TINY_PNG });
+    const page = parse(sample.html);
+    expect(page.querySelector(".closing .sig")).not.toBeNull();
+    expect(page.querySelector(".sig img")).toBeNull();
+    expect(render(overlayDocument(), SCREEN, overlayInput(), { ...NO_ASSETS, signature: TINY_PNG }).html).toContain("<img");
+    const withRx = overlayDefinition({ boxes: [box({ id: "rx", field: "visit.rx_no" })] });
+    const rx = render(overlayDocument({ rxNo: 12 }), { target: "screen", sample: true }, overlayInput(withRx));
+    expect(parse(rx.html).querySelector(".box-0")?.textContent).toBe("");
+    expect(rx.html).not.toContain("Rx 12");
+    expect(rx.footerHtml).not.toContain("12");
+    expect(parse(render(overlayDocument({ rxNo: 12 }), SCREEN, overlayInput(withRx)).html).querySelector(".box-0")?.textContent).toBe("12");
+  });
+
+  it("keeps the DRAFT or SAMPLE watermark above the background", () => {
+    expect(css(render().html)).toContain(".overlay .watermark{z-index:2}");
+  });
+
   it("keeps pre-line wrapping so multi-line address and footer boxes print their lines", () => {
     expect(css(render().html)).toContain("white-space:pre-line");
   });
 
-  it("refuses a body region whose spacers the printer would not repeat (24% of the paper)", () => {
+  it("never throws for a stored version: a spacer past the limit is clamped to it (override 21a)", () => {
+    const flow = (patch: Partial<OverlayDefinition["flow"]>) => ({ ...a5Definition().flow, ...patch });
+    const flowCss = (markup: string) => ({ top: /\.flow-top\{height:([0-9.]+)mm/.exec(css(markup))?.[1], bottom: /\.flow-bottom\{height:([0-9.]+)mm/.exec(css(markup))?.[1] });
+    const a5Doc = overlayDocument({ layout: { paperSize: "A5", labels: "en" } });
+    const renderA5 = (def: OverlayDefinition, target: RenderTarget = "pdf") => render(a5Doc, { target, sample: false }, overlayInput(def));
+    // A4 limit 71, stored 72.
     const tall = overlayDefinition({ flow: { ...overlayDefinition().flow, topMm: 72 } });
-    expect(() => render(overlayDocument(), SCREEN, overlayInput(tall))).toThrow(/spacer/);
-    const ok = overlayDefinition({ flow: { ...overlayDefinition().flow, topMm: 71, bottomMm: 71 } });
-    expect(() => render(overlayDocument(), SCREEN, overlayInput(ok))).not.toThrow();
+    expect(flowCss(render(overlayDocument(), SCREEN, overlayInput(tall)).html).top).toBe("71");
+    // The reviewer's three cases.
+    expect(flowCss(renderA5(a5Definition2({ flow: flow({ topMm: 50 }), pageNumbers: { bandMm: 12 } })).html).top).toBe("47.5");
+    expect(flowCss(renderA5(a5Definition2({ flow: flow({ topMm: 50 }), printOffsetMm: { x: 0, y: 10 } }), "print").html).top).toBe("48");
+    const a4Offset = overlayDefinition({ flow: { ...overlayDefinition().flow, topMm: 71 }, printOffsetMm: { x: 0, y: 10 } });
+    expect(flowCss(render(overlayDocument(), { target: "print", sample: false }, overlayInput(a4Offset)).html).top).toBe("68.8");
+    // The footer spacer is clamped too; spacers inside the limit are untouched.
+    expect(flowCss(renderA5(a5Definition2({ flow: flow({ topMm: 30, bottomMm: 60 }), pageNumbers: { bandMm: 12 } })).html)).toEqual({ top: "30", bottom: "47.5" });
+    expect(flowCss(renderA5(a5Definition2({ flow: flow({ topMm: 30, bottomMm: 40 }) })).html)).toEqual({ top: "30", bottom: "40" });
   });
 
   it("fits the worst case under the document cap: biggest background, logo and signature boxes, 30 medicines, 5,000-character hostile fields", () => {
@@ -195,13 +225,13 @@ describe("renderOverlay", () => {
 
 describe("overlayCss", () => {
   it("contains only CSS built from numbers and fixed words", () => {
-    const text = overlayCss(overlayDefinition(), PAPER.A4, { x: 0, y: 0 });
+    const text = overlayCss(overlayDefinition(), PAPER.A4, { x: 0, y: 0 }, 71);
     expect(text).toMatch(/^[a-z0-9.\-{}:;%(),> @\n]+$/i);
   });
 
   it("throws on a number that is not finite (a programming error: the schema refuses it)", () => {
     const def = overlayDefinition();
-    expect(() => overlayCss({ ...def, boxes: [{ ...def.boxes[0], xMm: Number.NaN }] }, PAPER.A4, { x: 0, y: 0 })).toThrow();
+    expect(() => overlayCss({ ...def, boxes: [{ ...def.boxes[0], xMm: Number.NaN }] }, PAPER.A4, { x: 0, y: 0 }, 71)).toThrow();
   });
 });
 

@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { fail, ok, type Result } from "@/lib/result";
-import { overlayDefinitionSchema, type OverlayDefinition } from "@/lib/rx-render/overlay-definition";
+import { overlayDefinitionSchema, overlayGeometryIssues, type OverlayDefinition } from "@/lib/rx-render/overlay-definition";
 import {
   BUILTIN_TEMPLATES,
   LABEL_LANGUAGES,
@@ -18,9 +18,9 @@ import { fileAsImageAsset, loadTemplateFileIn } from "./template-files";
 
 /** Shown when a frozen pad no longer matches what was signed: never print something else instead. */
 export const TEMPLATE_DAMAGED_MESSAGE = "This prescription's pad template is damaged, so it cannot be printed. Contact support.";
-/** Shown when the pad assigned to the signer cannot be used at finalize: nothing is finalized and no number is used. */
+/** Shown when the custom pad that applies to the signer cannot be used at finalize: nothing is finalized and no number is used. */
 export const TEMPLATE_UNUSABLE_MESSAGE =
-  "The pad assigned to you is damaged, so the prescription was not finalized. Ask the clinic owner to publish the pad again, or remove the assignment.";
+  "The custom pad for this prescription cannot be used, so it was not finalized. Ask the clinic owner to publish the pad again or switch to a built-in pad.";
 
 type ClinicRow = typeof clinics.$inferSelect;
 type DoctorRow = typeof doctors.$inferSelect;
@@ -81,6 +81,9 @@ export async function resolveTemplateIn(tx: TenantTx, tenantId: string, clinic: 
     if (version.state !== "published" || !version.contentSha256 || !paperSize || !labels || !definition || !file) {
       return fail("invalid", TEMPLATE_UNUSABLE_MESSAGE);
     }
+    // Finalizing is the one place the geometry is checked again (override 21d): a pad that no longer fits its paper
+    // fails closed here and burns no Rx number; reprints never re-check (the hash proves the stored content).
+    if (overlayGeometryIssues(definition, paperSize).length > 0) return fail("invalid", TEMPLATE_UNUSABLE_MESSAGE);
     const contentSha256 = templateContentSha256({ kind: "overlay", paperSize, labels, definition, fileSha256: file.sha256 });
     if (contentSha256 !== version.contentSha256) return fail("invalid", TEMPLATE_UNUSABLE_MESSAGE);
     return ok({ template: { kind: "overlay", templateVersionId: version.id, contentSha256 }, paperSize, labels });

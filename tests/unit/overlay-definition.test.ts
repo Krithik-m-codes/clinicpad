@@ -7,6 +7,7 @@ import {
   overlayDefinitionSchema,
   overlayGeometryIssues,
   parseOverlayDefinition,
+  spacerLimitMm,
   type OverlayDefinition,
 } from "@/lib/rx-render/overlay-definition";
 import { MINIMAL_OVERLAY_DEFINITION } from "../fixtures/overlay-definitions";
@@ -185,6 +186,52 @@ describe("overlayGeometryIssues", () => {
     expect(overlayGeometryIssues(tallBottom, "A4").map((i) => i.path)).toEqual(["flow.bottomMm"]);
     const a5 = { ...base(), boxes: [{ ...base().boxes[0], wMm: 60 }], flow: { ...base().flow, topMm: 50.1, bottomMm: 50, leftMm: 10, rightMm: 10 } };
     expect(overlayGeometryIssues(a5, "A5").map((i) => i.path)).toEqual(["flow.topMm"]);
+  });
+});
+
+describe("spacer limit on the effective page (override 21a)", () => {
+  const a5 = (top: number, bottom: number, band: number, offsetY = 0): OverlayDefinition => ({
+    ...defaultOverlayDefinition("A5"),
+    flow: { ...defaultOverlayDefinition("A5").flow, topMm: top, bottomMm: bottom },
+    pageNumbers: { bandMm: band },
+    printOffsetMm: { x: 0, y: offsetY },
+  });
+  const paths = (def: OverlayDefinition, paper: "A4" | "A5") => overlayGeometryIssues(def, paper).map((i) => i.path);
+
+  it("is 24% of the paper minus the band minus the printer offset, never above the plain 24% of the paper", () => {
+    expect(spacerLimitMm("A5", 0, 0)).toBe(50);
+    expect(spacerLimitMm("A4", 0, 0)).toBe(71);
+    expect(spacerLimitMm("A5", 12, 0)).toBe(47.5);
+    expect(spacerLimitMm("A5", 0, -10)).toBe(48);
+    expect(spacerLimitMm("A4", 0, 10)).toBe(68.8);
+  });
+
+  it("the reviewer's A5 case: a 50 mm top spacer with a 12 mm page-number band is refused", () => {
+    expect(paths(a5(50, 20, 12), "A5")).toEqual(["flow.topMm"]);
+    expect(paths(a5(47.5, 20, 12), "A5")).toEqual([]);
+    expect(paths(a5(50, 20, 0), "A5")).toEqual([]);
+  });
+
+  it("the reviewer's A5 print case: a 50 mm top spacer with a +10 mm printer offset is refused (either sign)", () => {
+    expect(paths(a5(50, 20, 0, 10), "A5")).toEqual(["flow.topMm"]);
+    expect(paths(a5(50, 20, 0, -10), "A5")).toEqual(["flow.topMm"]);
+    expect(paths(a5(38, 20, 0, 10), "A5")).toEqual([]);
+    expect(paths(a5(38.1, 20, 0, 10), "A5")).toEqual(["flow.topMm"]);
+  });
+
+  it("the reviewer's A4 case: a 71 mm top spacer with a +10 mm printer offset is refused", () => {
+    const a4 = (top: number): OverlayDefinition => ({ ...base(), flow: { ...base().flow, topMm: top }, printOffsetMm: { x: 0, y: 10 } });
+    expect(paths(a4(71), "A4")).toEqual(["flow.topMm"]);
+    expect(paths(a4(58.8), "A4")).toEqual([]);
+    expect(paths(a4(58.9), "A4")).toEqual(["flow.topMm"]);
+  });
+
+  it("applies the same effective-page rule to the bottom spacer (the band is not part of the footer spacer)", () => {
+    expect(paths(a5(30, 50, 12), "A5")).toEqual([]); // 50 - 12 = 38 mm of spacer on a 198 mm page
+    expect(paths(a5(30, 59.6, 12), "A5")).toEqual(["flow.bottomMm"]); // 47.6 > 47.5
+    expect(paths(a5(30, 59.5, 12), "A5")).toEqual([]);
+    expect(paths(a5(30, 50, 0, 10), "A5")).toEqual(["flow.bottomMm"]); // 50 + 10 > 48
+    expect(paths(a5(30, 38, 0, -10), "A5")).toEqual([]);
   });
 });
 

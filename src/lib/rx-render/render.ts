@@ -13,7 +13,11 @@ export { DOCUMENT_CSP, footerTemplate } from "./common";
  */
 export const RENDERER_VERSION = "1";
 
-/** Renderer version per template kind, logged with every output (pinned: a frozen overlay reprints with its renderer). */
+/**
+ * Renderer version per template kind, logged with every output. The renderer itself is NOT frozen: overlay-1 shares
+ * the sections, styles, marks and labels with the built-in pads, so a change there alters overlay reprints too (the
+ * frozen part is the template content, hashed in the snapshot). Bump the version whenever printed output changes.
+ */
 export const RENDERER_VERSIONS = { builtin: RENDERER_VERSION, overlay: OVERLAY_RENDERER_VERSION } as const;
 
 export function rendererVersionFor(template: TemplateRef): string {

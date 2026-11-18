@@ -13,20 +13,24 @@ function n(value: number): string {
 /**
  * Positions for one overlay pad, built ONLY from numbers of a definition that overlayDefinitionSchema accepted and from
  * fixed words (spec section 6.2): no strings from the definition, no url(), no comments. Box classes use the box's
- * index, never its id. `paper` is the full page (PAPER[size]); `offset` is the printer calibration (paper only).
+ * index, never its id. `paper` is the full page (PAPER[size]); `offset` is the printer calibration (paper only);
+ * `maxSpacerMm` is spacerLimitMm() for this page.
  *
  * Print mechanics (spike S1): the background and every-page boxes are position:fixed (Chromium repeats them on each
  * page); the flow table's thead and tfoot spacers repeat on each page only while each is at most 25% of the paper
  * height, which renderOverlay asserts (the 24% publish rule).
  */
-export function overlayCss(def: OverlayDefinition, paper: PaperSpec, offset: { x: number; y: number }): string {
+export function overlayCss(def: OverlayDefinition, paper: PaperSpec, offset: { x: number; y: number }, maxSpacerMm: number): string {
   const band = def.pageNumbers.bandMm;
-  const top = Math.max(0, def.flow.topMm + offset.y);
-  const bottom = Math.max(0, def.flow.bottomMm - band - offset.y);
+  // A stored version is never refused at print time: a spacer the engine would not repeat is clamped to the limit (override 21a).
+  const top = Math.min(maxSpacerMm, Math.max(0, def.flow.topMm + offset.y));
+  const bottom = Math.min(maxSpacerMm, Math.max(0, def.flow.bottomMm - band - offset.y));
   const left = Math.max(0, def.flow.leftMm + offset.x);
   const right = Math.max(0, def.flow.rightMm - offset.x);
   return [
     `.overlay .bg{position:fixed;left:${n(offset.x)}mm;top:${n(offset.y)}mm;width:${n(paper.widthMm)}mm;height:${n(paper.heightMm - band)}mm;z-index:0;overflow:hidden}`,
+    // Above the background and the body (z-index 0 and 1), or the opaque background would hide the DRAFT/SAMPLE mark.
+    ".overlay .watermark{z-index:2}",
     ".overlay .bg img{display:block;width:100%;height:100%;object-fit:cover;object-position:top}",
     ".box{position:fixed;z-index:1;overflow:visible;line-height:1.2;overflow-wrap:anywhere;white-space:pre-line}",
     ".box-first{position:absolute}",
