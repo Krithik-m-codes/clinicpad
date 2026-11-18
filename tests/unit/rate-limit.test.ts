@@ -28,14 +28,19 @@ describe("createRateLimiter", () => {
   });
 });
 
+const REAL_IP = { SHARE_CLIENT_IP_HEADER: "x-real-ip" };
+
 describe("clientKey", () => {
-  it("keys on the platform's address headers only, never on the client-supplied X-Forwarded-For", () => {
+  it("keys on the trusted header only: the Vercel header on Vercel, never X-Real-IP or X-Forwarded-For unless configured", () => {
     const req = (headers: Record<string, string>) => new Request("http://x", { headers });
-    expect(clientKey(req({ "x-vercel-forwarded-for": " 203.0.113.9 ", "x-forwarded-for": "1.2.3.4" }))).toBe("203.0.113.9");
-    expect(clientKey(req({ "x-real-ip": "198.51.100.4", "x-forwarded-for": "1.2.3.4" }))).toBe("198.51.100.4");
+    expect(clientKey(req({ "x-vercel-forwarded-for": " 203.0.113.9 ", "x-forwarded-for": "1.2.3.4" }), { VERCEL: "1" })).toBe("203.0.113.9");
+    // Not on Vercel and nothing configured: the Vercel header could be forged, X-Real-IP is client-supplied.
+    expect(clientKey(req({ "x-vercel-forwarded-for": "203.0.113.9", "x-real-ip": "198.51.100.4" }), {})).toBe("unknown");
+    expect(clientKey(req({ "x-real-ip": "198.51.100.4", "x-forwarded-for": "1.2.3.4" }), { VERCEL: "1" })).toBe("unknown");
+    expect(clientKey(req({ "x-real-ip": "198.51.100.4" }), { SHARE_CLIENT_IP_HEADER: "X-Real-IP" })).toBe("198.51.100.4");
     expect(clientKey(req({ "x-forwarded-for": "1.2.3.4, 10.0.0.1" }))).toBe("unknown");
     expect(clientKey(req({}))).toBe("unknown");
-    expect(clientKey(req({ "x-real-ip": "z".repeat(100) }))).toHaveLength(64);
+    expect(clientKey(req({ "x-real-ip": "z".repeat(100) }), REAL_IP)).toHaveLength(64);
   });
 });
 
@@ -43,16 +48,16 @@ describe("clientKey: trusted header, IPv6", () => {
   const req = (headers: Record<string, string>) => new Request("http://x", { headers });
 
   it("groups an IPv6 address by its /64 and leaves IPv4 alone", () => {
-    expect(clientKey(req({ "x-real-ip": "2001:db8:1:2:aaaa:bbbb:cccc:dddd" }))).toBe("2001:db8:1:2::/64");
-    expect(clientKey(req({ "x-real-ip": "2001:DB8:1:2::9" }))).toBe("2001:db8:1:2::/64");
-    expect(clientKey(req({ "x-real-ip": "::1" }))).toBe("0:0:0:0::/64");
-    expect(clientKey(req({ "x-real-ip": "203.0.113.9" }))).toBe("203.0.113.9");
+    expect(clientKey(req({ "x-real-ip": "2001:db8:1:2:aaaa:bbbb:cccc:dddd" }), REAL_IP)).toBe("2001:db8:1:2::/64");
+    expect(clientKey(req({ "x-real-ip": "2001:DB8:1:2::9" }), REAL_IP)).toBe("2001:db8:1:2::/64");
+    expect(clientKey(req({ "x-real-ip": "::1" }), REAL_IP)).toBe("0:0:0:0::/64");
+    expect(clientKey(req({ "x-real-ip": "203.0.113.9" }), REAL_IP)).toBe("203.0.113.9");
   });
 
   it("reads the header named by SHARE_CLIENT_IP_HEADER first when set", () => {
     const headers = { "cf-connecting-ip": "198.51.100.7", "x-real-ip": "203.0.113.9" };
     expect(clientKey(req(headers), { SHARE_CLIENT_IP_HEADER: "CF-Connecting-IP" })).toBe("198.51.100.7");
-    expect(clientKey(req(headers), {})).toBe("203.0.113.9");
+    expect(clientKey(req(headers), {})).toBe("unknown");
     // A configured header that is absent does not fall back to a client-forgeable one.
     expect(clientKey(req({ "x-forwarded-for": "1.2.3.4" }), { SHARE_CLIENT_IP_HEADER: "cf-connecting-ip" })).toBe("unknown");
   });

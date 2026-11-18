@@ -6,14 +6,18 @@
 // whose revalidatePath response streams in leaves useActionState pending forever (AGENTS.md section 10;
 // .superpowers/sdd/2026-11-17-phase-1d-sharing-import-hardening/debug-pad-settings-report.md).
 //
-// Runs on postinstall. Idempotent. tests/unit/vendored-react-ping.test.ts fails if the bundled React still has
+// Runs on postinstall (never fails the install) and, with --check, before every build (npm prebuild scripts): then it
+// patches if needed and EXITS NON-ZERO when a bundled file is not patched and not recognised, or no React DOM bundle
+// was found, so `next build` fails loudly instead of shipping the bug. Idempotent. tests/unit/vendored-react-ping.test.ts fails if the bundled React still has
 // the bug, so a Next.js upgrade that changes these files is caught there.
 import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const MARKER = "/* clinicpad: facebook/react#36134 */";
-const root = fileURLToPath(new URL("..", import.meta.url));
+const check = process.argv.includes("--check");
+// PATCH_REACT_PING_ROOT lets the unit test point the script at a fake install.
+const root = process.env.PATCH_REACT_PING_ROOT ?? fileURLToPath(new URL("..", import.meta.url));
 const compiled = join(root, "node_modules", "next", "dist", "compiled");
 // "&& prepareFreshStack(root, 0)" in the render-phase branch of pingSuspendedRoot: production and development builds.
 const BUGGY = /\?\s*(0 === \(executionContext & 2\)|\(executionContext & RenderContext\) === NoContext)\s*&&\s*prepareFreshStack\(root, 0\)/;
@@ -37,7 +41,7 @@ function patchFile(file) {
 
 if (!existsSync(compiled)) {
   console.log("patch-react-ping: next is not installed; nothing to patch");
-  process.exit(0);
+  process.exit(check ? 1 : 0);
 }
 
 const results = { patched: [], already: [], unknown: [] };
@@ -56,4 +60,14 @@ if (results.unknown.length > 0) {
   // A Next.js upgrade changed these files. Check whether the bundled React already has the fix; the
   // regression test tests/unit/vendored-react-ping.test.ts answers that.
   console.warn(`patch-react-ping: WARNING, unrecognised pingSuspendedRoot in: ${results.unknown.join(", ")}`);
+}
+if (check) {
+  const found = results.patched.length + results.already.length + results.unknown.length;
+  if (results.unknown.length > 0 || found === 0) {
+    console.error(
+      "patch-react-ping: the bundled React is not patched and not recognised, so server actions can hang on Saving... in production builds. " +
+        "Run `npx vitest run tests/unit/vendored-react-ping.test.ts`: if it passes, the bundled React has the upstream fix and this script can be removed; if it fails, update the pattern in scripts/patch-react-ping.mjs (AGENTS.md section 10, ADR-0042).",
+    );
+    process.exit(1);
+  }
 }

@@ -5,8 +5,11 @@
   "description": "Prescription-first clinic operating system with bring-your-own-pad templates.",
   "scripts": {
     "dev": "next dev --turbopack",
+    "prebuild": "node scripts/patch-react-ping.mjs --check",
     "build": "next build --turbopack",
+    "prebuild:web": "node scripts/patch-react-ping.mjs --check",
     "build:web": "next build --turbopack",
+    "prebuild:desktop": "node scripts/patch-react-ping.mjs --check",
     "build:desktop": "node scripts/build-desktop.mjs",
     "start": "next start",
     "postinstall": "node scripts/patch-react-ping.mjs",

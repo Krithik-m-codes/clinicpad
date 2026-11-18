@@ -29,9 +29,15 @@ async function policies(): Promise<PolicyRow[]> {
       from pg_policies where schemaname = 'public' order by 1, 2`);
 }
 
-/** Every expression the policy has (USING and WITH CHECK, each separately) must name the session tenant. */
+/**
+ * The whole expression Postgres stores for a tenant-scoped policy (USING and WITH CHECK, each separately), not a
+ * substring: "tenant_id = <session tenant>" and nothing else, so "... OR true" or a second clause fails. The tenants
+ * table compares its own id.
+ */
+const SESSION_TENANT = "(NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid";
+const expectedExpression = (table: string) => (table === "tenants" ? `(id = ${SESSION_TENANT})` : `(tenant_id = ${SESSION_TENANT})`);
 const scoped = (p: PolicyRow) =>
-  [p.qual, p.with_check].filter((e): e is string => e !== null).every((e) => e.includes("app.tenant_id")) &&
+  [p.qual, p.with_check].filter((e): e is string => e !== null).every((e) => e === expectedExpression(p.table_name)) &&
   (p.qual !== null || p.with_check !== null);
 
 describe("row-level security across the whole schema", () => {

@@ -59,3 +59,19 @@ export async function recordSystemAudit(tx: TenantTx, tenantId: string, event: A
     after: event.after,
   });
 }
+
+/** Several system events in one statement (a withdrawal or an archive that revokes many links). Same payload rules. */
+export async function recordSystemAuditMany(tx: TenantTx, tenantId: string, events: readonly AuditInput[]): Promise<void> {
+  if (events.length === 0) return;
+  await tx.insert(auditEvents).values(
+    events.map((event) => ({
+      tenantId,
+      actorUserId: null,
+      action: event.action,
+      entityType: event.entityType,
+      entityId: event.entityId,
+      before: event.before,
+      after: event.after,
+    })),
+  );
+}

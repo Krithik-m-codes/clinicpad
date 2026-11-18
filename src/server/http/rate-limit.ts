@@ -33,7 +33,7 @@ export function createRateLimiter({ windowMs, max, maxKeys = 10_000 }: { windowM
   };
 }
 
-type KeyEnv = { NODE_ENV?: string; SHARE_CLIENT_IP_HEADER?: string };
+type KeyEnv = { NODE_ENV?: string; SHARE_CLIENT_IP_HEADER?: string; VERCEL?: string };
 
 let warnedMissingHeader = false;
 /** For tests: lets the once-only "no address header" warning fire again. */
@@ -55,15 +55,16 @@ function groupAddress(raw: string): string {
 }
 
 /**
- * The client address as the hosting platform reports it. SHARE_CLIENT_IP_HEADER names the header a self-hosted proxy
- * sets (and only that one is read then); otherwise X-Vercel-Forwarded-For, then X-Real-IP. The first X-Forwarded-For
- * entry is supplied by the client and is never used (it would let one client pick any bucket). With no such header
- * the key is "unknown": every such caller shares one bucket, which fails closed, and production logs it once because
- * it means the proxy is not configured.
+ * The client address as the hosting platform reports it. Only the header named by SHARE_CLIENT_IP_HEADER is read
+ * (the one a self-hosted proxy sets and strips from client requests); on Vercel (VERCEL is set) the platform header
+ * X-Vercel-Forwarded-For is the default. X-Real-IP and the first X-Forwarded-For entry are client-supplied unless a
+ * proxy overwrites them, so they are never read unless SHARE_CLIENT_IP_HEADER names one. With no trusted header the
+ * key is "unknown": every such caller shares one conservative bucket per process, which fails closed, and production
+ * logs it once because it means the proxy is not configured.
  */
 export function clientKey(request: Request, env: KeyEnv = process.env): string {
   const configured = env.SHARE_CLIENT_IP_HEADER?.trim();
-  const names = configured ? [configured] : ["x-vercel-forwarded-for", "x-real-ip"];
+  const names = configured ? [configured] : env.VERCEL ? ["x-vercel-forwarded-for"] : [];
   for (const name of names) {
     const value = request.headers.get(name)?.split(",")[0]?.trim();
     if (value) return groupAddress(value).slice(0, 64);

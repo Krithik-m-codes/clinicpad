@@ -27,10 +27,13 @@ const opens = async (linkId: string) => (await adminDb.select().from(shareLinks)
 const headerMap = (res: Response) => Object.fromEntries([...res.headers.entries()].filter(([k]) => k !== "date"));
 
 beforeAll(async () => {
+  // The platform header X-Vercel-Forwarded-For is trusted only on Vercel; X-Real-IP only when SHARE_CLIENT_IP_HEADER names it.
+  vi.stubEnv("VERCEL", "1");
   A = await createTestTenant("route");
 });
 
 afterAll(async () => {
+  vi.unstubAllEnvs();
   await A.cleanup();
 });
 
