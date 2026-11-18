@@ -21,7 +21,7 @@ const GOTENBERG_FLAGS = [
   "--chromium-disable-javascript=true",
   "--chromium-deny-list=^(?!file:///tmp/|data:|about:|blob:).*",
 ];
-const IMAGE = "gotenberg/gotenberg:8.11.0@sha256:e60da3ecc52050303c3886630aa7ed82f9486660b82a1ce6e5bf253c3b0764d4";
+const IMAGE = "gotenberg/gotenberg:8.40.0@sha256:53073e798c8ef39ea2187e44cb67bab77894ea2509100b94c4fe3b461f7b2996";
 
 const baseUrl = process.env.GOTENBERG_URL ?? "http://localhost:3001";
 const engine = createGotenbergEngine({ baseUrl, renderTimeoutMs: 60_000 });
