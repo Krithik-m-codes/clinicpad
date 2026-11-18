@@ -8,6 +8,7 @@ import { IMPORT_LIMITS, IMPORT_MESSAGES } from "@/lib/import/patient-rows";
 const actions = vi.hoisted(() => ({ dryRunImportAction: vi.fn(), commitImportAction: vi.fn() }));
 vi.mock("@/server/actions/patient-import", () => actions);
 
+import { encodeRowSet } from "@/lib/import/commit-choices";
 import { ImportWizard } from "@/components/patients/import-wizard";
 
 const FP3 = "b".repeat(64);
@@ -28,7 +29,7 @@ const REPORT: ImportReport = {
       name: "Meera Shah",
       rowDob: null,
       rowGender: "female",
-      matches: [{ patientNo: 7, name: "Meera Shah", sameName: true, dob: "1985-01-02", gender: "female" }],
+      matches: [{ patientNo: 7, name: "Meera Shah", sameName: true, basis: "phone", dob: "1985-01-02", gender: "female" }],
       duplicateOfRow: null,
       canFill: true,
       canCreate: true,
@@ -96,7 +97,7 @@ describe("ImportWizard", () => {
     expect(screen.getByText("Enter the patient's name")).toBeInTheDocument();
     expect(screen.getByLabelText("Name (required)")).toHaveValue("0");
     // Both sides' details are shown so the owner can judge.
-    expect(screen.getByText(/Patient #7 Meera Shah \(born 1985-01-02, female\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Patient #7 Meera Shah \(born 1985-01-02, female; same name and phone\)/)).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /Row 4.*Register as a new patient/ })).toBeDisabled();
     expect(screen.queryByRole("radio", { name: /Row 4.*Add the missing details/ })).toBeNull();
 
@@ -106,9 +107,9 @@ describe("ImportWizard", () => {
       fireEvent.click(screen.getByRole("button", { name: "Import 2 patients" }));
     });
     const committed = actions.commitImportAction.mock.calls[0][0] as FormData;
-    expect(JSON.parse(String(committed.get("decisions")))).toEqual({ "3": "create" });
+    expect(committed.get("choices")).toBe(`c3.${FP3.slice(0, 8)}`);
+    expect(committed.get("dups")).toBe(encodeRowSet([3, 4]));
     expect(JSON.parse(String(committed.get("mapping")))).toEqual(REPORT.mapping);
-    expect(JSON.parse(String(committed.get("fingerprints")))).toEqual({ "3": FP3, "4": FP4 });
     expect(committed.get("sha")).toBe(REPORT.fileSha256);
     expect(committed.get("token")).toBe(REPORT.checkToken);
     expect(await screen.findByText(/Imported 2 patients \(#8 to #9\)/)).toBeInTheDocument();

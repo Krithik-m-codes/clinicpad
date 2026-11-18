@@ -66,23 +66,24 @@ export async function analyse(tx: TenantTx, tenantId: string, table: ImportTable
     for (const r of rows) if (r.key) imported.add(r.key);
   }
 
-  const columns = { id: patients.id, patientNo: patients.patientNo, name: patients.name, dob: patients.dob, gender: patients.gender };
-  const byPhone = new Map<string, Omit<Match, "sameName">[]>();
+  const columns = { id: patients.id, patientNo: patients.patientNo, name: patients.name, dob: patients.dob, gender: patients.gender, phone: patients.phoneNormalized, rawPhone: patients.phone };
+  type Found = { id: string; patientNo: number | null; name: string; dob: string | null; gender: string | null; phone: string | null; rawPhone: string | null };
+  const byPhone = new Map<string, Found[]>();
   for (const phones of chunks([...new Set(valid.map((r) => r.phone).filter((p): p is string => p !== null))])) {
     const rows = await tx
-      .select({ ...columns, phone: patients.phoneNormalized })
+      .select(columns)
       .from(patients)
       .where(and(eq(patients.tenantId, tenantId), isNull(patients.deletedAt), inArray(patients.phoneNormalized, phones)))
       .orderBy(desc(patients.createdAt), desc(patients.id));
-    for (const { phone, ...match } of rows) {
-      if (phone) byPhone.set(phone, [...(byPhone.get(phone) ?? []), match]);
+    for (const found of rows) {
+      if (found.phone) byPhone.set(found.phone, [...(byPhone.get(found.phone) ?? []), found]);
     }
   }
 
   // Soft matches: the same name with an equal or empty date of birth, whatever the phone. Without them a re-import
   // with a corrected column mapping (or a row with no phone) would create everyone a second time. The clinic's whole
   // patient list is read once (five narrow columns) because names have no indexed comparison key.
-  const byName = new Map<string, Omit<Match, "sameName">[]>();
+  const byName = new Map<string, Found[]>();
   if (valid.length > 0) {
     const all = await tx
       .select(columns)
@@ -104,12 +105,22 @@ export async function analyse(tx: TenantTx, tenantId: string, table: ImportTable
     const phoneRepeatOf = r.phone !== null ? (firstByPhone.get(r.phone) ?? null) : null;
     if (repeatOf === null) firstByKey.set(r.key, r.row);
     if (r.phone !== null && phoneRepeatOf === null) firstByPhone.set(r.phone, r.row);
-    const byPhoneMatches = (r.phone !== null ? (byPhone.get(r.phone) ?? []) : []).map((m): Match => ({ ...m, sameName: sameName(m.name, r.input.name) }));
+    const toMatch = (m: Found, basis: Match["basis"], same: boolean): Match => ({
+      id: m.id,
+      patientNo: m.patientNo,
+      name: m.name,
+      dob: m.dob,
+      gender: m.gender,
+      sameName: same,
+      basis,
+      hasPhone: m.phone !== null || (m.rawPhone ?? "").trim() !== "",
+    });
+    const byPhoneMatches = (r.phone !== null ? (byPhone.get(r.phone) ?? []) : []).map((m) => toMatch(m, "phone", sameName(m.name, r.input.name)));
     const seen = new Set(byPhoneMatches.map((m) => m.id));
     const soft = (byName.get(nameKey(r.input.name)) ?? [])
       .filter((m) => !seen.has(m.id) && dobAgrees(m.dob, r.input.dob))
       .slice(0, MAX_SOFT_MATCHES)
-      .map((m): Match => ({ ...m, sameName: true }));
+      .map((m) => toMatch(m, "name", true));
     const matches = [...byPhoneMatches, ...soft];
     const duplicateOfRow = repeatOf ?? phoneRepeatOf;
     if (matches.length === 0 && duplicateOfRow === null) return { ...r, status: "new" };

@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { z } from "zod";
 import { can } from "@/lib/domain/permissions";
 import { clinicLocalDate } from "@/lib/domain/clinic-date";
 import { fail, ok, type Result } from "@/lib/result";
+import { decodeChoices, decodeRowSet, FINGERPRINT_CHARS } from "@/lib/import/commit-choices";
 import { decodeCsvBytes } from "@/lib/import/decode";
 import { checkMapping, suggestMapping, type ColumnMapping } from "@/lib/import/patient-columns";
 import { IMPORT_LIMITS, IMPORT_MESSAGES, parseImportTable, type ImportTable } from "@/lib/import/patient-rows";
@@ -18,6 +18,7 @@ import { allocateNumbers } from "./numbering";
 import { analyse, chunks, importRowKey } from "./patient-import-analysis";
 import {
   buildReport,
+  canCreate,
   canFill,
   checkTokenOf,
   dobAgrees,
@@ -27,7 +28,6 @@ import {
   MAX_STALE_LISTED,
   type Analysed,
   type CommitSummary,
-  type ImportDecision,
   type ImportReport,
 } from "./patient-import-report";
 import { toPatientColumns } from "./patients";
@@ -42,14 +42,6 @@ const FILE_CHANGED = "The file changed since it was checked. Check it again befo
 const CONCURRENT = "Patients changed while importing. Check the file again.";
 const BAD_DECISIONS = "The duplicate choices are not valid. Check the file again.";
 const MAPPING_CHANGED = "The column choices changed since the file was checked. Check it again before importing.";
-const ROW_NUMBER = /^\d{1,6}$/;
-const HEX64 = /^[0-9a-f]{64}$/;
-
-const fingerprintsSchema = z.record(z.string().regex(ROW_NUMBER), z.string().regex(HEX64)).refine((d) => Object.keys(d).length <= IMPORT_LIMITS.maxRows);
-const decisionsSchema = z
-  .record(z.string().regex(ROW_NUMBER), z.enum(["skip", "create", "fill"]))
-  .refine((d) => Object.keys(d).length <= IMPORT_LIMITS.maxRows);
-
 function loadTable(bytes: Uint8Array): Result<{ table: ImportTable; sha256: string }> {
   if (bytes.byteLength === 0) return fail("invalid", NO_FILE, "file");
   if (bytes.byteLength > IMPORT_LIMITS.maxBytes) return fail("invalid", IMPORT_MESSAGES.tooLarge, "file");
@@ -135,7 +127,7 @@ async function planFill(tx: TenantTx, tenantId: string, patientId: string, input
 export async function commitPatientImport(
   ctx: ServiceContext,
   file: { bytes: Uint8Array },
-  input: { mapping: unknown; decisions: unknown; expectedSha256: unknown; checkToken: unknown; fingerprints: unknown },
+  input: { mapping: unknown; choices: unknown; dups: unknown; expectedSha256: unknown; checkToken: unknown },
 ): Promise<Result<CommitSummary>> {
   if (!can(ctx.role, "patient.import")) return fail("forbidden", FORBIDDEN);
   const loaded = loadTable(file.bytes);
@@ -145,10 +137,11 @@ export async function commitPatientImport(
   const mapping = mappingFor(input.mapping ?? {}, table);
   if (!mapping.ok) return mapping;
   if (input.checkToken !== checkTokenOf(sha256, mapping.value)) return fail("conflict", MAPPING_CHANGED, "mapping");
-  const decisions = decisionsSchema.safeParse(input.decisions ?? {});
-  const fingerprints = fingerprintsSchema.safeParse(input.fingerprints ?? {});
-  if (!decisions.success || !fingerprints.success) return fail("invalid", BAD_DECISIONS, "decisions");
-  const choice = (row: number): ImportDecision => decisions.data[String(row)] ?? "skip";
+  // Only rows the owner moved off the default (skip) are sent, each with the fingerprint of what it matched; `dups`
+  // lists the rows that were duplicates at check time. Anything not chosen is skipped, whatever it is now.
+  const choices = decodeChoices(input.choices);
+  const wasDuplicate = decodeRowSet(input.dups);
+  if (choices === null || wasDuplicate === null) return fail("invalid", BAD_DECISIONS, "decisions");
 
   try {
     return await withTenant(ctx.tenantId, async (tx): Promise<Result<CommitSummary>> => {
@@ -162,17 +155,16 @@ export async function commitPatientImport(
       const toCreate: Extract<Analysed, { status: "new" | "duplicate" }>[] = [];
       const plans: FillPlan[] = [];
       for (const r of rows) {
-        const expected = fingerprints.data[String(r.row)];
+        const chosen = choices.get(r.row);
         if (r.status === "new") {
-          // It was a duplicate at check time and no longer is: the owner chose without seeing this, so skip.
-          if (expected !== undefined) staleRows.push(r.row);
-          else toCreate.push(r);
-        } else if (r.status === "duplicate") {
-          const changed = expected !== fingerprintOf(r);
-          if (changed && (choice(r.row) !== "skip" || expected === undefined)) staleRows.push(r.row);
-          else if (changed) continue;
-          else if (!r.exactRepeat && choice(r.row) === "create") toCreate.push(r);
-          else if (canFill(r) && choice(r.row) === "fill") plans.push(await planFill(tx, ctx.tenantId, r.matches[0].id, r.input));
+          // A duplicate at check time that no longer is: it was skipped by default, and a choice was made without
+          // seeing this. Either way it is not imported now.
+          if (wasDuplicate.has(r.row) && chosen !== undefined) staleRows.push(r.row);
+          else if (!wasDuplicate.has(r.row)) toCreate.push(r);
+        } else if (r.status === "duplicate" && chosen !== undefined) {
+          if (chosen.fingerprint !== fingerprintOf(r).slice(0, FINGERPRINT_CHARS)) staleRows.push(r.row);
+          else if (chosen.decision === "create" && canCreate(r)) toCreate.push(r);
+          else if (chosen.decision === "fill" && canFill(r)) plans.push(await planFill(tx, ctx.tenantId, r.matches[0].id, r.input));
         }
       }
       const fills = plans.filter((p) => p.changedFields.length > 0);

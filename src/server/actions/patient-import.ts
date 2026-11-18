@@ -12,6 +12,7 @@ export type CommitState = { summary?: CommitSummary; error?: string; field?: str
 const INTERNAL = "Something went wrong. Please try again.";
 // File (<= 900 KB) plus these JSON fields must stay under Next's 1 MB server-action body limit.
 const MAX_JSON = 100_000;
+const MAX_TEXT = 100_000;
 
 /** The size is checked before the bytes are read; decodeCsvBytes decides what the bytes are. The file name and type are never read. */
 async function readFile(formData: FormData): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; error: string }> {
@@ -31,6 +32,13 @@ function jsonField(formData: FormData, name: string): unknown {
   } catch {
     return "unreadable";
   }
+}
+
+/** A plain-text form field (the compact choice lists); a non-string or oversized value becomes one the service refuses. */
+function textField(formData: FormData, name: string): unknown {
+  const value = formData.get(name);
+  if (value === null) return undefined;
+  return typeof value === "string" && value.length <= MAX_TEXT ? value : false;
 }
 
 export async function dryRunImportAction(formData: FormData): Promise<DryRunState> {
@@ -53,10 +61,10 @@ export async function commitImportAction(formData: FormData): Promise<CommitStat
     if (!file.ok) return { error: file.error, field: "file" };
     const result = await commitPatientImport(session, { bytes: file.bytes }, {
       mapping: jsonField(formData, "mapping"),
-      decisions: jsonField(formData, "decisions"),
+      choices: textField(formData, "choices"),
+      dups: textField(formData, "dups"),
       expectedSha256: formData.get("sha"),
       checkToken: formData.get("token"),
-      fingerprints: jsonField(formData, "fingerprints"),
     });
     if (!result.ok) return { error: result.message, field: result.field };
     revalidatePath("/patients");

@@ -46,10 +46,10 @@ describe("the import actions", () => {
     const checked = await dryRunImportAction(form({ file: f }));
     const sha = checked.report?.fileSha256 ?? "";
     const token = checked.report?.checkToken ?? "";
-    expect(await commitImportAction(form({ file: f, sha, token, mapping: JSON.stringify(checked.report?.mapping), decisions: "[oops" }))).toMatchObject({
+    expect(await commitImportAction(form({ file: f, sha, token, mapping: JSON.stringify(checked.report?.mapping), choices: "[oops" }))).toMatchObject({
       field: "decisions",
     });
-    expect(await commitImportAction(form({ file: f, sha, token, mapping: JSON.stringify(checked.report?.mapping), fingerprints: "x".repeat(100_001) }))).toMatchObject({
+    expect(await commitImportAction(form({ file: f, sha, token, mapping: JSON.stringify(checked.report?.mapping), choices: "x".repeat(100_001) }))).toMatchObject({
       field: "decisions",
     });
   });
@@ -69,7 +69,7 @@ describe("the import actions", () => {
     const checked = await dryRunImportAction(form({ file: f }));
     expect(checked.report?.totals).toMatchObject({ new: 1 });
     const done = await commitImportAction(
-      form({ file: f, sha: checked.report?.fileSha256 ?? "", token: checked.report?.checkToken ?? "", mapping: JSON.stringify(checked.report?.mapping), decisions: "{}", fingerprints: "{}" }),
+      form({ file: f, sha: checked.report?.fileSha256 ?? "", token: checked.report?.checkToken ?? "", mapping: JSON.stringify(checked.report?.mapping), choices: "", dups: "" }),
     );
     expect(done.summary).toMatchObject({ created: 1 });
     session.mockResolvedValue(A.as("reception"));

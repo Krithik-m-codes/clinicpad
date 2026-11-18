@@ -5,6 +5,7 @@ import { useRef, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { serializeCsv } from "@/lib/csv";
+import { commitFields } from "@/lib/import/commit-choices";
 import { IMPORT_FIELD_LABELS, PATIENT_TEMPLATE_ROWS, type ColumnMapping } from "@/lib/import/patient-columns";
 import { IMPORT_LIMITS, IMPORT_MESSAGES } from "@/lib/import/patient-rows";
 import { commitImportAction, dryRunImportAction } from "@/server/actions/patient-import";
@@ -93,13 +94,12 @@ export function ImportWizard() {
 
   function commit() {
     if (!file || !report || !mapping) return;
-    const fingerprints: Record<string, string> = {};
-    for (const r of report.rows) if (r.status === "duplicate") fingerprints[String(r.row)] = r.fingerprint;
+    const { choices, dups } = commitFields(report.rows, decisions);
     const form = new FormData();
     form.set("file", file);
     form.set("mapping", JSON.stringify(mapping));
-    form.set("decisions", JSON.stringify(decisions));
-    form.set("fingerprints", JSON.stringify(fingerprints));
+    form.set("choices", choices);
+    form.set("dups", dups);
     form.set("sha", report.fileSha256);
     form.set("token", report.checkToken);
     startTransition(async () => {

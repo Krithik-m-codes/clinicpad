@@ -7,7 +7,15 @@ import type { PatientInput } from "@/server/validation/patient";
 
 export type ImportDecision = "skip" | "create" | "fill";
 /** An existing patient a row may be the same person as, with both sides' details so the owner can judge. */
-export type DuplicateMatch = { patientNo: number | null; name: string; sameName: boolean; dob: string | null; gender: string | null };
+export type DuplicateMatch = {
+  patientNo: number | null;
+  name: string;
+  sameName: boolean;
+  /** Why it matched: the row's phone is the patient's phone, or only the name (and an equal-or-empty birth date) agrees. */
+  basis: "phone" | "name";
+  dob: string | null;
+  gender: string | null;
+};
 export type ImportRowReport =
   | { row: number; status: "new"; name: string; dob: string | null }
   | { row: number; status: "already_imported"; name: string }
@@ -59,7 +67,7 @@ export const MAX_STALE_LISTED = 50;
 export const STALE_REASON = "These rows matched different patients when the file was checked. They were skipped; check the file again.";
 const MAX_MATCHES = 3;
 
-export type Match = DuplicateMatch & { id: string };
+export type Match = DuplicateMatch & { id: string; /** The existing patient has a phone on record. */ hasPhone: boolean };
 export type Prepared = { row: number; input: PatientInput; phone: string | null; key: string };
 export type Invalid = { row: number; status: "invalid"; field: ImportField | "row"; message: string; cells: string[] };
 export type Analysed =
@@ -78,13 +86,22 @@ export const genderAgrees = (a: string | null | undefined, b: string | null | un
   return x === null || y === null || x === y;
 };
 
-/** A fill is offered for exactly one same-name patient whose date of birth and gender do not contradict the row. */
-export const canFill = (r: Duplicate) =>
-  r.duplicateOfRow === null &&
-  r.matches.length === 1 &&
-  r.matches[0].sameName &&
-  dobAgrees(r.matches[0].dob, r.input.dob) &&
-  genderAgrees(r.matches[0].gender, r.input.gender);
+/**
+ * A fill is offered for exactly one patient whose date of birth and gender do not contradict the row AND who is
+ * the same person on stronger evidence than a name: the phone matches as well (same name), or the patient has no phone
+ * and the birth date is recorded on both sides and equal. A name alone can be a namesake (two Rameshes), and a fill
+ * could put one person's allergy on the other's record, so name-only matches are skip-only.
+ */
+export const canFill = (r: Duplicate) => {
+  if (r.duplicateOfRow !== null || r.matches.length !== 1) return false;
+  const [m] = r.matches;
+  if (!m.sameName || !dobAgrees(m.dob, r.input.dob) || !genderAgrees(m.gender, r.input.gender)) return false;
+  if (m.basis === "phone") return true;
+  return !m.hasPhone && Boolean(m.dob) && m.dob === r.input.dob;
+};
+
+/** "Register as new" is never offered for an exact repeat in the file or when any match is by name only (ADR-0039). */
+export const canCreate = (r: Duplicate) => !r.exactRepeat && !r.matches.some((m) => m.basis === "name");
 
 export function fingerprintOf(r: Pick<Duplicate, "matches" | "duplicateOfRow">): string {
   const ids = r.matches.map((m) => m.id).sort();
@@ -119,10 +136,10 @@ export function buildReport(sha256: string, table: ImportTable, mapping: ColumnM
         name: r.input.name,
         rowDob: r.input.dob ?? null,
         rowGender: r.input.gender,
-        matches: r.matches.slice(0, MAX_MATCHES).map((m) => ({ patientNo: m.patientNo, name: m.name, sameName: m.sameName, dob: m.dob, gender: m.gender })),
+        matches: r.matches.slice(0, MAX_MATCHES).map((m) => ({ patientNo: m.patientNo, name: m.name, sameName: m.sameName, basis: m.basis, dob: m.dob, gender: m.gender })),
         duplicateOfRow: r.duplicateOfRow,
         canFill: canFill(r),
-        canCreate: !r.exactRepeat,
+        canCreate: canCreate(r),
         fingerprint: fingerprintOf(r),
       });
     } else {

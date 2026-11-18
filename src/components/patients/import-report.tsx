@@ -22,8 +22,13 @@ const fieldLabel = (field: Invalid["field"]) => (field === "row" ? "Row" : IMPOR
 const details = (dob: string | null, gender: string | null) =>
   [dob ? `born ${dob}` : null, gender && gender !== "unknown" ? gender : null].filter(Boolean).join(", ") || "no details";
 
+function basisText(m: DuplicateMatch): string {
+  if (m.basis === "name") return "same name only";
+  return m.sameName ? "same name and phone" : "same phone, different name";
+}
+
 function matchText(m: DuplicateMatch): string {
-  return `Patient #${m.patientNo ?? "?"} ${m.name} (${details(m.dob, m.gender)})`;
+  return `Patient #${m.patientNo ?? "?"} ${m.name} (${details(m.dob, m.gender)}; ${basisText(m)})`;
 }
 
 function DecisionChoice({ r, value, onDecide, disabled }: { r: Duplicate; value: ImportDecision; onDecide: Props["onDecide"]; disabled: boolean }) {
@@ -119,6 +124,11 @@ export function ImportReportView({ report, decisions, onDecide, onDownloadProble
                   Possibly the same as:{" "}
                   {[...r.matches.map(matchText), ...(r.duplicateOfRow !== null ? [`row ${r.duplicateOfRow} of this file`] : [])].join("; ")}
                 </p>
+                {r.matches.some((m) => m.basis === "name") ? (
+                  <p role="note" className="text-xs">
+                    A name alone does not show it is the same person, so this row is skipped. If it is someone new, register them from the patient form.
+                  </p>
+                ) : null}
                 <DecisionChoice r={r} value={decisions[String(r.row)] ?? "skip"} onDecide={onDecide} disabled={disabled} />
               </li>
             ))}

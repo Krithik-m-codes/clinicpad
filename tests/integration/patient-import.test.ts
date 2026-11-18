@@ -49,7 +49,7 @@ describe("who may import", () => {
     const bytes = utf8File(csv(["name", "Role Test"]));
     for (const role of ["doctor", "reception", "nurse", "pharmacist", "accountant"]) {
       expect(await dryRunPatientImport(A.as(role), { bytes })).toMatchObject({ ok: false, code: "forbidden" });
-      expect(await commitPatientImport(A.as(role), { bytes }, { mapping: null, decisions: {}, expectedSha256: "x", checkToken: "x", fingerprints: {} })).toMatchObject({ ok: false, code: "forbidden" });
+      expect(await commitPatientImport(A.as(role), { bytes }, { mapping: null, choices: "", dups: "", expectedSha256: "x", checkToken: "x" })).toMatchObject({ ok: false, code: "forbidden" });
     }
   });
 });
@@ -131,7 +131,7 @@ describe("duplicates", () => {
     expect(report.totals).toMatchObject({ rows: 3, duplicate: 3, new: 0 });
     const [meera, kiran, repeat] = report.rows;
     expect(meera).toMatchObject({ row: 2, status: "duplicate", canFill: true, canCreate: true, duplicateOfRow: null });
-    expect(meera.status === "duplicate" && meera.matches).toEqual([{ patientNo: expect.any(Number), name: "Meera Shah", sameName: true, dob: null, gender: "unknown" }]);
+    expect(meera.status === "duplicate" && meera.matches).toEqual([{ patientNo: expect.any(Number), name: "Meera Shah", sameName: true, basis: "phone", dob: null, gender: "unknown" }]);
     expect(kiran).toMatchObject({ row: 3, status: "duplicate", canFill: false, canCreate: true, duplicateOfRow: 2 });
     expect(repeat).toMatchObject({ row: 4, status: "duplicate", canFill: false, canCreate: false, duplicateOfRow: 2 });
   });
@@ -253,7 +253,7 @@ describe("mapping, decisions and the file fingerprint", () => {
       code: "invalid",
       field: "mapping",
     });
-    expect(await commitPatientImport(owner(), { bytes }, commitInput(report, { "2": "merge" }))).toMatchObject({
+    expect(await commitPatientImport(owner(), { bytes }, { ...commitInput(report), choices: "merge2" })).toMatchObject({
       ok: false,
       code: "invalid",
       field: "decisions",
