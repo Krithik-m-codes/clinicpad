@@ -28,6 +28,8 @@ jobs:
       ADMIN_DATABASE_URL: postgresql://clinicpad:clinicpad@localhost:5432/clinicpad
       AUTH_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
       NEXT_PUBLIC_APP_URL: http://localhost:3000
+      GOTENBERG_URL: http://localhost:3001
+      GOTENBERG_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -39,6 +41,20 @@ jobs:
       - run: npm run db:migrate
       - run: npm run lint
       - run: npm run typecheck
+      # Same hardening flags as docker-compose.yml (see the comment block there); keep them in sync.
+      - run: >-
+          docker run -d --name gotenberg -p 127.0.0.1:3001:3000
+          --add-host=host.docker.internal:host-gateway
+          --cap-drop ALL --security-opt no-new-privileges:true --memory 1g --pids-limit 512
+          gotenberg/gotenberg:8.11.0@sha256:e60da3ecc52050303c3886630aa7ed82f9486660b82a1ce6e5bf253c3b0764d4
+          gotenberg --api-timeout=30s --api-disable-download-from --webhook-disable
+          --libreoffice-disable-routes --pdfengines-disable-routes
+          --chromium-disable-javascript=true
+          "--chromium-deny-list=^(?!file:///tmp/|data:|about:|blob:).*"
+          --log-level=warn
+      - run: |
+          for i in $(seq 1 30); do curl -sf http://localhost:3001/health && break; sleep 2; done
+          curl -sf http://localhost:3001/health
       - run: npm run test
       - run: npm run build:web
       - run: npm run build:desktop

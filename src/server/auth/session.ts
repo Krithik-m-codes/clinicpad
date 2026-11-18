@@ -22,3 +22,18 @@ export async function requireSession(): Promise<SessionContext> {
     role: session.user.role,
   };
 }
+
+/**
+ * Like requireSession, but returns null instead of redirecting. For route handlers that
+ * answer with JSON and for editor actions, where a redirect would navigate away from
+ * unsaved edits.
+ */
+export async function getSessionContext(): Promise<SessionContext | null> {
+  const session = await auth();
+  if (!session?.user?.id || !session.user.tenantId || !session.user.role) return null;
+  return {
+    userId: session.user.id,
+    tenantId: session.user.tenantId,
+    role: session.user.role,
+  };
+}

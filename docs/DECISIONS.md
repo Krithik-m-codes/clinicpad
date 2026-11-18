@@ -1,6 +1,6 @@
 # ClinicPad — Architecture Decision Records
 
-**Last updated:** 2026-11-06
+**Last updated:** 2026-11-16
 **Format:** lightweight ADR (context → decision → consequences → revisit trigger)
 **Rule:** if a decision is hard to reverse or affects tenant safety, patient data, or money, it goes here before implementation.
 
@@ -337,6 +337,401 @@ Shared code must not assume `window` or Node-only APIs without a boundary.
 **Decision:** `npm run build:desktop` runs `scripts/build-desktop.mjs`, which moves server-only routes to `.desktop-stash/`, swaps in a client redirect to `/prescribe`, runs the static export, and always restores the originals (also after an interrupted run). The Tauri desktop app is therefore the offline legacy generator until Phase 4 delivers local SQLite + sync.
 
 **Consequences:** The list of server-only paths in the script must be updated when new server routes are added to the web app. The Tauri installer has not been smoke-tested since the split.
+
+---
+
+## ADR-0022 — Rx numbers are assigned at finalization, per tenant
+
+- **Status:** accepted
+- **Date:** 2026-11-16
+
+**Context:** Prescription numbers are part of a medico-legal sequence. A number handed out to a draft that is later abandoned leaves a hole that has to be explained to an auditor.
+
+**Decision:** First-version drafts have no number (`rx_no` is null); an amendment draft carries its parent's number from the moment it is created. `finalizePrescription` allocates the next per-tenant number inside the finalize transaction, after every check has passed, through `allocateNumber` (`src/server/services/numbering.ts`): an insert-or-increment upsert on the `tenant_counters` row `(tenant_id, 'rx')`, which takes a row lock so concurrent finalizes queue and receive distinct, consecutive numbers. An amendment keeps its parent's `rx_no` and increases `version`; only a prescription with no parent allocates a number. A finalize that fails, conflicts or rolls back burns no number (tested in `tests/integration/prescriptions-lifecycle.test.ts` and `tests/integration/numbering-audit.test.ts`). Patient numbers use the same counter table under the name `patient`.
+
+**Consequences:** The sequence has no gaps from abandoned drafts, double-clicks or failed finalizes. Finalize serializes per tenant on the counter row, which is acceptable at clinic scale. Amendments of a prescription without a number are refused with `conflict` rather than allocating a second number.
+
+**Revisit trigger:** offline finalize (Phase 4) needs number blocks or a different reservation scheme.
+
+---
+
+## ADR-0023 — Immutability is enforced by Postgres triggers
+
+- **Status:** accepted
+- **Date:** 2026-11-16
+
+**Context:** Invariant 3 says a signed prescription is never overwritten. Application code can have bugs, and the admin connection bypasses RLS, so the rule has to live where every writer passes through it.
+
+**Decision:** `BEFORE` triggers on `prescriptions`, `prescription_items` and `visits` (migrations 0004, 0005, 0006 and 0008; final rules below) reject changes with SQLSTATE `23000`, also for the admin connection.
+
+- A `finalized` or `amended` prescription cannot be updated or deleted. The only allowed change is the `finalized -> amended` status flip, and nothing else (apart from `updated_at`) may change in that statement.
+- Items of a non-draft prescription cannot be inserted, updated, deleted or moved; an update checks both the old and the new parent. Item triggers fail closed on a missing or foreign-tenant parent (`23503`).
+- A finalized visit cannot be updated or deleted. A draft visit whose prescription is no longer a draft accepts only the plain `draft -> finalized` flip (`status`, `finalized_at`, `updated_at` change; no other column).
+- A non-draft row may be deleted only when its tenant row no longer exists (`tenant_is_erased`, `SECURITY DEFINER`, `search_path` pinned, `row_security = off`, fails closed). Tenant offboarding therefore works, and no other foreign-key cascade can erase a signed record. `clinicpad_app` has no `DELETE` on `tenants`.
+- Item and visit triggers read the parent prescription `FOR SHARE`, so a finalize that has not committed yet cannot be raced (`tests/integration/immutability-races.test.ts`).
+
+**Locking rule for every writer:** lock the prescription row `FOR UPDATE` before touching its items or its visit. The services do this (`saveDraft`, `finalizePrescription`, `amendPrescription`). Another order may make PostgreSQL abort one side with `40P01` (deadlock); that is a failed request, not corruption.
+
+**Second lock order (found in the whole-branch review):** there are two orders, not one. `amendPrescription` locks the parent (the finalized source) `FOR UPDATE`. Finalizing an amendment (`finalizePrescription`) locks the child (the amendment draft) first and then updates the parent (the `finalized -> amended` flip), so it locks child then parent. The two cannot deadlock only because amend's open-amendment check returns `conflict` before it writes anything: while an amendment draft exists, amend takes the parent lock, sees the open child and leaves without taking a child lock. **Any rewrite of `amendPrescription` must keep that order: check for an open amendment first, write afterwards.**
+
+**Plan 1B additions to the lock notes:** `discardDraft` (ADR-0031) locks only the draft row `FOR UPDATE` and never the parent, so a discard and a finalize of the same draft serialize on that row (whichever commits second sees the other's result: `immutable` or `not_found`, and no Rx number is burned). `amendPrescription` reads the open child with a plain select, which is safe against a pending discard: it either sees the open child and returns early, or finds the slot free after the discard commits. `repeatPrescription` reads its source `FOR SHARE` (it conflicts with amend's `FOR UPDATE`) and never locks a child.
+
+**Documented limitations (not enforced by these triggers):**
+- `TRUNCATE`, `ALTER TABLE ... DISABLE TRIGGER` and `session_replication_role = replica` by a superuser or table owner.
+- An `INSERT` of an already-finalized row.
+- The `finalized -> amended` flip does not check that a finalized successor exists.
+- An uncommitted non-draft prescription is invisible to the visit guard.
+- Production must keep the `EXECUTE` grant on `tenant_is_erased` aligned with the role that performs offboarding (migration owner versus admin role split).
+
+**Consequences:** Medico-legal integrity does not depend on application correctness. Services translate `23000` into an `immutable` result. Tests in `tests/integration/immutability.test.ts` and `tests/integration/immutability-races.test.ts` run against the real database.
+
+**Revisit trigger:** a managed-database restriction on triggers, or a legal requirement for cryptographic sealing (hash chain or signature) on top.
+
+---
+
+## ADR-0024 — Amendments copy the visit
+
+- **Status:** accepted
+- **Date:** 2026-11-16
+
+**Context:** A signed prescription must stay exactly as issued, yet doctors need to correct it.
+
+**Decision:** `amendPrescription` creates a new draft visit and a new draft prescription: `parent_prescription_id` points at the source, `version = source.version + 1`, `rx_no` is copied, `amendment_reason` is required (5 to 500 characters), and the items are copied with fresh ids. The originals never change until the new version is finalized, when the parent flips to `amended`. Only a `finalized` source can be amended (a draft is edited directly; an `amended` one is refused with `conflict`). There is at most one open amendment per prescription, enforced by the service and by the partial unique index `prescriptions_one_open_amendment` (migration 0003). The audit event `prescription.amendment_drafted` carries `reasonLength` and `parentPrescriptionId`, never the reason text; finalizing the amendment writes `prescription.amended`.
+
+**Consequences:** Full version history with no in-place edits. The amendment is a second visit row for the same encounter and keeps the original `doctorId` (see Phase 1A follow-ups in `docs/PROGRESS.md`).
+
+**Revisit trigger:** reporting needs one visit per encounter, or the amending doctor must differ from the original author.
+
+---
+
+## ADR-0025 — Same-tenant references are enforced by the database
+
+- **Status:** accepted
+- **Date:** 2026-11-16
+
+**Context:** RLS checks only a row's own `tenant_id`, and foreign-key checks run without RLS. A single-column foreign key could therefore point at another tenant's row.
+
+**Decision:** Relations between tenant-owned tables use composite keys `(tenant_id, x_id) -> parent(tenant_id, id)`. The parent gets `UNIQUE (tenant_id, id)`. Constraint names are explicit and under 63 characters. Migration 0007 converted `prescription_items -> prescriptions`, `prescriptions -> visits`, `prescriptions.parent_prescription_id` and `visits -> patients`; migration 0009 (`drizzle/0009_tenant_composite_fks_phase0.sql`) converted the last three Phase 0 relations: `branches -> clinics` (`branches_clinic_fk`, cascade), `doctors.primary_branch_id -> branches` (`doctors_primary_branch_fk`) and `template_versions -> templates` (`template_versions_template_fk`, cascade), adding `UNIQUE (tenant_id, id)` on `clinics`, `branches` and `templates`. Nullable parents use the `ON DELETE SET NULL (column)` form (Postgres 15+), so the tenant column is not nulled: `doctors_primary_branch_fk` is `ON DELETE SET NULL ("primary_branch_id")`, hand-written because drizzle-kit emits a plain `SET NULL` that would try to null `tenant_id` and fail the branch delete. A guard test in `tests/integration/tenant-fk.test.ts` fails if a single-column key into a tenant-owned table appears; its allowlist is now empty and must stay empty. Three columns referenced tenant-owned rows with no foreign key at all (`visits.doctor_id`, `visits.branch_id`, `prescriptions.template_version_id`, from `drizzle/0001_plain_chamber.sql`); the guard test inspects declared keys only, so it could not see them. **Update (Plan 1B, migration `drizzle/0010_clinical_references.sql`):** `doctors` now has `UNIQUE (tenant_id, id)` and `UNIQUE (tenant_id, user_id)`, `template_versions` has `UNIQUE (tenant_id, id)`, and the three columns are composite keys: `visits_doctor_fk`, `visits_branch_fk`, `prescriptions_template_version_fk`, each `ON DELETE SET NULL (column)`, hand-written. Deleting a doctor, branch, or template version that a finalized record references is refused by the immutability triggers (deactivate instead); tenant offboarding still works (`tests/integration/clinical-references.test.ts`). **Pattern for every new tenant-owned table:** unique `(tenant_id, id)` on the parent, foreign key on `(tenant_id, x_id)` in the child. Services still resolve every input id through `withTenant` first.
+
+**Consequences:** Composite keys cover every declared relation between tenant-owned tables, and the guard test pins that, so none of those can reference another tenant's row even through the admin connection. Since migration 0010 the three columns listed above are covered too. Migrations need the unique constraint created before the foreign key that references it (drizzle-kit emits them in the wrong order and needs a hand edit).
+
+**Revisit trigger:** partitioning by tenant, which would change how keys are declared.
+
+---
+
+## ADR-0026 — Phase 1A role matrix and repeat rule
+
+- **Status:** accepted
+- **Date:** 2026-11-16
+
+**Decision:** `src/lib/domain/permissions.ts` is the single matrix; every service calls `can(role, action)` before touching data, and unknown roles or actions are denied (`tests/unit/permissions.test.ts`).
+
+| Action | owner | doctor | reception | nurse | pharmacist | accountant |
+|---|---|---|---|---|---|---|
+| `patient.read` | yes | yes | yes | yes | no | no |
+| `patient.write` | yes | yes | yes | no | no | no |
+| `patient.archive` | yes | no | no | no | no | no |
+| `rx.read` | yes | yes | yes | yes | yes | no |
+| `rx.draft`, `rx.finalize`, `rx.amend` | yes | yes | no | no | no | no |
+
+The nurse reads but does not write patients (design spec section 4). The accountant reads neither patients nor prescriptions. Only the owner archives patients.
+
+`repeatPrescription` copies a `finalized` source into a new draft. It refuses a draft source and a superseded (`amended`) source with `conflict`: a superseded version holds exactly the content an amendment corrected, so copying it forward would be a patient-safety hazard. Audit payloads carry ids, counts and field names only, never free text.
+
+**Revisit trigger:** a clinic role model that needs per-clinic custom roles, or nurse charting in Phase 3.
+
+---
+
+## ADR-0027 — Visit clinical content lives in columns on `visits`
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** The clinical form adds complaints, medical and drug history, examination notes, vitals, ordered investigations, and a follow-up reason. `DATA_MODEL.md` sketches separate `vitals` and `investigations` tables. Everything that belongs to a finalized prescription must be immutable (ADR-0023) and copied by amend (ADR-0024).
+
+**Decision:** Store them on `visits`: `text[]` for phrase lists (`complaints`, `medical_history`, `drug_history`), `text` for `examination_notes` and `follow_up_reason`, and typed `jsonb` for `vitals` (one object per visit, temperature in °F, BMI computed not stored) and `investigations` (array of `{ name, instructions }`). Prescription items gain a generic name, four dose slots (`numeric(5,2)`, quarter steps), periodicity, SOS, and duration value + unit, with `duration_days` kept as derived total days. `prescriptions.draft_revision` carries the autosave revision (ADR-0029). Plan 1A rows are read as durations in days; no data backfill (migration 0011). Blank phrase entries are dropped; a NUL in any text is refused (`invalid`); other stray control characters and invisible or bidi characters (including U+200E, U+200F, U+061C, U+2061-2064, U+180E and the Unicode tag block) are removed by `cleanInput` / `cleanText` for draft text, the amendment reason and the patient text fields (name, phone, address, notes, allergies); catalogue search terms and keys are cleaned by `cleanText` directly (`src/server/validation/text.ts`, `src/lib/domain/text.ts`).
+
+**Consequences:** The existing visit and item immutability triggers, including the 0008 guard on a draft visit whose prescription is already finalized, cover the new columns with no new trigger (`tests/integration/clinical-schema.test.ts`). Amend copies every visit and item column through `omit()`, so later columns are copied too; repeat copies the prescribing content only. A future child table with clinical content (vitals history, lab orders) needs its own ADR-0023-style trigger.
+
+**Revisit trigger:** vitals trend charts, lab orders with result status, or ICD-coded diagnosis analytics.
+
+---
+
+## ADR-0028 — Medicine catalogue: global reference tables plus clinic tables
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** Doctors need fast medicine and clinical-term suggestions from day one, plus their own medicines and favourite dosing. A single table with a nullable `tenant_id` would need a special RLS policy on a tenant table.
+
+**Decision:** `global_medicines` and `global_clinical_terms` have no `tenant_id`, are loaded from `sample_data/*.csv` by `npm run db:seed:catalogue` on the admin connection (idempotent), and are SELECT-only for `clinicpad_app` (INSERT/UPDATE/DELETE/TRUNCATE revoked; RLS forced with a select policy that applies to every role; the migration role additionally has a `global_owner_write` policy; migration 0012). Clinic additions go to `tenant_medicines`; default lines go to `medicine_favourites`, which belong to a doctor profile through the composite key `(tenant_id, doctor_id) -> doctors(tenant_id, id)` (`medicine_favourites_doctor_fk`, `ON DELETE CASCADE`), one per medicine per doctor, upserted, at most 200. Both tenant tables carry the standard forced `tenant_isolation` policy. Search is a GET route handler (`/api/catalogue/search`) with escaped LIKE wildcards; no trigram index yet.
+
+**Consequences:** Every tenant table keeps the standard isolation policy and the tenant-FK guard stays empty. No request path can modify the shared catalogue. A prescriber without a doctor profile has no favourites. The seed data is reference text, not a licensed drug database; it carries no clinical decision support, it has spelling errors and duplicate names with differing generic names, and it needs a clinical review before any pilot (`docs/PROGRESS.md`, section 4.9 follow-ups).
+
+**Revisit trigger:** a licensed drug database (Phase 6), a tenant above ~20k catalogue rows, or demand for clinic-learned complaint and diagnosis lists.
+
+---
+
+## ADR-0029 — Draft autosave with optimistic revisions
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** Drafts must save automatically without losing or reordering edits when saves overlap, the network drops, or the same draft is open twice. The offline outbox is Phase 4.
+
+**Decision:** Every save sends the full draft snapshot and the `draft_revision` it was based on (`baseRevision`, required and validated at the action boundary: a missing or malformed revision is refused before any service call). The server locks the prescription row, rejects a stale revision with `conflict` and the current revision, and otherwise writes and increments the revision. The client (`src/lib/rx/autosave.ts`) keeps exactly one save in flight, debounces 800 ms (at most 5 s during continuous typing), gives each save a 30 s timeout (a timeout is an ambiguous, retryable failure), retries network and server failures with backoff from 1 s doubling to 30 s while showing "not saved", and stops on a conflict until the user reloads the latest version or explicitly keeps their own; a conflict never overwrites without that choice. Teardown is `dispose()` (keep-safe: a final best-effort save) versus `discard()` (drops pending edits, used when the user reloads the latest). Finalize goes through the same queue with `expectedRevision`, so content the doctor never saw is never finalized; the client gives finalize a 45 s timeout and re-reads state after an unknown outcome (the answer may have been lost after the commit). The editor is disabled until it has hydrated, locked while finalizing and after success, and warns before unload while anything is unsaved. Editor server actions never redirect. Autosaves are not audited; `prescription.finalized` and `prescription.amended` add a clinical summary (counts and field names only) to Plan 1A's payload.
+
+**Consequences:** No interleaved or reordered writes; two windows get a visible conflict instead of a merge. The Phase 4 outbox can reuse the revision contract as its idempotency and conflict check. Known limits are listed in `docs/PROGRESS.md` (section 4.9): Next serialises server actions, so a hung finalize delays a resumed autosave, and one invalid field blocks the whole snapshot. Leaving the page: `dispose()` cannot save when the engine is halted (conflict, locked, invalid), held or failing, and Next soft navigation never fires `beforeunload`, so while edits are at risk (`wouldLoseEditsOnLeave()`) a capture-phase guard on same-origin link clicks, `popstate` and forms marked `data-leave-guard` (the sign-out form) asks for confirmation. It prompts when something is unsaved AND the engine is halted (conflict, locked, invalid), held, paused by a finalize, retrying or in doubt after an ambiguous failure, or a save is in flight (it may hang, and `dispose()` would only queue another behind it). It does not prompt for an edit that is only waiting in the 800 ms debounce, which `dispose()` sends at once, nor after a successful finalize or discard. Cancelling Back restores the URL and the router history state sampled while the page was current. A finalize whose outcome is unknown re-reads the page only when online with nothing unsaved (a failed RSC refresh becomes a full browser reload), and a finalize conflict halts the engine in the conflict state.
+
+**Revisit trigger:** Phase 4 sync design, or users regularly editing one draft from two devices.
+
+---
+
+## ADR-0030 — Who may edit clinical content and use the catalogue
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** The platform spec gives nurses vitals entry, but a nurse writing into a doctor's open draft would race the doctor's autosave. ADR-0026 holds the Plan 1A matrix.
+
+**Decision:** Every clinical field, vitals included, is edited only by roles with `rx.draft` (owner, doctor); finalizing needs `rx.finalize`. Two actions join the matrix in `src/lib/domain/permissions.ts`: `catalogue.read` (owner, doctor, nurse, pharmacist) for medicine and term search, and `catalogue.write` (owner, doctor) for adding clinic medicines. Reception and accountants have neither. Nurse vitals capture moves to the Phase 3 queue flow as its own action and service.
+
+**Consequences:** One writer per draft. Clinics that want nurses to record vitals wait for Phase 3. Roles with `rx.read` (reception, nurse, pharmacist) now also read history, examination notes, and vitals of a prescription; whether reception and pharmacists should see them is a data-minimisation decision to make before a pilot (`docs/PROGRESS.md`).
+
+**Revisit trigger:** design-partner feedback that nurse vitals entry is needed before Phase 3.
+
+---
+
+## ADR-0031 — Discarding drafts and withdrawing amendments
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** Abandoned drafts stayed on the patient's list forever, and an open amendment could be neither finished nor abandoned, which blocked every further correction (one open amendment per prescription, ADR-0024). Repeat copied a prescription even while its correction was in progress.
+
+**Decision:** `discardDraft` (owner, doctor) deletes a draft prescription with its items and its draft visit, after locking the draft row `FOR UPDATE`: a first-version draft, or an open amendment, which frees its parent's slot without touching the parent. A finalized or amended version is never deleted (`immutable`; the triggers refuse it anyway), and a corrupt state the triggers refuse (a draft prescription on a non-draft visit) returns `immutable` with "This prescription cannot be discarded.". The event `prescription.draft_discarded` records ids and counts only. `repeatPrescription` refuses a source with an open amendment draft (`conflict`) and reads the source `FOR SHARE`. The page offers "Discard draft" / "Withdraw amendment" to roles with `rx.draft` behind an inline confirm step (focus on "Keep it", warning announced politely); after a failed discard the form refreshes the page, and a `not_found` reads "This draft was changed or discarded elsewhere."
+
+**Consequences:** Drafts are not records (ADR-0029), so a discarded draft is gone; only its audit event remains. Doctors can always get out of an unwanted correction. Lock interplay with finalize, amend and repeat is described in ADR-0023; `tests/integration/prescriptions-discard.test.ts` holds the row lock to prove the order deterministically.
+
+**Revisit trigger:** a clinic asking to restore a discarded draft (switch to a `discarded` status).
+
+---
+
+## ADR-0032 — Printed prescriptions come from a snapshot frozen at finalize, signed by the finalizer
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** A reprint read the patient's name and age, the clinic header, and the doctor's details live, so a later edit (a renamed patient, a moved clinic, a corrected registration number) would change a medico-legal record. The immutability triggers (ADR-0023) forbid writing to a prescription after finalize. An amendment copies the original visit, including its `doctor_id` (ADR-0024), and an owner without a doctor profile can finalize.
+
+**Decision:** `finalizePrescription` builds and Zod-parses `prescriptions.render_snapshot` (patient name, number, gender, date of birth, age, allergies; clinic name, address lines, phone, email, footer lines, logo asset id, timezone; prescribing doctor's name, qualifications, designation, registration number and council, signature asset id; template, paper size, label language) under the prescription row lock and BEFORE the Rx number is allocated, then writes it in the same UPDATE that sets `status = 'finalized'` (the trigger allows it while the row is a draft and freezes it afterwards). The column is always overwritten in that UPDATE, so a stale value stored on a draft cannot survive. Lock order, revision check, numbering rule, and audit payload are unchanged.
+
+- The prescriber is the finalizing user: their own doctor profile, or no doctor block at all; never the visit's doctor.
+- A draft is never signed. Its preview (`loadRxDocument`) names as would-be signer only the VIEWER's own doctor profile (name and registration number) and only when the viewer can finalize (`rx.finalize`); anyone else sees "Not signed — draft". A draft never loads or embeds a signature image (the loader nulls the asset id and the renderer ignores any image it is given), and never shows the visit's doctor, whose identity an amendment inherits.
+- What is frozen is the DATA (patient, clinic, doctor, layout choices, clinical content). The PRESENTATION (template drawing, labels, CSS, fonts) is not: a later release can print the same snapshot differently. Every output row therefore records `renderer_version` (`RENDERER_VERSION` in `src/lib/rx-render/render.ts`, migration 0016; null for rows logged before it); bump the constant whenever printed output changes.
+- The age is computed for the calendar day in the clinic's timezone (an unknown zone falls back to `Asia/Kolkata`, never UTC).
+- It fails closed: an unparseable snapshot or a tenant with no clinic row refuses to finalize (an invalid-input result) and burns no number. `createTestTenant` inserts a clinic for that reason.
+- The snapshot is versioned (`v: 1`); its field limits are never lower than the write-side limits (`PAD_LIMITS`), pinned by a guard test.
+- Drafts and prescriptions finalized before this ADR print from live data (`loadRxDocument` ignores a draft's stored snapshot; an old finalized row uses its finalizer's current profile) and the pad says so. An amendment gets its own snapshot at its own finalize. The prescription page shows the patient name from the snapshot for finalized versions (with the current name when it changed); the allergy banner stays live as a safety prompt. The draft page warns a prescriber whose profile lacks a name or registration number, or who has no doctor profile; finalize does not block on it.
+
+**Consequences:** Reprints are stable and need no extra trigger. New printed fields must be added to the snapshot schema (bump `v`). Clinic and profile edits apply only to prescriptions finalized afterwards, which the settings pages say. `buildRenderSnapshot` relies on RLS, so it must run inside `withTenant` and never on the admin connection (the demo seed's prescriptions print from live data).
+
+**Revisit trigger:** a regulator requires reprints to show current demographics, a clinic must never print without a registration number (add a finalize precondition), or Template Studio needs fields the snapshot lacks.
+
+---
+
+## ADR-0033 — Print and PDF outputs are logged and audited, not cached
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** The data model sketched `printed_at`, `shared_at`, and `rendered_pdf_url` on `prescriptions`, but finalized rows cannot be updated and there is no object storage yet.
+
+**Decision:** Every browser print and PDF download appends a `prescription_outputs` row (tenant, prescription, actor, kind, template, paper size, page count, PDF size, SHA-256 of the exact HTML) and an audit event with ids and counts only (`prescription.printed`, `prescription.pdf_downloaded`). The runtime role can insert and read the table, never update or delete it; migration 0015 also installs immutability triggers on the admin connection (unless the tenant is being erased), a SHA-256 shape check and a template-key check. A trigger accepts outputs only for `finalized` and `amended` prescriptions (an exact allow-list, `23000` otherwise) and refuses a prescription not visible in the row's tenant (`23503`); the key to `prescriptions` is the composite `(tenant_id, prescription_id)`.
+
+- Viewing a non-draft document without printing (`purpose=preview`) writes no output row but IS audited as `prescription.previewed` (ids only); the print counter on the page counts only print and PDF outputs. A draft preview writes neither an output row nor an audit event (a draft is a working copy, not a record). Each output row records the `renderer_version` that drew it (ADR-0032).
+- `HEAD` is refused with 405. The document route (preview AND print) and the PDF route serve a request whose `Sec-Fetch-Site` header is absent, `same-origin`, or `none` (an address-bar or bookmark navigation) and answer 403 to `cross-site` and `same-site`, so another site cannot trigger an audited view or a logged print. The header is advisory (a non-browser client can omit or forge it); the session cookie and role check remain the real access control.
+- A failed log write answers 500 and serves nothing; a document that fails `checkSelfContained()` answers 500. PDF file names drop lone surrogates and bidi/format characters, `pdfFileName` requires the status (a draft never carries an Rx number), and PDF responses carry `nosniff` and no-store headers.
+- PDFs are regenerated on demand from the frozen inputs; the HTML of every reprint is byte-identical (same hash), PDF bytes differ only in Chromium metadata. A print is logged when its HTML is served to the print frame, whether or not the dialog is confirmed.
+- The PDF concurrency limiter is per process (Retry-After on 503 busy); the print frame is removed on `afterprint`, after 60 s, on a new print, or on unmount.
+
+**Consequences:** No stored PHI-bearing files and no retention job; one Gotenberg call per download. Plan 1D's sharing log extends the same table.
+
+**Revisit trigger:** Gotenberg load or latency, WhatsApp/email sharing that needs a stored file, a multi-instance deployment (shared limiter), or Phase 2 storage (cache keyed by `html_sha256`).
+
+---
+
+## ADR-0034 — One self-contained HTML renderer for print and PDF, and a hardened PDF engine
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** ADR-0007 chose Gotenberg's Chromium route for HTML to PDF. The same pad must also print from the browser, render Devanagari identically everywhere, and never let user text or Gotenberg reach the network.
+
+**Decision:** `src/lib/rx-render/` is a pure TypeScript renderer that builds HTML only through the `html` tagged template (auto-escaping; it throws when a value lands in an unsafe position such as a tag or attribute name, an unquoted attribute, or inside a quoted attribute as raw markup). Built-in templates (General, Paediatric, Derma) are data drawn by one renderer; `TemplateRef.kind` is the seam for Phase 2. Documents embed Noto Sans Devanagari (`@fontsource/noto-sans-devanagari`, pinned) and images as `data:` URIs, carry a `default-src 'none'` CSP, and must pass `checkSelfContained()` before they are served or sent. That checker is a deny-by-default parser: every `<` must start a well-formed tag, CSS comments (`/*`) are refused, `url()` accepts only base64 PNG/JPEG images and WOFF2 fonts, `image-set`, `src()`, `@import` and similar are refused in style blocks and attributes, and the document is capped at 4 MB (linear-time scanners). A repeating outer table header (patient strip) and footer give a header on every page without JavaScript; the signature stays with the last section (`.closing`); "Page X of Y" comes from Gotenberg's footer template (sized to the full page width so the Rx number and page number sit at opposite edges).
+
+The engine (`src/server/pdf/`) sits behind an injectable `PdfEngine` that never throws: a 4 MB HTML cap (character and UTF-8 byte length), a streaming PDF byte cap, a page cap, a content-type and `%PDF-` check, render and health timeouts, and a typed failure with a safe message. Gotenberg runs from a digest-pinned image bound to `127.0.0.1:3001` with JavaScript disabled, a Chromium deny-list (only the staged `file:///tmp/`, `data:`, `about:`, `blob:`), `--webhook-disable`, `--api-disable-download-from`, LibreOffice and PDF-engine routes disabled, `cap_drop: ALL`, `no-new-privileges`, and memory and process limits (`docker-compose.yml`; the CI workflow runs the same flags). `tests/integration/gotenberg-smoke.test.ts` proves with a beacon that a page without the CSP cannot reach the network, has a positive-control container without the deny-list, and a config-drift test comparing the running container with the flags; in CI or with `GOTENBERG_REQUIRED=1` a missing Gotenberg or docker fails instead of skipping. `GOTENBERG_URL` is mandatory in production (`resolveGotenbergUrl`), and production must also block the container's network egress. Print uses a hidden iframe and works when Gotenberg is down. Viewing, previewing, printing, and downloading use `rx.read`; `/prescriptions/:path*` is in the middleware matcher.
+
+**Consequences:** Identical output in Gotenberg and browsers apart from page numbers; about 185 KB of font CSS per document; unit tests run without Gotenberg. Pad labels are English, Hindi, or bilingual (`labels.ts`; a native speaker must review the Hindi). The checker's round-2 version was never run against live-browser exploit payloads in the build session (a safety check stopped that review); defense in depth (CSP, JavaScript off, deny-list, the HTML re-checked at serve time) is the mitigation. The legacy `/preview` page remains only for the desktop shell.
+
+**Revisit trigger:** Phase 2 Template Studio, a second script family (Gujarati, Tamil, ...), or a Gotenberg major upgrade (re-run `npm run test:visual` and review the PDFs).
+
+---
+
+## ADR-0035 — Clinic images live in Postgres as immutable assets
+
+- **Status:** accepted
+- **Date:** 2026-11-17
+
+**Context:** The pad needs a clinic logo and a doctor signature. There is no object storage yet, uploads are hostile (AGENTS.md invariant 8), and a reprint must keep the signature it was finalized with.
+
+**Decision:** `clinic_assets` stores PNG or JPEG bytes (`bytea`, at most 512 KB, 16 to 2000 px per side, type detected from the bytes, nothing after the true end marker; a JPEG is walked segment by segment), de-duplicated by SHA-256 per tenant and kind (computed server-side). Each clinic is capped at 20 logos and 50 signatures (checked in the upload transaction without a lock, so two simultaneous uploads can overshoot by one). The runtime role can insert and read but never update or delete; admin-level immutability triggers apply unless the tenant is erased. `clinics.logo_asset_id` and `doctors.signature_asset_id` point at the current asset through composite same-tenant keys (`NO ACTION`), and snapshots record the asset ids. `loadImageAssets` returns a map keyed by kind and id, so an id of one kind cannot be passed off as the other, and writes check tenant and kind. A custom Drizzle `bytea` type converts to and from `Buffer` (without it real PNGs failed with `22021`). Two actions join the role matrix: `settings.clinic` (owner) for the clinic pad and logo, `settings.profile` (owner, doctor) for one's own profile and signature. Settings text is validated with the shared cleaning helpers (a NUL is refused) and the clinic name is required.
+
+**Metadata:** `stripImageMetadata` (`src/lib/domain/image.ts`, pure) runs at upload before anything is stored or hashed: a JPEG loses APP1 to APP15 (EXIF/GPS, XMP, ICC), COM, and JFXX thumbnails, keeping a plain JFIF APP0 and the Adobe APP14 colour transform; a PNG keeps only IHDR, PLTE, tRNS, IDAT, IEND and the colour or density chunks (gAMA, cHRM, sRGB, iCCP, sBIT, pHYs), dropping text, EXIF and time chunks. Pixel data is copied as is (no re-encoding). The result is inspected again, the stored bytes and the SHA-256 are those of the stripped image, and de-duplication uses the stripped hash. Assets stored before this change (dev data only; no clinic used the app) may still carry metadata. There is still no malware scan.
+
+**Consequences:** Data stays in the India-region database; old prescriptions keep their images; the table grows by a few hundred KB per change.
+
+**Revisit trigger:** Phase 2 storage and upload pipeline (ClamAV, re-encoding), or asset volume above a few GB.
+
+---
+
+## ADR-0036 — Consent before sharing is an append-only log; withdrawal and archive stop every link
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** DPDP-style consent needs purpose, version, timestamp, who captured it, and revocation (PRODUCT_SPEC §6.2, AGENTS.md invariant 5). WhatsApp and email providers are third parties even when the recipient is the patient.
+
+**Decision:** `patient_consents` is an append-only event log (purpose `sharing`, version such as `sharing-v1`, `granted`, method `verbal | written`, `captured_by` not null, `created_at` set by `clock_timestamp()` in a trigger); the latest event per patient and purpose is the current state, and withdrawal inserts `granted = false`. The runtime role can only insert and read; admin-level immutability applies (0022). Consent is required before every share. The consent text and its Hindi translation live in `src/lib/domain/consent.ts` under the version key (`CONSENT_VERSIONS`, typed `CONSENT_TEXT`); rewording means a new key. The card posts the version it shows and the service records it only if it is a known version. Recording and withdrawing need `consent.capture` (owner, doctor, reception) and lock the patient row `FOR UPDATE`; withdrawal and archiving revoke every open link of the patient in the same transaction (`revoke_reason` `consent_withdrawn` / `patient_archived`). A link row must cite the patient's current granted consent: trigger `share_links_target` (0023) requires the prescription finalized, a consent of the same tenant, purpose `sharing`, `granted`, belonging to the prescription's patient, with no later consent event for that patient.
+
+**Locking note (0023, ADR-0037):** creating a link takes a `KEY SHARE` lock on the cited consent row, the prescription and the patient through the composite foreign keys, and `createShareLinkIn` locks the patient row `FOR SHARE`. Consent writers lock the patient row `FOR UPDATE`, so a link insert waits for an in-flight record/withdraw/archive and a link can never survive a concurrent withdrawal. The target trigger reads consent without locking; that is safe because consent rows are append-only and the patient row lock serialises the writers. No sharing path locks a prescription row. Audit events (`patient.consent_recorded`, `patient.consent_withdrawn`) carry ids, purpose, version, method and counts only.
+
+**Consequences:** Full consent history as evidence; one extra row per change. The English text needs legal review and the Hindi text a native speaker before any clinic turns sharing on (sharing is off per clinic until then, ADR-0038).
+
+**Revisit trigger:** ABDM consent artefacts (Phase 5), marketing consent, or a regulator's required wording.
+
+---
+
+## ADR-0037 — Share links: hashed, short-lived, revocable, count-limited, opened through a two-step public route
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** A patient must open their prescription from a WhatsApp or email message without an account, while link previews, mail scanners, guessing, and a forwarded message must not expose it, and every opening must be audited.
+
+**Decision:** A link is 32 random bytes (base64url, 43 characters); only its SHA-256 is stored (`share_links.token_hash`, unique). It points at one `finalized` prescription of its own tenant (trigger `share_links_target`), lives 7 days, opens at most 10 times, and can be withdrawn; the runtime role may only add one to `open_count` and revoke once (trigger `share_links_rules`), never delete; an insert trigger pins `open_count = 0`, no revocation fields and `created_at = now()`. `/s/<token>` is the only route without a session: GET answers an interstitial page with no patient, clinic or clinical data and a POST button, so previews and scanners never count an open or render anything; POST renders the frozen pad through the existing renderer, a separate public limiter (concurrency 1, small queue, one in-flight render per link) and `PdfEngine`, then, in one transaction that re-checks every condition (link state, sharing switch, patient not archived, current granted consent, abort signal), counts the open, writes a `prescription_outputs` row (kind `shared_pdf`, no actor, `share_link_id`) and audits `prescription.share_opened` (actor null). A malformed, unknown, expired, used-up, withdrawn or switched-off link, and a cross-site POST, all get the identical 404; a failed render answers 503 and burns nothing; a double tap answers its own 503 ("already opening", `Retry-After`). Every response is `no-store`, `noindex`, `no-referrer`, `nosniff`; HTML responses carry a `default-src 'none'` CSP and the PDF carries `frame-ancestors 'none'` plus `X-Frame-Options: DENY`. A link is refused at creation unless the prescription's `renderSnapshot` was frozen at finalize (`snapshotSource = "finalize"`); the open-time check stays as a backstop.
+
+**Token policy (override 8):** the token lookup runs through `withShareToken`, which sets `app.share_token_hash` with a transaction-local `set_config`, and one RLS policy, `share_link_by_token` (SELECT, `clinicpad_app`), written exactly as in migration 0022:
+
+```sql
+create policy share_link_by_token on share_links for select to clinicpad_app
+  using (token_hash = nullif(current_setting('app.share_token_hash', true), ''));
+```
+
+It is the single allow-listed exception in `tests/integration/rls-guard.test.ts` (the guard compares the full expression). Everything after the lookup runs in `withTenant`; never `adminDb`.
+
+**POST origin rule:** when `Sec-Fetch-Site` is present it alone decides (`same-origin` and `none` pass). Only when it is absent: `Origin: null` or no Origin passes, and a named Origin must equal the host of `NEXT_PUBLIC_APP_URL` (else the `Host` header). Refusals are logged without the token.
+
+**Superseded versions:** a link to a version that was later amended keeps opening for its 7 days and shows the SUPERSEDED marker; only the current version can be shared. This is a human decision (below).
+
+**Rate limits:** 10 active links per prescription and 60 links per user per hour (database counts; two simultaneous shares can overshoot by one); on the public route 20 requests per client address per minute and 30 per minute per token hash, both in memory and **per process**. The client address comes only from the header named by `SHARE_CLIENT_IP_HEADER`, or on Vercel (`VERCEL` set) from `X-Vercel-Forwarded-For`; `X-Real-IP` is read only when `SHARE_CLIENT_IP_HEADER` names it, and a client-supplied `X-Forwarded-For` is never read. IPv6 addresses are grouped by /64. With no trusted header all callers share one bucket ("unknown") per process, and production logs once. The in-flight guard per link is also per process. The PDF limiter drops a queued render whose request was aborted (a client abort is logged as `aborted`).
+
+**Caller contract:** `createShareLinkIn` re-checks archived patient, sharing switch, current granted consent, finalized status and snapshot, and checks the clinic switch and the current consent itself; it relies on its caller only for the **role permission** (`rx.share`). The sharing service (`src/server/services/sharing.ts`) checks it, and nothing else may call `createShareLinkIn`. The public resolve and open functions take only the token and are public by design.
+
+**Known behaviours and human checks:**
+- Link scanners and previewers that follow the form with a POST (not only GET) spend an open. GET never counts. The cap of 10 is the limit on that damage.
+- Older Android WebView downloaders (WhatsApp's in-app browser) may save the interstitial instead of the PDF, and some send neither `Origin` nor `Sec-Fetch-Site` (accepted). Check Android Chrome and the WhatsApp in-app browser by hand before ticking the sharing exit criteria.
+- Email click and open tracking is a Resend domain setting and must be off (ADR-0038); a tracking redirect would hand the token to the provider.
+- The token is in the URL **path**, so request logs (host, proxy, CDN, analytics) must not retain full URLs of `/s/*`; configure them before any pilot.
+
+**Consequences:** No PHI in URLs, previews or logs; the patient taps once more. The in-memory limits are per process: production must add an edge rate limit. Opens are counted only for completed renders.
+
+**Revisit trigger:** a stored PDF (Phase 2 storage), the WhatsApp Cloud API sending documents directly, or a patient portal with accounts.
+
+---
+
+## ADR-0038 — Sending: a wa.me link the clinic sends itself, email through a provider, sharing off per clinic
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** ADR-0010 chose the WhatsApp Cloud API behind an abstraction, but it needs Meta business verification, approved templates and credentials that do not exist yet; Phase 1 needs sharing now.
+
+**Decision:** WhatsApp sharing builds `https://wa.me/<international digits>?text=<message>` (`waMeLink`); the message names the clinic, the Rx number, the link and its expiry, never the patient or clinical text. The browser opens it from a real anchor click in a new tab (popup blockers), which works on phones and desktop. Phone input goes through `whatsAppRecipient`: Indian numbers may be typed nationally and must be mobiles (6–9), other countries need `+` and the code, and anything ambiguous is refused with what to type (it never suggests digits: a `+` followed by ten digits starting 6–9 with no country code set apart asks for the full number with its country code, `+65 8123 4567` is accepted, and an 11-digit number with a leading 0 and a landline area-code shape, `080 2345 6789`, `0755 123 4567`, is refused instead of being turned into a +91 mobile). The Share panel shows the full number and the patient's name before "Open WhatsApp"; the log keeps only the masked form. Email sends the same expiring link (no attachment) through `EmailProvider`; `getEmailProvider()` builds the Resend adapter only when `RESEND_API_KEY` and a valid `EMAIL_FROM` exist, otherwise email is hidden. The request body carries no tracking fields; **click and open tracking are a Resend domain setting and must stay off** (tracking would rewrite the link and leak the token to the provider's redirect). An email is logged before it is sent: the first transaction creates the link and inserts a `prepared` row with the masked recipient, the provider is then called outside any database transaction, and a second transaction inserts the outcome (`sent` or `failed`; the log is insert-only, so there are two rows per attempt) and a failed send withdraws its link (`send_failed`). If that second transaction fails after a real send the email is still reported as sent and the `prepared` row stays. `prescription_shares` is the append-only share log (channel, masked recipient, provider, status `prepared | sent | failed`, provider id, error code); the mask always has a `*` and no run of five digits (`maskEmail` replaces digits and cuts to 64 characters, and the mask is checked before anything is sent), and full numbers and addresses are never stored. At most 5 emails per prescription per 24 hours, counted as distinct links in the log (prepared rows count, so a failed or unlogged send cannot be retried without limit; no lock, so two simultaneous sends can overshoot by one). `clinics.sharing_enabled` (default false) is the owner's switch, enforced in the service; off makes every link of the clinic answer 404 at once. Roles: `rx.share` = owner, doctor, reception. Tests use a fake provider and never touch the network.
+
+**Human decisions attached (not made):** the email provider's data residency and legal basis for cross-border processing (Resend is not in India; the email carries the clinic name, Rx number and link, no clinical text); the Resend account and sender-domain DNS.
+
+**Consequences:** No message leaves ClinicPad's servers for WhatsApp; delivery status is unknown ("prepared"). The Cloud API (or a BSP) can replace the `wa_link` provider behind `shareByWhatsApp` without changing links, consent or the log.
+
+**Revisit trigger:** Meta verification complete (Cloud API), BSP choice (open decision #2), delivery reconciliation (Phase 3).
+
+---
+
+## ADR-0039 — Patient CSV import: stateless dry-run and commit, Excel repairs, explicit duplicate decisions, idempotent rows
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** Clinics arrive with patient lists from Excel and other software (ROADMAP 1.1, PRODUCT_SPEC §6.2). Files come in odd encodings and formats, contain duplicates and family phones, and get uploaded twice.
+
+**Decision:** The browser keeps the file; the server re-parses it for the dry-run and for the commit, which refuses a file whose SHA-256 changed and a mapping that differs from the dry-run's (the token binds both). Caps: about 900 KB per file (Next's 1 MB server-action body limit), 5,000 rows, 40 columns, 2,000 characters per mapped cell (echoed cells are cut shorter in the report). UTF-8 (BOM stripped) and UTF-16 with a BOM are read; workbooks, BOM-less UTF-16, binary data and non-UTF-8 text are refused with what to do. The delimiter (`,` `;` tab) comes from the header line; row numbers are spreadsheet rows. Headers map to fields by aliases and the owner can change every choice. Rows pass Excel repairs (day-first dates, Excel serials, `'` and `.0` removed; two-digit years, month/day/year, a bare year and scientific-notation phones refused; a NUL refuses the row; an age column is reported, never turned into a birth date) and then the patient form's own schema and the clinic-day DOB rule.
+
+A duplicate is a normalized phone matching an active patient or an earlier row, **or** a normalized name equal to an existing patient's name with equal-or-empty DOB (so a re-import with a corrected mapping cannot duplicate, also for rows without a phone). A duplicate is skipped unless the owner chooses "register as new" or "add missing details" (fill-only, never overwrite). Each match records its basis: the phone matches (with the same name or a different one), or the name only. "Add missing details" is offered for exactly one match whose DOB and gender agree or one side is empty **and** whose phone matches too, or whose patient has no phone while both birth dates are recorded and equal. "Register as new" is not offered for an exact repeat inside the file or for any row with a match by name only. **Rows that match only by name are therefore skip-only, and the report shows the basis of each match; that is a human decision to revisit** (two patients with the same name and different phones, twins and namesakes are skipped until the owner registers them by hand from the patient form). The dry-run returns a per-row match fingerprint (sorted matched ids and the row it duplicates). The commit request carries only the rows the owner moved off the default (skip), each as `c<row>.<8 hex of the fingerprint>` or `f<row>...` (at most 15 characters per row, under 80 KB for 5,000 rows), plus a bitmap of the rows that were duplicates at check time; a row without a choice is skipped whatever it matches now (so a file of 5,000 duplicates commits), and a choice is honoured only if its fingerprint is unchanged, otherwise the row is skipped with a stale-row reason. Each imported patient stores `import_row_key` (SHA-256 of name key, phone, DOB; partial unique index), so a re-run imports nothing twice. The commit runs in one transaction under `pg_advisory_xact_lock` per tenant, allocates patient numbers as one block (`allocateNumbers`), and writes `patient_imports` (append-only job row, security in 0020), `patient.created` per patient with the import id, `patient.updated` per fill with field names, and `patient_import.committed`. The problem-row download is built in the browser by `serializeCsv`, which neutralises formula cells. Import is owner-only (`patient.import`), reached from a button on `/patients`. `sample_data/patients_template.csv` documents the shape (`.gitattributes` marks it `-text`); the existing `sample_data` catalogue lists stay loaded by `npm run db:seed:catalogue`.
+
+**Consequences:** No PHI staging table; the file travels twice. Dates are always read day-first. Imported rows carry an import id for later clean-up.
+
+**Revisit trigger:** `.xlsx` upload, files above 1 MB (would need a route handler instead of a server action), a full merge tool, or importing prescriptions.
+
+---
+
+## ADR-0040 — Database hardening of Plan 1D
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** ADR-0023 listed gaps (an INSERT of an already-finalized row; the `finalized -> amended` flip without a successor), statuses and clinical values were checked only by Zod, CHECKs lived only in SQL, three foreign-key columns had no index, `tenant_medicines.created_by` had no key, the runtime role could delete counters, and no test covered RLS across the whole schema.
+
+**Decision:** 0017: rows of `prescriptions` and `visits` are born as drafts (BEFORE INSERT, `23000`); the flip to `amended` requires a finalized child of the same tenant that is not the row itself, and `draft -> amended` is refused (also through `INSERT ... ON CONFLICT DO UPDATE`); `parent_prescription_id` may not equal `id`; closed status vocabularies; `tenant_counters` DELETE/TRUNCATE revoked. 0018: periodicity, quarter-step dose (0–99) and duration (1–365) CHECKs on items and favourites; indexes on `visits(tenant_id, doctor_id)`, `visits(tenant_id, branch_id)`, `prescriptions(tenant_id, template_version_id)`, `prescriptions(tenant_id, parent_prescription_id)`; `tenant_medicines (tenant_id, created_by) -> memberships (tenant_id, user_id) ON DELETE SET NULL (created_by)`. 0019 to 0023 add the import and sharing tables with their security, triggers and indexes on every new composite key (`patients(tenant_id, import_id)`, `prescription_outputs(tenant_id, share_link_id)`). New CHECKs are added `NOT VALID` and validated in the same migration when every row passes, so a development database with leftovers still migrates (`npm run db:sweep-test-tenants` removes old test tenants: only local databases, only tenants whose members all use `@example.com`, older than an hour, never `demo-clinic`). Every CHECK is also declared in the Drizzle schema, and `tests/integration/schema-checks.test.ts` fails when the two lists differ; policies, grants and triggers stay in SQL, and `tests/integration/rls-guard.test.ts` requires forced RLS and an `app.tenant_id`-scoped policy (every non-null `qual` and `with_check`) on every table with a `tenant_id`, with one allow-listed exception (ADR-0037). The composite-key guard accepts parents `(tenant_id, id)` and `(tenant_id, user_id)` only. The demo seed inserts drafts and finalizes them by UPDATE; `createTestTenant` gives its user an owner membership; the e2e `seedPatients` reserves numbers through the counter.
+
+**Consequences:** ADR-0023's "INSERT of an already-finalized row" and "no successor check" limitations are closed. A constraint can remain NOT VALID on a dirty development database until it is swept; new writes are checked either way.
+
+**Revisit trigger:** a managed database that restricts triggers, or partitioning by tenant.
+
+---
+
+## ADR-0041 — Clinic-timezone dates, patient history and archive, and Plan 1D localisation choices
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** DOB validation and on-screen ages used the UTC day, so a baby born today could not be registered between 00:00 and 05:30 IST. The patient page listed prescriptions unfiltered, and archive had no UI or way back. Three localisation items were open: Hindi labels for option codes, "Page x of y" in Hindi, and a temperature unit.
+
+**Decision:** Calendar days are the clinic's (`clinicLocalDate`, `src/lib/domain/clinic-date.ts`): the Zod DOB bound is the latest date on Earth (UTC+14) and the services apply the clinic's day (the DOB input has no `max`); patient ages on screen and history date filters use the clinic's zone (an unknown zone falls back to Asia/Kolkata, never UTC). `listPatientPrescriptions` filters by clinic-local date range on `coalesce(finalized_at, created_at)`, the visit's doctor, status and diagnosis or complaint text (escaped `ILIKE`), 20 per page with a total order; malformed URL filters are ignored. Rows are labelled `Rx #N vV` and offer Open, Print, Download PDF and, for the current version, Repeat. Archive (owner, inline confirm) hides a patient from search and new prescriptions, keeps every record, revokes its share links, and is undone from "Show archived" (audit `patient.archived` with `revokedLinks`, `patient.unarchived`). Hindi labels for food relation and periodicity codes have one source (`FOOD_RELATION_LABELS_HI`, `PERIODICITY_LABELS_HI` in `rx-options.ts`, reusing the legacy strings); printed output is unchanged. "Page x of y" stays English with Western digits in every label language (the Gotenberg footer cannot rely on the embedded Devanagari font; Western digits are normal on Indian pads). The temperature unit stays °F until Phase 3 nurse vitals: a unit setting changes the frozen snapshot (`v` bump), the autosave payload, the renderer and the golden files.
+
+**Consequences:** Dates agree between the form, the list, the pad and the filters. A native speaker still has to review all Hindi strings (pad labels, option labels, consent text, share pages).
+
+**Revisit trigger:** a clinic outside India, a UI language switch, or Phase 3 vitals.
+
+---
+
+## ADR-0042 — Next.js 15.5.29 and a vendored React patch (facebook/react#36134), applied on postinstall
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** Under `next start`, saving the pad or uploading a logo sometimes stayed on "Saving…" / "Uploading…" until a reload (5 of 12 runs of `pad-settings.spec.ts`). The server action had completed. Cause: the React build that Next 15.5.x bundles (`next/dist/compiled/react-dom`) drops a ping that arrives synchronously during the render while the exit status is "suspended with delay", so the transition lane is marked suspended and never retried. A `revalidatePath` action response that streams in over several packets triggers it (any same-page RSC refresh can: import, sharing, consent, `router.refresh()`). The upstream fix is facebook/react#36134 (merged 2026-03-24); no Next 15.x release contains it. Detail: `.superpowers/sdd/2026-11-17-phase-1d-sharing-import-hardening/debug-pad-settings-report.md`.
+
+**Decision:** Upgrade `next` and `eslint-config-next` from 15.5.2 to 15.5.29 (exact pins; the latest 15.5.x; 15.5.2 also predated the December 2025 RSC security fixes). The bundled React in 15.5.29 still has the bug, so `scripts/patch-react-ping.mjs` runs on `postinstall` and applies the upstream change to the vendored `react-dom` and `react-dom-experimental` client, profiling and testing builds (10 files): in the render-phase branch it records `workInProgressRootPingedLanes |= pingedLanes`. It is idempotent (marker comment) and warns on code it does not recognise. `tests/unit/vendored-react-ping.test.ts` runs the real scheduler against the vendored React and fails when the bug is present, which is what a Next upgrade or a missing patch would cause.
+
+**Risk:** an install with `--ignore-scripts` (`npm ci --ignore-scripts`, a host that disables lifecycle scripts, some Docker builds) ships the bug again, silently for users; the unit test catches it in CI only if CI installs with scripts. `npm install next@...` does not re-patch until `postinstall` runs (run `node scripts/patch-react-ping.mjs` by hand). Deployment must install with scripts enabled, or run the script before `next build`. We patch third-party vendored code, which needs the owner's sign-off.
+
+**Build guard:** `prebuild`, `prebuild:web` and `prebuild:desktop` run `node scripts/patch-react-ping.mjs --check`, which patches if needed and exits non-zero when a bundled file is neither patched nor recognised (or no React DOM bundle is found), so `next build` fails loudly after an install with `--ignore-scripts` or a Next upgrade that changed the code. `postinstall` still never fails the install.
+
+**Removal condition:** a Next release that contains react#36134 (the fix is in React 19.2+ builds after 2026-03-24; Next 16.3 canaries carry it). Then delete the script, the `postinstall` entry and the test, and drop the AGENTS.md note.
+
+**Consequences:** `pad-settings` 24 of 24 under `next start` (12 of 12 on 15.5.29). `npm audit` still reports 25 vulnerabilities in other packages (follow-up, not addressed here).
+
+**Revisit trigger:** any Next upgrade (the script warns on unknown code), or React's release of the fix in a stable Next.
 
 ---
 

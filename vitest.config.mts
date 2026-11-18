@@ -3,12 +3,13 @@ import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { config } from "dotenv";
 
-config({ path: ".env.local" });
+config({ path: ".env.local", quiet: true });
 
 export default defineConfig({
   plugins: [react()],
   test: {
     environment: "jsdom",
+    testTimeout: 30_000,
     setupFiles: ["./tests/setup.ts"],
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
     exclude: ["tests/e2e/**"],

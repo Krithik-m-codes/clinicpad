@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { isValidTimeZone } from "@/lib/rx-render/format";
+import { cleanRequiredText } from "./text";
 
 export const onboardingSchema = z.object({
-  clinicName: z.string().trim().min(2, "Enter your clinic name").max(120),
-  doctorName: z.string().trim().min(2, "Enter your name").max(120),
+  clinicName: cleanRequiredText(120, "Enter your clinic name").refine((v) => v.length >= 2, "Enter your clinic name"),
+  doctorName: cleanRequiredText(120, "Enter your name").refine((v) => v.length >= 2, "Enter your name"),
   email: z.string().trim().toLowerCase().email("Enter a valid email"),
   phone: z
     .string()
@@ -13,7 +15,12 @@ export const onboardingSchema = z.object({
   password: z.string().min(8, "Use at least 8 characters").max(72, "Use at most 72 characters"),
   city: z.string().trim().max(80).optional(),
   country: z.string().trim().length(2).default("IN"),
-  timezone: z.string().trim().min(1).default("Asia/Kolkata"),
+  timezone: z
+    .string()
+    .trim()
+    .min(1)
+    .refine(isValidTimeZone, "Choose a valid time zone")
+    .default("Asia/Kolkata"),
   currency: z.enum(["INR", "USD", "GBP", "AED", "SGD"]).default("INR"),
 });
 

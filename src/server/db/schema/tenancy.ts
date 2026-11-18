@@ -1,5 +1,8 @@
 import {
   boolean,
+  check,
+  customType,
+  foreignKey,
   index,
   integer,
   pgTable,
@@ -8,12 +11,32 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { uuidv7 } from "uuidv7";
 import { memberRole, memberStatus, tenantPlan } from "./enums";
 
 const pk = () => uuid("id").primaryKey().$defaultFn(() => uuidv7());
 const createdAt = () =>
   timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
+
+/**
+ * Raw bytes. postgres-js returns bytea as a Buffer and normally sends a Buffer parameter as bytea. Under
+ * vitest's jsdom environment a Buffer fails postgres-js's `instanceof Uint8Array` check, so it was sent as
+ * text and any value with a NUL byte (every PNG) failed with 22021. Writing bytea hex text (`\x...`) works
+ * in both. It relies on postgres-js `infer: false` (the default): with `infer: true` the string would be typed
+ * and double-encoded. tests/integration/render-snapshot.test.ts round-trips bytes containing 0x00.
+ */
+const bytea = customType<{ data: Buffer; driverData: Buffer | string }>({
+  dataType() {
+    return "bytea";
+  },
+  toDriver(value) {
+    return `\\x${value.toString("hex")}`;
+  },
+  fromDriver(value) {
+    return typeof value === "string" ? Buffer.from(value.replace(/^\\x/, ""), "hex") : value;
+  },
+});
 
 export const tenants = pgTable(
   "tenants",
@@ -27,6 +50,42 @@ export const tenants = pgTable(
     createdAt: createdAt(),
   },
   (t) => [unique("tenants_slug_unique").on(t.slug)],
+);
+
+/**
+ * Uploaded clinic images (logo, doctor signature). Immutable: the runtime role can insert
+ * and read but never update or delete. Finalized prescriptions reference these ids in
+ * their print snapshot, so a reprint keeps the image it was finalized with.
+ */
+export const clinicAssets = pgTable(
+  "clinic_assets",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    mime: text("mime").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    sha256: text("sha256").notNull(),
+    bytes: bytea("bytes").notNull(),
+    createdBy: uuid("created_by"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    // Target of the composite same-tenant foreign keys from clinics and doctors (ADR-0025 pattern).
+    unique("clinic_assets_tenant_id_uq").on(t.tenantId, t.id),
+    unique("clinic_assets_dedupe_key").on(t.tenantId, t.kind, t.sha256),
+    // Declared here as well as in SQL (0014, 0015) so drizzle-kit knows them; tests/integration/schema-checks.test.ts pins the list.
+    check("clinic_assets_kind_check", sql`kind in ('logo', 'signature')`),
+    check("clinic_assets_mime_check", sql`mime in ('image/png', 'image/jpeg')`),
+    check("clinic_assets_size_check", sql`byte_size between 1 and 524288 and octet_length(bytes) = byte_size`),
+    check("clinic_assets_dimensions_check", sql`width between 16 and 2000 and height between 16 and 2000`),
+    check("clinic_assets_sha256_check", sql`sha256 ~ '^[0-9a-f]{64}$'`),
+    check("clinic_assets_hash_matches_check", sql`sha256 = encode(sha256(bytes), 'hex')`),
+  ],
 );
 
 export const clinics = pgTable(
@@ -45,9 +104,32 @@ export const clinics = pgTable(
     timezone: text("timezone").notNull().default("Asia/Kolkata"),
     currency: text("currency").notNull().default("INR"),
     logoUrl: text("logo_url"),
+    addressLine2: text("address_line2"),
+    phone: text("phone"),
+    email: text("email"),
+    padFooter: text("pad_footer"),
+    rxTemplate: text("rx_template").notNull().default("general"),
+    rxPaperSize: text("rx_paper_size").notNull().default("A4"),
+    rxLabels: text("rx_labels").notNull().default("en"),
+    logoAssetId: uuid("logo_asset_id"),
+    /** Sharing by link (WhatsApp, email) is off until the owner turns it on (Plan 1D). Turning it off kills every link of the clinic. */
+    sharingEnabled: boolean("sharing_enabled").notNull().default(false),
     createdAt: createdAt(),
   },
-  (t) => [index("clinics_tenant_idx").on(t.tenantId)],
+  (t) => [
+    index("clinics_tenant_idx").on(t.tenantId),
+    // Target of the composite same-tenant foreign keys (a foreign key needs a unique key to point at).
+    unique("clinics_tenant_id_uq").on(t.tenantId, t.id),
+    // Same-tenant reference to the current logo. NO ACTION: the runtime role can never delete assets.
+    foreignKey({
+      name: "clinics_logo_asset_fk",
+      columns: [t.tenantId, t.logoAssetId],
+      foreignColumns: [clinicAssets.tenantId, clinicAssets.id],
+    }),
+    check("clinics_rx_template_check", sql`rx_template in ('general', 'paediatric', 'derma')`),
+    check("clinics_rx_paper_size_check", sql`rx_paper_size in ('A4', 'A5')`),
+    check("clinics_rx_labels_check", sql`rx_labels in ('en', 'hi', 'bilingual')`),
+  ],
 );
 
 export const branches = pgTable(
@@ -57,9 +139,7 @@ export const branches = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
-    clinicId: uuid("clinic_id")
-      .notNull()
-      .references(() => clinics.id, { onDelete: "cascade" }),
+    clinicId: uuid("clinic_id").notNull(),
     name: text("name").notNull(),
     address: text("address"),
     phone: text("phone"),
@@ -69,6 +149,13 @@ export const branches = pgTable(
   (t) => [
     index("branches_tenant_idx").on(t.tenantId),
     index("branches_clinic_idx").on(t.clinicId),
+    unique("branches_tenant_id_uq").on(t.tenantId, t.id),
+    // Same-tenant reference: a branch can only belong to a clinic of its own tenant.
+    foreignKey({
+      name: "branches_clinic_fk",
+      columns: [t.tenantId, t.clinicId],
+      foreignColumns: [clinics.tenantId, clinics.id],
+    }).onDelete("cascade"),
   ],
 );
 
@@ -118,19 +205,39 @@ export const doctors = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
     userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
-    primaryBranchId: uuid("primary_branch_id").references(() => branches.id, {
-      onDelete: "set null",
-    }),
+    primaryBranchId: uuid("primary_branch_id"),
     regNo: text("reg_no"),
     qualifications: text("qualifications"),
     specialties: text("specialties").array(),
     signatureUrl: text("signature_url"),
     stampUrl: text("stamp_url"),
+    displayName: text("display_name"),
+    designation: text("designation"),
+    registrationCouncil: text("registration_council"),
+    signatureAssetId: uuid("signature_asset_id"),
     consultationFeePaise: integer("consultation_fee_paise").notNull().default(0),
     createdAt: createdAt(),
   },
   (t) => [
     index("doctors_tenant_idx").on(t.tenantId),
     index("doctors_user_idx").on(t.userId),
+    // Target of the composite same-tenant foreign keys from visits.doctor_id and medicine_favourites.doctor_id.
+    unique("doctors_tenant_id_uq").on(t.tenantId, t.id),
+    // One doctor profile per user per clinic, so the user -> doctor lookup (doctorIdFor) is deterministic.
+    unique("doctors_tenant_user_uq").on(t.tenantId, t.userId),
+    // Same-tenant reference. The delete rule is ON DELETE SET NULL (primary_branch_id): a plain composite SET NULL
+    // would also try to null tenant_id (NOT NULL). drizzle-kit cannot express the column list, so the migration
+    // (0009) is hand-edited; keep it in step with this definition.
+    foreignKey({
+      name: "doctors_primary_branch_fk",
+      columns: [t.tenantId, t.primaryBranchId],
+      foreignColumns: [branches.tenantId, branches.id],
+    }).onDelete("set null"),
+    // Same-tenant reference to the current signature (NO ACTION, as for the clinic logo).
+    foreignKey({
+      name: "doctors_signature_asset_fk",
+      columns: [t.tenantId, t.signatureAssetId],
+      foreignColumns: [clinicAssets.tenantId, clinicAssets.id],
+    }),
   ],
 );

@@ -10,12 +10,14 @@ import {
   patients,
   prescriptionItems,
   prescriptions,
+  tenantCounters,
   tenants,
   users,
   visits,
 } from "@/server/db/schema";
 import { hashPassword } from "@/server/auth/password";
 import { newId } from "@/lib/domain/ids";
+import { seedCatalogue } from "@/server/db/catalogue-seed";
 
 const DEMO_SLUG = "demo-clinic";
 const DEMO_PASSWORD = "ClinicPad!2026";
@@ -64,6 +66,8 @@ export async function seedDemo(): Promise<void> {
         city: "Pune",
         state: "Maharashtra",
         pincode: "411001",
+        phone: "020-2612 3456",
+        padFooter: "Mon–Sat 9 am – 1 pm and 5 pm – 8 pm\nPlease bring your previous prescriptions.",
         country: "IN",
         timezone: "Asia/Kolkata",
         currency: "INR",
@@ -88,6 +92,9 @@ export async function seedDemo(): Promise<void> {
           .values({
             tenantId,
             userId,
+            displayName: person.name,
+            regNo: person.role === "owner" ? "MMC 2011/04/1234" : "MMC 2015/07/5678",
+            registrationCouncil: "Maharashtra Medical Council",
             primaryBranchId: mainBranch.id,
             qualifications: "MBBS, MD",
             specialties: ["General Medicine"],
@@ -105,6 +112,7 @@ export async function seedDemo(): Promise<void> {
           const phone = `90000000${String(i).padStart(2, "0")}`;
           return {
             tenantId,
+            patientNo: i + 1,
             name: `${firstNames[i % firstNames.length]} ${lastNames[Math.floor(i / 5) % lastNames.length]}`,
             phone,
             phoneNormalized: phone,
@@ -116,6 +124,11 @@ export async function seedDemo(): Promise<void> {
       )
       .returning();
 
+    await tx.insert(tenantCounters).values([
+      { tenantId, name: "patient", lastNo: PATIENT_COUNT },
+      { tenantId, name: "rx", lastNo: PRESCRIPTION_COUNT },
+    ]);
+
     const now = new Date();
     const visitRows = await tx
       .insert(visits)
@@ -125,12 +138,12 @@ export async function seedDemo(): Promise<void> {
           patientId: patientRows[i].id,
           doctorId: primaryDoctorId,
           branchId: mainBranch.id,
-          status: "finalized",
+          // Born as a draft (0017's insert guard); finalized below the way the services do it.
+          status: "draft",
           visitType: i % 3 === 0 ? "follow-up" : "new",
           chiefComplaint: "Fever and body ache",
           diagnosis: ["Viral fever"],
           advice: "Rest, fluids, review if fever persists beyond 3 days.",
-          finalizedAt: now,
         })),
       )
       .returning();
@@ -143,8 +156,7 @@ export async function seedDemo(): Promise<void> {
           visitId: visit.id,
           rxNo: i + 1,
           version: 1,
-          status: "finalized",
-          finalizedAt: now,
+          status: "draft",
         })),
       )
       .returning();
@@ -176,6 +188,14 @@ export async function seedDemo(): Promise<void> {
       ]),
     );
 
+    // Items go in while draft; the immutability trigger forbids adding them afterwards.
+    await tx
+      .update(prescriptions)
+      .set({ status: "finalized", finalizedAt: now, finalizedBy: ownerId })
+      .where(eq(prescriptions.tenantId, tenantId));
+    // Then the visits: once a prescription is finalized, a draft visit accepts only this plain flip (0008).
+    await tx.update(visits).set({ status: "finalized", finalizedAt: now }).where(eq(visits.tenantId, tenantId));
+
     // Invariant 2: clinical records carry audit events, demo data included.
     await tx.insert(auditEvents).values([
       {
@@ -204,7 +224,11 @@ export async function seedDemo(): Promise<void> {
 const entry = process.argv[1];
 if (entry && import.meta.url === pathToFileURL(entry).href) {
   seedDemo()
-    .then(() => process.exit(0))
+    .then(() => seedCatalogue())
+    .then((report) => {
+      console.log(`Catalogue: ${report.medicines} medicines`);
+      process.exit(0);
+    })
     .catch((error) => {
       console.error(error);
       process.exit(1);

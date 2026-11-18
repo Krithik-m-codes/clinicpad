@@ -58,7 +58,7 @@ Copy-Item .env.example .env.local
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `NEXT_PUBLIC_APP_URL` | yes | Canonical URL, used in links and auth callbacks |
+| `NEXT_PUBLIC_APP_URL` | yes | Canonical URL, used in links and auth callbacks; the base of share links (`/s/<token>`). An https origin with no path in production, or sharing is unavailable |
 | `NODE_ENV` | auto | `development` / `production` |
 
 ### 3.2 Variables added in Phase 0
@@ -72,6 +72,7 @@ Copy-Item .env.example .env.local
 | `SUPABASE_SERVICE_ROLE_KEY` | server only | Admin tasks; never expose to the client |
 | `AUTH_SECRET` | yes | Session signing (32+ random bytes) |
 | `ENCRYPTION_KEY` | yes | Field-level encryption for sensitive data |
+| `GOTENBERG_URL` | for PDFs and shared PDFs; mandatory in production | PDF service (Gotenberg); defaults to `http://localhost:3001` outside production, and the app reports the PDF service as down in production when it is unset or not an http(s) URL |
 
 Generate secrets:
 
@@ -80,14 +81,21 @@ Generate secrets:
 [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
 ```
 
+### 3.2b Variables added in Plan 1D (sharing)
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `RESEND_API_KEY`, `EMAIL_FROM` | optional | Email sharing of prescription links. Without both, the Share panel hides email; tests never set them. `EMAIL_FROM` must be on a domain verified with Resend. Turn click and open tracking OFF for that domain in the Resend dashboard (a tracking redirect would pass the share token to the provider) |
+| `SHARE_CLIENT_IP_HEADER` | production, non-Vercel hosts | Name of the header your proxy sets with the real client address (and strips from client requests). The public share route rate-limits on it and never reads `X-Forwarded-For`; production logs a warning once when no such header arrives, and then all callers share one bucket |
+
+Production notes for sharing: use an https `NEXT_PUBLIC_APP_URL` (otherwise "Sharing is not set up on this server"); `GOTENBERG_URL` is required (shared PDFs render on the server); the share-route rate limits are per process, so add an edge rate limit in front of `/s/`; the share token is in the URL path, so web server, proxy, CDN and analytics logs must not retain full `/s/*` URLs; install with lifecycle scripts enabled (`postinstall` applies `scripts/patch-react-ping.mjs`, ADR-0042). A local `next start` also needs `AUTH_TRUST_HOST=true`.
+
 ### 3.3 Variables added in later phases
 
 | Variable | Phase | Purpose |
 |---|---|---|
-| `GOTENBERG_URL` | 2 | Document conversion service |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | 2 | Template and PDF storage |
 | `CLAMAV_HOST`, `CLAMAV_PORT` | 2 | Upload scanning |
-| `RESEND_API_KEY`, `EMAIL_FROM` | 2 | Transactional email |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | 3 | India payments |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | 5 | International payments |
 | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_ID`, `WHATSAPP_VERIFY_TOKEN` | 3 | Meta Cloud API |
@@ -99,7 +107,7 @@ Generate secrets:
 
 ## 4. Local services
 
-Phase 0 introduces a `docker-compose.yml` for local dependencies. Until then, only the Next.js dev server is required.
+`docker-compose.yml` runs `postgres` (5432) and `gotenberg` (127.0.0.1:3001, prescription PDFs). Start both with `docker compose up -d`; without Gotenberg the app still works, Print still works, and Download PDF shows an error. On this project's Windows machine Docker Desktop lives under `%LOCALAPPDATA%\Programs\DockerDesktop`.
 
 Target compose stack:
 
@@ -138,6 +146,8 @@ First-time local setup (needs `.env.local`, see section 3):
 docker compose up -d postgres
 npm run db:migrate    # apply migrations (creates the clinicpad_app role and RLS)
 npm run db:seed       # demo clinic: 3 staff, 50 patients, 20 prescriptions
+npm run db:seed:catalogue   # global medicine and clinical-term lists (idempotent; db:seed also runs it; safe in production)
+npm run db:sweep-test-tenants            # list leftover test tenants (local databases only); add -- --apply to delete them
 ```
 
 Demo login after seeding: `owner@demo.clinicpad.app` / `ClinicPad!2026` (also `doctor@...` and `reception@...`). The seed is idempotent and refuses to run when `NODE_ENV=production`.
@@ -161,6 +171,10 @@ For Supabase staging, use the pooled URL in `DATABASE_URL` and the direct URL in
 
 ---
 
+### 4.2 Document engine (Gotenberg)
+
+`docker compose up -d gotenberg` starts the digest-pinned Gotenberg image with JavaScript disabled, a Chromium deny-list, no webhooks or download-from, and the API bound to loopback only (it has no authentication). Check it with `curl http://localhost:3001/health` or the app's `GET /api/health/pdf`. Prescription documents embed their fonts and images, carry a `default-src 'none'` CSP, and are checked before they are sent, so Gotenberg never needs network access: in staging and production run it with no egress (no outbound network from its container) and copy the flag set from `docker-compose.yml`. Set `GOTENBERG_URL` explicitly in production. After upgrading the image, run `npm run test:visual` (it also writes the real PDFs to `test-results/rx-visual-pdf/`) and review the screenshots and PDF pages. Set `GOTENBERG_REQUIRED=1` to make `npm run test` fail instead of skipping when Gotenberg or docker is missing (CI does this).
+
 ## 5. Run the app
 
 ```powershell
@@ -174,11 +188,12 @@ Other commands:
 ```powershell
 npm run build:web      # server build (this is what staging/production run)
 npm run build:desktop  # static export for Tauri (legacy offline shell only, ADR-0021)
-npm run start          # run the production web build
+npm run start          # run the production web build (locally needs AUTH_TRUST_HOST=true, an https NEXT_PUBLIC_APP_URL for sharing, and GOTENBERG_URL)
 npm run lint           # ESLint
 npm run typecheck      # tsc --noEmit
 npm run test           # Vitest (unit + integration; integration needs Postgres running)
-npm run test:e2e       # Playwright (starts the dev server; needs Postgres and one-time `npx playwright install chromium`)
+npm run test:e2e       # Playwright (starts the dev server; needs Postgres, Gotenberg for the PDF checks, and one-time `npx playwright install chromium`)
+npm run test:visual    # print-layout screenshots (opt-in, per-platform baselines)
 node scripts/verify-gate-0.mjs   # everything above, in order
 ```
 
@@ -296,7 +311,9 @@ All commands must exit `0`. Then start the app and check:
 | Postgres auth error | Wrong URL / pooler vs direct | Check `DATABASE_URL` vs `DIRECT_URL` |
 | RLS returns zero rows | Session tenant not set | Verify `app.tenant_id` is set in the transaction |
 | Migration hangs | Locked table / wrong DB | Check `pg_stat_activity`; use direct connection |
-| PDF conversion timeout | Gotenberg down or file too large | `docker compose ps`; check 25 MB limit |
+| Download PDF says the PDF service is not reachable | Gotenberg not running | `docker compose up -d gotenberg`; then `curl http://localhost:3001/health` |
+| Share panel says "Sharing is turned off for this clinic" | Off by default | The owner turns it on in Settings, Sharing (after reviewing the consent text) |
+| A shared link says "This link is not valid" | Expired (7 days), used 10 times, withdrawn, consent withdrawn, patient archived, or sharing switched off | Share again from the prescription page |
 | WhatsApp template rejected | Missing approval / wrong category | Check Meta Business Manager; use an approved template |
 | `npm ci` fails after lockfile change | Lockfile out of sync | Run `npm install`, commit `package-lock.json` |
 

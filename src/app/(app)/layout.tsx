@@ -18,18 +18,24 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-background focus:px-3 focus:py-2 focus:shadow"
+      >
+        Skip to content
+      </a>
       <Sidebar
         role={session.role}
         clinicName={clinic?.name ?? "ClinicPad"}
         footer={
-          <form action={signOutAction}>
+          <form action={signOutAction} data-leave-guard="">
             <Button type="submit" variant="outline" size="sm">
               Sign out
             </Button>
           </form>
         }
       />
-      <main className="min-w-0 flex-1 p-4 md:p-6">{children}</main>
+      <main id="main" tabIndex={-1} className="min-w-0 flex-1 p-4 outline-none md:p-6">{children}</main>
     </div>
   );
 }
