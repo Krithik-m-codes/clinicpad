@@ -15,7 +15,7 @@ This is the live source of truth for *what is actually true*. Update it at the e
 | Product stage | pre-alpha / foundation |
 | Codebase origin | copy of `doctor-prescription-app` |
 | Git initialized | yes (`97a4af0`) |
-| Tests passing | 2,163 unit/integration passed + 1 skipped in 107 files, and 59 e2e (51 passed, 8 skipped: the opt-in screenshot tests), on 2026-11-18 (`node scripts/verify-gate-0.mjs`; `npm run test:visual` 24 passed) |
+| Tests passing | 2,760 unit/integration passed + 4 skipped in 157 files, 67 e2e passed (21 opt-in skipped), `npm run test:visual` 42 passed, `npm run test:pdf-frame` 21 passed, on 2026-11-19 (Phase 2A gate, run step by step, not as one `verify-gate-0` command) |
 | Build status | `build:web` and `build:desktop` pass with strict type/lint (inside `verify-gate-0` on 2026-11-18; `build:desktop` also run alone afterwards, exit 0, tree clean apart from documentation; `drizzle-kit generate`: no schema changes) |
 | Paying clinics | 0 |
 | Design partners | 0 |
@@ -337,7 +337,7 @@ Final fix wave (after the whole-branch review): the individual gate steps were r
 
 ### 4.12 Phase 2A checklist (overlay pads)
 
-Evidence rule: a box is ticked only for evidence seen on 2026-11-19 at the commit named in "Gate run". Items marked PENDING were not seen (or need a person). Gate run: PENDING (gate running at commit 381f643)
+Evidence rule: a box is ticked only for evidence seen on 2026-11-19 at the commit named in "Gate run". Items marked PENDING were not seen (or need a person). Gate run: code at `72e98eb` (docs-only commits on top); lint, typecheck and the visual, pdf-frame, e2e, build and drizzle steps ran in one scripted session, vitest was re-run with `--maxWorkers=4` (see below)
 
 - [x] Spikes S1 to S5 with findings: `docs/spikes/2026-11-18-s1-overlay-print.md` (GO-WITH-FALLBACK), `s2-pdfjs-frame.md` (GO-WITH-FALLBACK, pdfjs-dist 6.5.438 after the addendum), `s3-docxtemplater.md` (GO, input for 2B), `s4-clamav.md` (GO), `s5-gotenberg-upgrade.md` (GO); commits `ab8d278`, `4e3dda3`, `72496c9`, `658a9c6`, `47f9628`, `fd82ca4`
 - [x] Gotenberg 8.40.0 pin across compose, CI and the smoke test (`3b33501`; `engine-pins.test.ts`)
@@ -353,15 +353,15 @@ Evidence rule: a box is ticked only for evidence seen on 2026-11-19 at the commi
 - [x] Cross-tenant sweep: 56 tests plus a completeness guard, no leak found (`39df089`)
 - [x] Overlay visual cases (6 new baselines, 3 renderings each) (`cfb3d8f`)
 - [x] Template Studio e2e flow (`c8925f4`, `f8c71f7`, `51323a0`)
-- [ ] `npm run lint`, `npm run typecheck`: PENDING
-- [ ] `npm run test` (CLAMAV_REQUIRED=1 CI=true GOTENBERG_REQUIRED=1): PENDING
-- [ ] `npm run test:visual`: PENDING
-- [ ] `npm run test:pdf-frame`: PENDING
-- [ ] e2e (temporary Playwright config, `next dev --turbopack`): PENDING
-- [ ] `build:web`, `build:desktop`: PENDING
-- [ ] `npx drizzle-kit generate`: PENDING
+- [x] `npm run lint`, `npm run typecheck`: lint 0 errors and 2 existing warnings, typecheck clean (both exit 0)
+- [x] `npm run test` (CLAMAV_REQUIRED=1 CI=true GOTENBERG_REQUIRED=1): 157 files, 2,760 passed + 4 skipped (`npx vitest run --maxWorkers=4`, 424 s, real clamd and Gotenberg, PyMuPDF 1.28.0). With the default worker count two earlier runs lost 6 and 9 test files to `Failed to start forks worker ... Timeout waiting for worker to respond` (machine load: a different set of files each time, 151 and 148 files ran and passed); the capped run is the evidence, and the timeout is an environment issue, not a test failure
+- [x] `npm run test:visual`: 42 passed (24 existing baselines untouched + 18 new overlay renderings), real Gotenberg 8.40.0
+- [x] `npm run test:pdf-frame`: 21 passed in Chromium, Firefox and WebKit (scan, CCITT, JBIG2, JPEG 2000, Devanagari fixtures)
+- [x] e2e (temporary Playwright config, `next dev --turbopack`): 67 passed, 21 skipped (opt-in visual and pdf-frame specs), 0 failed; specs: smoke, patients, patient-history, patient-import, prescriptions, rx-output, sharing, pad-settings, clinical-form, keyboard, templates; Chromium only, port 3481, `next dev --turbopack`
+- [x] `build:web`, `build:desktop`: `npm run build:web` exit 0 (2m39s) and `npm run build:desktop` exit 0 (2m05s)
+- [x] `npx drizzle-kit generate`: `No schema changes, nothing to migrate`
 - [ ] Visual PDF review by a person (name, date): PENDING. The implementer read rasterized PDFs for the overlay cases (task report 20b/c) but a human review of the real PDFs in `test-results/rx-visual-pdf/` has not happened.
-- [ ] `node scripts/verify-gate-0.mjs` as ONE command: not run as one command; its steps were run individually (the gate script needs port 3000 and a different Playwright config than the one used here).
+- [ ] `node scripts/verify-gate-0.mjs` as ONE command: NOT run as one command (its e2e step needs port 3000 and the default Playwright config; the steps were run individually, e2e through a temporary config on port 3481 with a matching `NEXT_PUBLIC_APP_URL` and `AUTH_URL`). Port 3000 was not touched.
 
 **Phase 2A exit criteria (spec section 4.3): evidence**
 
@@ -562,7 +562,7 @@ Append to §11 at the end of each working session:
 
 ### 2026-11-19 — Phase 2A: overlay pads (Template Studio)
 - Did: shipped Phase 2A on `phase-1-prescription-mvp` (`ab8d278` to `72e98eb`, docs `17e7a8e`, `381f643` and this one): five spikes, Gotenberg 8.40.0, template schema (migrations 0024 to 0028), hostile-upload pipeline with ClamAV, sandboxed PDF intake frame, overlay renderer and snapshot v2, Template Studio UI, print modes, designer role, omitted-section acknowledgement, cross-tenant sweep, overlay visuals and e2e. ADR-0043 to ADR-0048.
-- Evidence: see section 4.12 (PENDING (gate running at commit 381f643)).
+- Evidence: see section 4.12 (code at `72e98eb` (docs-only commits on top); lint, typecheck and the visual, pdf-frame, e2e, build and drizzle steps ran in one scripted session, vitest was re-run with `--maxWorkers=4` (see below)).
 - Blocked by: staging and the human decisions and checks in section 4.12.
 - Next: staging and a design-partner pilot; Phase 2B only after pilot evidence.
 - Gotchas: ClamAV container and PyMuPDF are gate dependencies; run e2e with `next dev --turbopack` on a free port with matching `NEXT_PUBLIC_APP_URL` and `AUTH_URL`; Firefox and Safari print overlay pads through Gotenberg; designer accounts are raw SQL today.
