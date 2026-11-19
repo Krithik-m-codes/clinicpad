@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { expect, test, type Page } from "@playwright/test";
-import { cleanupClinic, ensureCatalogue, registerClinic, setRole, waitForEditor, type Clinic } from "./helpers";
+import { expect, test } from "@playwright/test";
+import { cleanupClinic, completeProfile, ensureCatalogue, finalizeDraft, registerClinic, registerPatient, setRole, startDraft, waitForEditor, type Clinic } from "./helpers";
 
 const clinics: Clinic[] = [];
 const gotenbergUrl = process.env.GOTENBERG_URL ?? "http://localhost:3001";
@@ -20,39 +20,6 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   for (const c of clinics) await cleanupClinic(c.email);
 });
-
-async function completeProfile(page: Page): Promise<void> {
-  await page.goto("/settings/profile");
-  await page.getByLabel("Qualifications").fill("MBBS, MD (Medicine)");
-  await page.getByLabel("Registration number").fill("MMC/2026/0042");
-  await page.getByRole("button", { name: "Save profile" }).click();
-  await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
-}
-
-async function registerPatient(page: Page, name: string): Promise<string> {
-  await page.goto("/patients/new");
-  await page.getByLabel("Name").fill(name);
-  await page.getByRole("button", { name: /register patient/i }).click();
-  await expect(page.getByRole("heading", { name })).toBeVisible();
-  return page.url();
-}
-
-async function startDraft(page: Page, patientUrl: string): Promise<string> {
-  await page.goto(patientUrl);
-  await page.getByRole("button", { name: "New prescription", exact: true }).click();
-  await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
-  await waitForEditor(page);
-  return page.url();
-}
-
-/** Types one medicine into the hydrated editor and finalizes; the page refreshes into the finalized view. */
-async function finalizeDraft(page: Page, drug: string, heading: RegExp): Promise<string> {
-  await waitForEditor(page);
-  await page.getByLabel("Medicine name").first().fill(drug);
-  await page.getByRole("button", { name: /^finalize$/i }).click();
-  await expect(page.getByRole("heading", { name: heading })).toBeVisible({ timeout: 15_000 });
-  return page.url();
-}
 
 test("print and download a finalized prescription; a reprint keeps the finalized details", async ({ page }) => {
   test.setTimeout(180_000);

@@ -110,3 +110,36 @@ export async function ensureCatalogue(): Promise<void> {
 export async function waitForEditor(page: Page): Promise<void> {
   await expect(page.getByLabel("Chief complaint")).toBeEditable({ timeout: 15_000 });
 }
+
+export async function completeProfile(page: Page): Promise<void> {
+  await page.goto("/settings/profile");
+  await page.getByLabel("Qualifications").fill("MBBS, MD (Medicine)");
+  await page.getByLabel("Registration number").fill("MMC/2026/0042");
+  await page.getByRole("button", { name: "Save profile" }).click();
+  await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
+}
+
+export async function registerPatient(page: Page, name: string): Promise<string> {
+  await page.goto("/patients/new");
+  await page.getByLabel("Name").fill(name);
+  await page.getByRole("button", { name: /register patient/i }).click();
+  await expect(page.getByRole("heading", { name })).toBeVisible();
+  return page.url();
+}
+
+export async function startDraft(page: Page, patientUrl: string): Promise<string> {
+  await page.goto(patientUrl);
+  await page.getByRole("button", { name: "New prescription", exact: true }).click();
+  await expect(page.getByRole("heading", { name: /draft prescription/i })).toBeVisible();
+  await waitForEditor(page);
+  return page.url();
+}
+
+/** Types one medicine into the hydrated editor and finalizes; the page refreshes into the finalized view. */
+export async function finalizeDraft(page: Page, drug: string, heading: RegExp): Promise<string> {
+  await waitForEditor(page);
+  await page.getByLabel("Medicine name").first().fill(drug);
+  await page.getByRole("button", { name: /^finalize$/i }).click();
+  await expect(page.getByRole("heading", { name: heading })).toBeVisible({ timeout: 15_000 });
+  return page.url();
+}
