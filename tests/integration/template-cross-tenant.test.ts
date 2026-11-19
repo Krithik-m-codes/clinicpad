@@ -152,6 +152,7 @@ const ALLOW_LIST: Record<string, string> = {
   fileAsImageAsset: "pure: converts an already loaded file",
   // template-preview.ts
   listPreviewPrescriptions: "lists the caller's own tenant; asserted separately below",
+  listPreviewPrescriptionsAction: "takes no id; a thin wrapper over listPreviewPrescriptions (the caller's own tenant)",
   // template-resolution.ts
   builtinLayout: "pure: reads the caller's clinic row",
   resolveTemplateIn: "internal (tenant-filtered, asserted separately below with a clinic row naming A's pad)",

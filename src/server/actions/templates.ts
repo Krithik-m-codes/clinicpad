@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireSession, type SessionContext } from "@/server/auth/session";
 import { assignTemplate } from "@/server/services/template-assign";
+import { listPreviewPrescriptions } from "@/server/services/template-preview";
 import { publishTemplate, rollbackTemplate } from "@/server/services/template-publish";
 import { archiveTemplate, createOverlayTemplate, discardTemplateDraft, saveTemplateDraft, startTemplateDraft, unarchiveTemplate } from "@/server/services/templates";
 
@@ -103,4 +104,16 @@ export async function assignTemplateAction(input: { scope: "clinic"; templateId:
     revalidatePath("/templates");
     return { ok: true };
   });
+}
+
+/** The real-patient preview picker, read on demand (a click), never with the editor page. Empty on any failure. */
+export async function listPreviewPrescriptionsAction(): Promise<{ prescriptions: { id: string; label: string }[] }> {
+  const session = await requireSession();
+  try {
+    const result = await listPreviewPrescriptions(session);
+    return { prescriptions: result.ok ? result.value : [] };
+  } catch (error) {
+    console.error("listPreviewPrescriptionsAction failed", error instanceof Error ? error.name : typeof error);
+    return { prescriptions: [] };
+  }
 }

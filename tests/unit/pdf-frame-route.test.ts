@@ -2,13 +2,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GET } from "@/app/pdf-frame/[...asset]/route";
 import { BACKGROUND_LIMITS } from "@/lib/domain/image";
-import { PDF_INTAKE_LIMITS } from "@/lib/templates/pdf-intake";
+import { PDF_INTAKE_LIMITS, pdfIntakeEnabled } from "@/lib/templates/pdf-intake";
 import { FRAME_MAX_IMAGE_PIXELS, FRAME_SCRIPT } from "@/server/templates/pdf-frame-script";
 import { frameAssetNames } from "@/server/templates/pdf-frame-assets";
 
 const get = (asset: string, host = "https://clinic.example") => GET(new Request(`${host}/pdf-frame/${asset}`, { headers: { cookie: "authjs.session-token=SECRET" } }), { params: Promise.resolve({ asset: asset.split("/") }) });
 
 afterEach(() => vi.unstubAllEnvs());
+
+describe("PDF_INTAKE kill switch", () => {
+  it("is on unless the environment says off, 0 or false", () => {
+    expect(pdfIntakeEnabled({})).toBe(true);
+    expect(pdfIntakeEnabled({ PDF_INTAKE: "on" })).toBe(true);
+    for (const v of ["off", "OFF", "0", "false", " False "]) expect(pdfIntakeEnabled({ PDF_INTAKE: v })).toBe(false);
+  });
+
+  it("answers 404 for the frame and its assets when off, and serves them again when on", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://clinic.example");
+    vi.stubEnv("PDF_INTAKE", "off");
+    expect((await get("frame.html")).status).toBe(404);
+    expect((await get(frameAssetNames()[0])).status).toBe(404);
+    vi.stubEnv("PDF_INTAKE", "on");
+    expect((await get("frame.html")).status).toBe(200);
+  });
+});
 
 describe("/pdf-frame", () => {
   it("serves the frame as a sandboxed document that may load scripts only from /pdf-frame/", async () => {

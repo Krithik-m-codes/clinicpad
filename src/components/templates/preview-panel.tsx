@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { listPreviewPrescriptionsAction } from "@/server/actions/templates";
 import { Button } from "@/components/ui/button";
 import { useEditorDirty } from "./editor-dirty";
 
-type Props = { templateId: string; versionId: string | null; prescriptions: { id: string; label: string }[]; disabled?: boolean };
+type Props = { templateId: string; versionId: string | null; canPreviewReal: boolean; disabled?: boolean };
 
 function href(templateId: string, query: Record<string, string>, versionId: string | null): string {
   const params = new URLSearchParams(versionId ? { ...query, version: versionId } : query);
@@ -12,8 +13,17 @@ function href(templateId: string, query: Record<string, string>, versionId: stri
 }
 
 /** Opens previews in a new tab (spec section 10.1 step 5). Real-patient previews are audited by the server; designers get no patient list. */
-export function PreviewPanel({ templateId, versionId, prescriptions, disabled = false }: Props) {
+export function PreviewPanel({ templateId, versionId, canPreviewReal, disabled = false }: Props) {
   const [rx, setRx] = useState("");
+  // Patient names are read only when the user asks (not on every editor page view).
+  const [prescriptions, setPrescriptions] = useState<{ id: string; label: string }[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  async function loadPrescriptions() {
+    setLoading(true);
+    const result = await listPreviewPrescriptionsAction();
+    setLoading(false);
+    setPrescriptions(result.prescriptions);
+  }
   const dirty = useEditorDirty();
   const off = disabled || dirty;
   const link = (label: string, query: Record<string, string>) => (
@@ -34,7 +44,13 @@ export function PreviewPanel({ templateId, versionId, prescriptions, disabled = 
         {link("Blank pad", { sample: "blank" })}
         {link("12 medicines as PDF", { sample: "long", format: "pdf" })}
       </div>
-      {prescriptions.length > 0 ? (
+      {canPreviewReal && prescriptions === null ? (
+        <Button type="button" variant="outline" size="sm" onClick={() => void loadPrescriptions()} disabled={loading}>
+          Preview with a real patient
+        </Button>
+      ) : null}
+      {prescriptions !== null && prescriptions.length === 0 ? <p className="text-muted-foreground">There are no prescriptions to preview with yet.</p> : null}
+      {prescriptions !== null && prescriptions.length > 0 ? (
         <div className="flex flex-wrap items-end gap-2">
           <label className="flex flex-col">
             With a real patient (shown as a draft; recorded in the audit log)

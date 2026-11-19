@@ -36,7 +36,8 @@ export const MARKUP_MARGIN_CHARS = 300 * 1024;
 
 /**
  * Worst case length of an overlay document: the background, one logo and one signature at their size caps (a pad
- * has at most one box for each), the embedded fonts, and a markup margin. Must stay under MAX_DOCUMENT_CHARS or
+ * has at most one box for each; the signature_twice publish rule keeps the signature to ONE place, box or end of
+ * content, so it is counted once), the embedded fonts, and a markup margin. Must stay under MAX_DOCUMENT_CHARS or
  * checkSelfContained refuses to print the pad.
  */
 export function estimateOverlayDocumentChars(backgroundBytes: number): number {

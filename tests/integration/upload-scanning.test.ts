@@ -60,6 +60,19 @@ describe("logo and signature uploads are scanned before anything is stored", () 
     expect(scanner.calls).toBe(0);
   });
 
+  it("audits a refused non-image logo and signature like a refused background (kind, reason code and size only)", async () => {
+    const bytes = new TextEncoder().encode("<svg onload=alert(1)>");
+    const before = await rejectedEvents();
+    await setClinicLogo(A.as("owner"), { bytes }, { scanner });
+    await setDoctorSignature(A.as("doctor"), { bytes }, { scanner });
+    const events = (await adminDb.select().from(auditEvents).where(and(eq(auditEvents.tenantId, A.tenantId), eq(auditEvents.action, "upload.rejected")))).slice(before);
+    expect(events.map((e) => e.after)).toEqual([
+      { kind: "logo", reasonCode: "invalid_image", byteSize: bytes.length },
+      { kind: "signature", reasonCode: "invalid_image", byteSize: bytes.length },
+    ]);
+    expect(JSON.stringify(events.map((e) => e.after))).not.toContain("svg");
+  });
+
   it("records the scanner that cleared a logo in its audit event", async () => {
     const result = await setClinicLogo(A.as("owner"), { bytes: makePng(123, 60, [3, 3, 3]) }, { scanner });
     expect(result.ok).toBe(true);

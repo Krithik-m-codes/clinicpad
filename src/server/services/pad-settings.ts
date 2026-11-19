@@ -154,13 +154,18 @@ export async function internalAttachDoctorSignature(tx: TenantTx, tenantId: stri
 type ScannedImage = { bytes: Uint8Array; engine: string };
 
 /**
- * Bytes that are not an image are refused without a scan. An image is stripped of metadata and re-inspected, then
+ * Bytes that are not an image are refused without a scan (and audited by kind, reason code and size). An image is stripped of metadata and re-inspected, then
  * scanned (the original too) before any transaction opens; the stripped bytes are what the caller stores, so the
  * stored bytes are exactly bytes the scanner saw (stripping is idempotent, storeImageAsset strips again to the same).
  */
 async function scanImage(ctx: ServiceContext, image: UploadedImage, entityType: string, kind: string, scanner?: MalwareScanner): Promise<Result<ScannedImage>> {
   const precheck = inspectImage(image.bytes);
-  if (!precheck.ok) return fail("invalid", precheck.message, "image");
+  if (!precheck.ok) {
+    await withTenant(ctx.tenantId, (tx) =>
+      recordAudit(tx, ctx, { action: "upload.rejected", entityType, after: { kind, reasonCode: "invalid_image", byteSize: image.bytes.length } }),
+    );
+    return fail("invalid", precheck.message, "image");
+  }
   const stripped = stripImageMetadata(image.bytes);
   const check = stripped ? inspectImage(stripped) : null;
   if (!stripped || !check?.ok) {

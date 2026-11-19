@@ -1,3 +1,4 @@
+import { pdfIntakeEnabled } from "@/lib/templates/pdf-intake";
 import { frameAsset, FRAME_HTML, frameCsp } from "@/server/templates/pdf-frame-assets";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +12,7 @@ const NOT_FOUND = () => new Response("Not found", { status: 404, headers: { "Cac
  * the wildcard CORS header is on these static files only, never on anything dynamic. Anything not listed is 404.
  */
 export async function GET(request: Request, { params }: { params: Promise<{ asset: string[] }> }): Promise<Response> {
+  if (!pdfIntakeEnabled()) return NOT_FOUND();
   const { asset } = await params;
   const name = asset.join("/");
   try {

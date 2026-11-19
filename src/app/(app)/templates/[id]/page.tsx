@@ -3,7 +3,6 @@ import { notFound, redirect } from "next/navigation";
 import { can } from "@/lib/domain/permissions";
 import { requireSession } from "@/server/auth/session";
 import { listTemplateDoctors } from "@/server/services/template-assign";
-import { listPreviewPrescriptions } from "@/server/services/template-preview";
 import { getTemplateEditor } from "@/server/services/templates";
 import { AssignPanel } from "@/components/templates/assign-panel";
 import { PreviewPanel } from "@/components/templates/preview-panel";
@@ -18,7 +17,7 @@ export default async function TemplatePage({ params }: { params: Promise<{ id: s
   const session = await requireSession();
   if (!can(session.role, "template.read")) redirect("/dashboard");
   const { id } = await params;
-  const [view, doctors, recent] = await Promise.all([getTemplateEditor(session, id), listTemplateDoctors(session), listPreviewPrescriptions(session)]);
+  const [view, doctors] = await Promise.all([getTemplateEditor(session, id), listTemplateDoctors(session)]);
   if (!view.ok) {
     if (view.code === "invalid") {
       return (
@@ -34,7 +33,8 @@ export default async function TemplatePage({ params }: { params: Promise<{ id: s
   }
   const { summary, draft, history } = view.value;
   const doctorList = doctors.ok ? doctors.value : [];
-  const prescriptions = recent.ok ? recent.value : [];
+  // Patient names for the real-patient preview are fetched when the user asks for them, not on every page view.
+  const canPreviewReal = can(session.role, "rx.read") && can(session.role, "template.read");
   const canPublish = can(session.role, "template.publish");
   const assign =
     summary.current && summary.status === "active" && can(session.role, "template.assign") ? (
@@ -61,7 +61,7 @@ export default async function TemplatePage({ params }: { params: Promise<{ id: s
         {summary.status === "archived" ? <p className="text-sm">This pad is archived. Restore it from the list to edit it.</p> : null}
         {summary.status === "active" && !summary.canWrite ? <p className="text-sm">You can view this pad but not change it.</p> : null}
         {!draft && editable ? <StartDraftButton templateId={id} /> : null}
-        {summary.current ? <PreviewPanel templateId={id} versionId={summary.current.versionId} prescriptions={prescriptions} /> : null}
+        {summary.current ? <PreviewPanel templateId={id} versionId={summary.current.versionId} canPreviewReal={canPreviewReal} /> : null}
         {assign}
         {versionHistory(false)}
       </div>
@@ -70,7 +70,7 @@ export default async function TemplatePage({ params }: { params: Promise<{ id: s
   return (
     <TemplateEditor templateId={id} name={summary.name} fileId={draft.fileId} paper={draft.paperSize} labels={draft.labels} definition={draft.definition} revision={draft.revision}>
       <div className="grid gap-4 lg:grid-cols-2">
-        <PreviewPanel templateId={id} versionId={null} prescriptions={prescriptions} />
+        <PreviewPanel templateId={id} versionId={null} canPreviewReal={canPreviewReal} />
         <PublishPanel templateId={id} definition={draft.definition} paper={draft.paperSize} revision={draft.revision} doctors={doctorList} canPublish={canPublish} />
         {assign}
         {versionHistory(true)}
