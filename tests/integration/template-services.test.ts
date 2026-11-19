@@ -5,7 +5,8 @@ import { adminDb } from "@/server/db/admin";
 import { auditEvents, clinics, doctors, prescriptions, templates, templateVersions } from "@/server/db/schema";
 import { newId } from "@/lib/domain/ids";
 import type { ServiceContext } from "@/server/services/context";
-import { finalizePrescription } from "@/server/services/prescriptions";
+import { finalizePrescription, saveDraft, startPrescription } from "@/server/services/prescriptions";
+import { loadRxDocument } from "@/server/services/rx-documents";
 import { assignTemplate } from "@/server/services/template-assign";
 import { publishTemplate, rollbackTemplate } from "@/server/services/template-publish";
 import {
@@ -31,8 +32,8 @@ let doctorOther = "";
 const owner = () => A.as("owner");
 const designer = (): ServiceContext => ({ tenantId: A.tenantId, userId: newId(), role: "designer" });
 const def = () => structuredClone(MINIMAL_OVERLAY_DEFINITION) as typeof MINIMAL_OVERLAY_DEFINITION & Record<string, unknown>;
-const publishInput = (baseRevision: number) => ({ identity: "dynamic", boundDoctorId: null, confirmLetterhead: false, baseRevision });
-const boundInput = (doctorId: string, baseRevision = 0) => ({ identity: "bound", boundDoctorId: doctorId, confirmLetterhead: true, baseRevision });
+const publishInput = (baseRevision: number) => ({ identity: "dynamic", boundDoctorId: null, confirmLetterhead: false, acknowledgedOmitted: [], baseRevision });
+const boundInput = (doctorId: string, baseRevision = 0) => ({ identity: "bound", boundDoctorId: doctorId, confirmLetterhead: true, acknowledgedOmitted: [], baseRevision });
 const newInput = (definition: unknown = def()) => ({ name: "Dr Shah's pad", fileId: fileA, paperSize: "A4", labels: "en", definition });
 
 async function created(ctx: ServiceContext = owner(), definition: unknown = def()) {
@@ -69,6 +70,61 @@ beforeEach(async () => {
   await adminDb.update(doctors).set({ templateId: null }).where(eq(doctors.tenantId, A.tenantId));
   // Earlier tests' pads must not fill the active-template quota (published pads cannot be deleted).
   await adminDb.update(templates).set({ status: "archived" }).where(eq(templates.tenantId, A.tenantId));
+});
+
+describe("omitted sections need an explicit acknowledgement", () => {
+  const withoutAdvice = () => ({ ...def(), flow: { ...def().flow, sections: def().flow.sections.filter((k) => k !== "advice") } });
+
+  it("refuses a pad whose designer unticked Advice until the owner acknowledges exactly the omitted list", async () => {
+    const t = await created(owner(), withoutAdvice());
+    const missing = await publishTemplate(owner(), t.templateId, publishInput(0));
+    expect(missing).toMatchObject({ ok: false, code: "invalid", issueCodes: ["omitted_sections"] });
+    expect((missing as { message: string }).message).toContain("Advice");
+    expect((await version(t.versionId)).state).toBe("draft");
+    const wrong = await publishTemplate(owner(), t.templateId, { ...publishInput(0), acknowledgedOmitted: ["followUp"] });
+    expect(wrong).toMatchObject({ ok: false, issueCodes: ["omitted_sections"] });
+    const extra = await publishTemplate(owner(), t.templateId, { ...publishInput(0), acknowledgedOmitted: ["advice", "followUp"] });
+    expect(extra).toMatchObject({ ok: false, issueCodes: ["omitted_sections"] });
+    const done = await publishTemplate(owner(), t.templateId, { ...publishInput(0), acknowledgedOmitted: ["advice"] });
+    expect(done.ok).toBe(true);
+    const [event] = await adminDb.select().from(auditEvents).where(and(eq(auditEvents.entityId, t.templateId), eq(auditEvents.action, "template.published")));
+    expect(event.after).toMatchObject({ omittedSections: ["advice"] });
+  });
+
+  it("a pad that prints everything needs no acknowledgement, and a missing field is an input error", async () => {
+    const t = await created();
+    const bad = await publishTemplate(owner(), t.templateId, { identity: "dynamic", boundDoctorId: null, confirmLetterhead: false, baseRevision: 0 });
+    expect(bad).toMatchObject({ ok: false, code: "invalid" });
+    expect((await publishTemplate(owner(), t.templateId, publishInput(0))).ok).toBe(true);
+  });
+
+  it("a finalized record with advice, on a pad that leaves Advice off, reports it as unprinted (designer unticks Advice)", async () => {
+    const t = await created(owner(), withoutAdvice());
+    expect((await publishTemplate(owner(), t.templateId, { ...publishInput(0), acknowledgedOmitted: ["advice"] })).ok).toBe(true);
+    await assignTemplate(owner(), { scope: "clinic", templateId: t.templateId });
+    const patientId = await newPatient(A.as("reception"), "Unprinted Patient");
+    const doctor = A.as("doctor");
+    const started = await startPrescription(doctor, { patientId });
+    if (!started.ok) throw new Error(started.message);
+    const saved = await saveDraft(doctor, started.value.prescriptionId, { advice: "Rest", items: [{ drugName: "Paracetamol", doseMorning: 1 }] }, { baseRevision: 0 });
+    if (!saved.ok) throw new Error(saved.message);
+    const empty = await loadRxDocument(owner(), started.value.prescriptionId, { withAssets: false });
+    expect(empty).toMatchObject({ ok: true, value: { unprintedSections: ["advice"] } });
+    const done = await finalizePrescription(doctor, started.value.prescriptionId, { expectedRevision: saved.value.revision });
+    expect(done.ok).toBe(true);
+    expect(await loadRxDocument(owner(), started.value.prescriptionId, { withAssets: false })).toMatchObject({ ok: true, value: { unprintedSections: ["advice"] } });
+    // The same pad with no advice written has nothing to warn about.
+    const other = await startPrescription(doctor, { patientId });
+    if (!other.ok) throw new Error(other.message);
+    await saveDraft(doctor, other.value.prescriptionId, { items: [{ drugName: "Paracetamol", doseMorning: 1 }] }, { baseRevision: 0 });
+    expect(await loadRxDocument(owner(), other.value.prescriptionId, { withAssets: false })).toMatchObject({ ok: true, value: { unprintedSections: [] } });
+  });
+
+  it("an equivalent box covers the section (no acknowledgement needed)", async () => {
+    const d = { ...withoutAdvice(), boxes: [...def().boxes, { id: "adv", field: "advice", xMm: 20, yMm: 70, wMm: 60, hMm: 7, fontPt: 10, align: "left", bold: false, repeat: "every_page" }] };
+    const t = await created(owner(), d);
+    expect((await publishTemplate(owner(), t.templateId, publishInput(0))).ok).toBe(true);
+  });
 });
 
 describe("creating and editing drafts", () => {
@@ -192,8 +248,8 @@ describe("publishing", () => {
     expect(await publishTemplate(owner(), bare.templateId, publishInput(0))).toMatchObject({ ok: false, code: "invalid", field: "definition", issueCodes: ["missing_patient_name"] });
     const overlapping = await created(owner(), { ...def(), boxes: [def().boxes[0], { ...def().boxes[1], id: "b3", xMm: 30, yMm: 52, wMm: 40 }] });
     expect(await publishTemplate(owner(), overlapping.templateId, publishInput(0))).toMatchObject({ ok: false, code: "invalid", issueCodes: ["box_overlap"] });
-    expect(await publishTemplate(owner(), t.templateId, { identity: "bound", boundDoctorId: doctorA, confirmLetterhead: false, baseRevision: 0 })).toMatchObject({ ok: false, code: "invalid", issueCodes: ["bound_confirmation"] });
-    expect(await publishTemplate(owner(), t.templateId, { identity: "bound", boundDoctorId: null, confirmLetterhead: true, baseRevision: 0 })).toMatchObject({ ok: false, code: "invalid", issueCodes: ["bound_doctor"] });
+    expect(await publishTemplate(owner(), t.templateId, { identity: "bound", boundDoctorId: doctorA, confirmLetterhead: false, acknowledgedOmitted: [], baseRevision: 0 })).toMatchObject({ ok: false, code: "invalid", issueCodes: ["bound_confirmation"] });
+    expect(await publishTemplate(owner(), t.templateId, { identity: "bound", boundDoctorId: null, confirmLetterhead: true, acknowledgedOmitted: [], baseRevision: 0 })).toMatchObject({ ok: false, code: "invalid", issueCodes: ["bound_doctor"] });
     expect(await publishTemplate(owner(), t.templateId, boundInput(newId()))).toMatchObject({ ok: false, code: "invalid", field: "boundDoctorId" });
     expect((await version(t.versionId)).state).toBe("draft");
   });

@@ -42,10 +42,10 @@ describe("template actions", () => {
     expect(created).toMatchObject({ ok: true });
     const templateId = created.templateId as string;
     expect(await saveTemplateDraftAction(templateId, { definition: input().definition, labels: "en", baseRevision: 5 })).toMatchObject({ error: expect.any(String), currentRevision: 0 });
-    const refused = await publishTemplateAction(templateId, { identity: "bound", boundDoctorId: null, confirmLetterhead: false, baseRevision: 0 });
+    const refused = await publishTemplateAction(templateId, { identity: "bound", boundDoctorId: null, confirmLetterhead: false, acknowledgedOmitted: [], baseRevision: 0 });
     expect(refused.error).toBeTruthy();
     expect(refused.issues?.length).toBeGreaterThan(0);
-    expect(await publishTemplateAction(templateId, { identity: "dynamic", boundDoctorId: null, confirmLetterhead: false, baseRevision: 0 })).toEqual({ ok: true });
+    expect(await publishTemplateAction(templateId, { identity: "dynamic", boundDoctorId: null, confirmLetterhead: false, acknowledgedOmitted: [], baseRevision: 0 })).toEqual({ ok: true });
     expect(await rollbackTemplateAction(templateId, "not-a-uuid")).toMatchObject({ error: expect.any(String) });
     expect(await assignTemplateAction({ scope: "clinic", templateId })).toEqual({ ok: true });
   });

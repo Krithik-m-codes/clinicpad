@@ -100,6 +100,20 @@ export async function resolveTemplateIn(tx: TenantTx, tenantId: string, clinic: 
  * stored definition (frozen v1 parser, no geometry re-check) and the file must equal the snapshot's. null on any
  * mismatch: the caller fails closed.
  */
+/**
+ * The stored definition of the version a snapshot pins, without the background file (for notices on the prescription
+ * page). Parsed by the frozen v1 parser; null for a built-in pad, a missing version or a definition that does not parse.
+ */
+export async function loadPinnedDefinitionIn(tx: TenantTx, tenantId: string, layout: PadLayout): Promise<OverlayDefinition | null> {
+  if (layout.template.kind !== "overlay") return null;
+  const [version] = await tx
+    .select({ definition: templateVersions.definition })
+    .from(templateVersions)
+    .where(and(eq(templateVersions.tenantId, tenantId), eq(templateVersions.id, layout.template.templateVersionId)))
+    .limit(1);
+  return version ? parseStoredDefinition(version.definition) : null;
+}
+
 export async function loadOverlayIn(tx: TenantTx, tenantId: string, layout: PadLayout): Promise<OverlayInput | null> {
   if (layout.template.kind !== "overlay") return null;
   const ref = layout.template;

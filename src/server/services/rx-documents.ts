@@ -9,7 +9,8 @@ import type { ImageAsset, OverlayInput, RxDocument, RxStatus } from "@/lib/rx-re
 import type { ServiceContext } from "./context";
 import { assetKey, loadImageAssets } from "./assets";
 import { buildDraftSnapshot, buildRenderSnapshot } from "./render-snapshot";
-import { loadOverlayIn, TEMPLATE_DAMAGED_MESSAGE } from "./template-resolution";
+import { unprintedContent } from "@/lib/rx-render/omitted";
+import { loadOverlayIn, loadPinnedDefinitionIn, TEMPLATE_DAMAGED_MESSAGE } from "./template-resolution";
 import { toItemView, toVisitView } from "./rx-mapping";
 
 export type RxDocumentBundle = {
@@ -19,6 +20,8 @@ export type RxDocumentBundle = {
   signature: ImageAsset | null;
   /** The frozen custom pad, loaded and hash-verified; null for built-in pads and when assets were not requested. */
   overlay: OverlayInput | null;
+  /** Sections with content that the pinned overlay pad leaves off the paper (keys; empty for built-in pads). */
+  unprintedSections: string[];
 };
 
 export type VersionRef = { id: string; version: number };
@@ -137,7 +140,9 @@ export async function loadRxDocumentIn(
     items: items.map(toItemView),
   };
 
-  if (opts.withAssets === false) return ok({ prescriptionId: id, document, logo: null, signature: null, overlay: null });
+  const pinned = await loadPinnedDefinitionIn(tx, tenantId, snapshot.layout);
+  const unprintedSections: string[] = pinned ? unprintedContent(document, pinned) : [];
+  if (opts.withAssets === false) return ok({ prescriptionId: id, document, logo: null, signature: null, overlay: null, unprintedSections });
   const { logoAssetId } = snapshot.clinic;
   const { signatureAssetId } = snapshot.doctor;
   const assets = await loadImageAssets(tx, tenantId, [
@@ -159,6 +164,7 @@ export async function loadRxDocumentIn(
     logo: logoAssetId ? (assets.get(assetKey("logo", logoAssetId)) ?? null) : null,
     signature: signatureAssetId ? (assets.get(assetKey("signature", signatureAssetId)) ?? null) : null,
     overlay,
+    unprintedSections,
   });
 }
 

@@ -59,7 +59,7 @@ export async function discardTemplateDraftAction(templateId: string): Promise<Te
   });
 }
 
-export async function publishTemplateAction(templateId: string, input: { identity: string; boundDoctorId: string | null; confirmLetterhead: boolean; baseRevision: number }): Promise<TemplateActionState> {
+export async function publishTemplateAction(templateId: string, input: { identity: string; boundDoctorId: string | null; confirmLetterhead: boolean; acknowledgedOmitted: string[]; baseRevision: number }): Promise<TemplateActionState> {
   return asSession("publishTemplateAction", async (session) => {
     const result = await publishTemplate(session, templateId, input);
     if (!result.ok) return failed(result as Failure);

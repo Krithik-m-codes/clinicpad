@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { OverlayDefinition } from "@/lib/rx-render/overlay-definition";
+import { omittedSections, sectionNames } from "@/lib/rx-render/omitted";
 import type { PaperSize } from "@/lib/rx-render/types";
 import { overlayPublishIssues, type PublishIdentity } from "@/lib/templates/publish-rules";
 import { publishTemplateAction } from "@/server/actions/templates";
@@ -31,10 +32,15 @@ export function PublishPanel({ templateId, definition, paper, revision, doctors,
   const [identity, setIdentity] = useState<"dynamic" | "bound" | null>(null);
   const [doctorId, setDoctorId] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [ackedList, setAckedList] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const doctor = doctors.find((d) => d.id === doctorId) ?? null;
   const asked: PublishIdentity | null = identity === null ? null : identity === "dynamic" ? { kind: "dynamic" } : { kind: "bound", doctorId: doctor?.id ?? null, confirmed };
+  // Sections the pad leaves off are listed and need a ticked confirmation (override 24); the server re-computes the list.
+  const omitted: string[] = omittedSections(definition);
+  // The confirmation belongs to one list: editing the pad so the list changes asks again.
+  const omittedOk = ackedList === omitted.join(",");
   const issues = asked ? overlayPublishIssues(definition, paper, asked) : [];
 
   // The confirmation is about one doctor's letterhead: a new answer or a new doctor starts again.
@@ -57,6 +63,7 @@ export function PublishPanel({ templateId, definition, paper, revision, doctors,
       identity: asked.kind,
       boundDoctorId: asked.kind === "bound" ? asked.doctorId : null,
       confirmLetterhead: asked.kind === "bound" ? asked.confirmed : false,
+      acknowledgedOmitted: omitted,
       baseRevision: revision,
     });
     setBusy(false);
@@ -97,6 +104,14 @@ export function PublishPanel({ templateId, definition, paper, revision, doctors,
           ) : null}
         </div>
       ) : null}
+      {omitted.length > 0 ? (
+        <div className="space-y-1 text-sm">
+          <p>This pad does not print these sections: {sectionNames(omitted)}. Anything a doctor writes in them is kept in the record but will not appear on the printed copy or the PDF.</p>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={omittedOk} onChange={(e) => setAckedList(e.target.checked ? omitted.join(",") : null)} /> Publish this pad without these sections
+          </label>
+        </div>
+      ) : null}
       {issues.length > 0 ? (
         <ul className="list-disc pl-5 text-sm text-destructive">
           {issues.map((issue) => (
@@ -105,7 +120,7 @@ export function PublishPanel({ templateId, definition, paper, revision, doctors,
         </ul>
       ) : null}
       {unsaved ? <p className="text-sm">Save the draft before publishing.</p> : null}
-      <Button type="button" onClick={() => void publish()} disabled={busy || unsaved || asked === null || issues.length > 0}>
+      <Button type="button" onClick={() => void publish()} disabled={busy || unsaved || asked === null || issues.length > 0 || (omitted.length > 0 && !omittedOk)}>
         Publish
       </Button>
       <p role="status" aria-live="polite" className="text-sm">

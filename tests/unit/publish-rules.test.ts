@@ -17,6 +17,15 @@ const def = (): OverlayDefinition => structuredClone(MINIMAL_OVERLAY_DEFINITION)
 const codes = (d: OverlayDefinition, identity: Parameters<typeof overlayPublishIssues>[2], assets?: Parameters<typeof overlayPublishIssues>[3]) =>
   overlayPublishIssues(d, "A4", identity, assets).map((i) => i.code);
 
+describe("overlayPublishIssues: signature counted once", () => {
+  it("refuses the signature after the prescription together with a signature box", () => {
+    const d = def();
+    d.boxes.push({ id: "sig", field: "doctor.signature", xMm: 140, yMm: 250, wMm: 40, hMm: 15, fontPt: 10, align: "left", bold: false, repeat: "every_page" } as OverlayDefinition["boxes"][number]);
+    expect(codes(d, { kind: "dynamic" })).toEqual(["signature_twice"]);
+    expect(codes({ ...d, signature: { mode: "box" } }, { kind: "dynamic" })).not.toContain("signature_twice");
+  });
+});
+
 describe("overlayPublishIssues", () => {
   it("passes the minimal dynamic definition (the signature block prints the doctor's name and registration)", () => {
     expect(codes(def(), { kind: "dynamic" })).toEqual([]);

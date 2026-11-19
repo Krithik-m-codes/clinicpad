@@ -4,6 +4,7 @@ import { isUuid } from "@/lib/domain/ids";
 import { fail, invalidFrom, ok, type Result, type ServiceError } from "@/lib/result";
 import { overlayDefinitionSchema, type OverlayDefinition } from "@/lib/rx-render/overlay-definition";
 import { LABEL_LANGUAGES, PAPER_SIZES, pickOption } from "@/lib/rx-render/types";
+import { omittedSections, sectionNames } from "@/lib/rx-render/omitted";
 import { overlayPublishIssues, type PublishIdentity, type PublishIssue } from "@/lib/templates/publish-rules";
 import { clinics, doctors, templateFiles, templates, templateVersions } from "@/server/db/schema";
 import { withTenant, type TenantTx } from "@/server/db/tenant";
@@ -70,6 +71,16 @@ async function checkDraft(tx: TenantTx, ctx: ServiceContext, draft: VersionRow, 
 }
 
 /**
+ * A pad may leave clinical sections off, never silently (override 24): the owner's acknowledgement must equal the
+ * list the server computes from the stored definition, so a stale or forged answer cannot publish.
+ */
+function omittedRefusal(omitted: string[], acknowledged: string[]): PublishRefusal | null {
+  if (omitted.length === acknowledged.length && omitted.every((key) => acknowledged.includes(key)) && new Set(acknowledged).size === acknowledged.length) return null;
+  const message = omitted.length === 0 ? "Nothing was left off this pad, so there is nothing to confirm. Reload and check it before publishing." : `This pad does not print: ${sectionNames(omitted)}. Confirm that these sections are left off, then publish.`;
+  return { ok: false, code: "invalid", message, field: "definition", issues: [message], issueCodes: ["omitted_sections"] };
+}
+
+/**
  * Freezes one draft row as published (in the caller's transaction, under the template lock). The identity, bound
  * doctor, confirmation and publisher are set in the SAME publishing UPDATE (the version trigger freezes the row
  * afterwards), and the PARSED definition is written back so the stored definition is exactly what the hash covers.
@@ -121,6 +132,9 @@ export async function publishTemplate(ctx: ServiceContext, templateId: string, r
     const binding: Binding = { identity: input.data.identity, boundDoctorId: bound ? input.data.boundDoctorId : null, confirmed: bound && input.data.confirmLetterhead };
     const checked = await checkDraft(tx, ctx, draft, binding);
     if (!checked.ok) return checked;
+    const omitted: string[] = omittedSections(checked.value.definition);
+    const unacknowledged = omittedRefusal(omitted, input.data.acknowledgedOmitted);
+    if (unacknowledged) return unacknowledged;
     const conflict = await bindingConflict(tx, ctx.tenantId, templateId, binding);
     if (conflict) return conflict;
     const frozen = await freeze(tx, ctx, draft, binding, checked.value);
@@ -139,6 +153,7 @@ export async function publishTemplate(ctx: ServiceContext, templateId: string, r
         identity: binding.identity,
         boundDoctorId: binding.boundDoctorId,
         boundConfirmation: bound ? binding.confirmed : null,
+        omittedSections: omitted,
       },
     });
     return ok({ versionId: draft.id, version: draft.version, contentSha256: frozen.contentSha256 });
@@ -206,6 +221,7 @@ export async function rollbackTemplate(ctx: ServiceContext, templateId: string, 
         identity: binding.identity,
         boundDoctorId: binding.boundDoctorId,
         boundConfirmation: binding.identity === "bound" ? binding.confirmed : null,
+        omittedSections: omittedSections(checked.value.definition),
         rolledBackFrom: source.id,
       },
     });

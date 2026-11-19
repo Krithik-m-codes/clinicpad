@@ -26,6 +26,8 @@ export const publishSchema = z.object({
   identity: z.enum(["dynamic", "bound"]),
   boundDoctorId: z.uuid().nullable(),
   confirmLetterhead: z.boolean(),
+  /** The sections the owner confirmed the pad leaves off; must equal the server-computed list (override 24). */
+  acknowledgedOmitted: z.array(z.string().max(32)).max(16),
   baseRevision: z.number().int().min(0),
 });
 

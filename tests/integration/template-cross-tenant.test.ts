@@ -72,7 +72,7 @@ const foreign = (): Ids => ({ template: a.templateId, version: a.versionId, file
 const missing = (): Ids => ({ template: newId(), version: newId(), file: newId(), rx: newId(), doctor: newId() });
 
 const definition = () => structuredClone(MINIMAL_OVERLAY_DEFINITION);
-const publishInput = { identity: "dynamic", boundDoctorId: null, confirmLetterhead: false, baseRevision: 0 };
+const publishInput = { identity: "dynamic", boundDoctorId: null, confirmLetterhead: false, acknowledgedOmitted: [], baseRevision: 0 };
 const saveInput = (extra: Record<string, unknown> = {}) => ({ definition: definition(), labels: "en", baseRevision: 0, ...extra });
 
 type Case = { name: string; run: (ids: Ids) => Promise<unknown>; /** Answers ok with an empty aggregate (same as a missing id) instead of refusing. */ emptyOk?: true };
@@ -155,6 +155,7 @@ const ALLOW_LIST: Record<string, string> = {
   // template-resolution.ts
   builtinLayout: "pure: reads the caller's clinic row",
   resolveTemplateIn: "internal (tenant-filtered, asserted separately below with a clinic row naming A's pad)",
+  loadPinnedDefinitionIn: "internal (tenant-filtered, asserted with loadOverlayIn below)",
   loadOverlayIn: "internal (tenant-filtered, asserted separately below with a layout naming A's version)",
   // template-assign.ts
   listTemplateDoctors: "lists the caller's own tenant; asserted separately below",
@@ -357,6 +358,8 @@ describe("internal template readers refuse another tenant's rows", () => {
       const layout = { template: { kind: "overlay" as const, templateVersionId: a.versionId, contentSha256: a.contentSha256 }, paperSize: "A4" as const, labels: "en" as const };
       expect(await resolution.loadOverlayIn(tx, B.tenantId, layout)).toBeNull();
       expect(await resolution.loadOverlayIn(tx, A.tenantId, layout)).toBeNull();
+      expect(await resolution.loadPinnedDefinitionIn(tx, B.tenantId, layout)).toBeNull();
+      expect(await resolution.loadPinnedDefinitionIn(tx, A.tenantId, layout)).toBeNull();
       const [clinicB] = await tx.select().from(clinics).where(eq(clinics.tenantId, B.tenantId));
       const resolved = await resolution.resolveTemplateIn(tx, B.tenantId, { ...clinicB, customTemplateId: a.templateId }, null);
       // A's pad id on B's clinic row is ignored: B falls back to a built-in pad.

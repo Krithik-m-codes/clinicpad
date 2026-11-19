@@ -27,7 +27,7 @@ describe("PublishPanel", () => {
     panel();
     fireEvent.click(screen.getByRole("radio", { name: /does not show a doctor/ }));
     fireEvent.click(screen.getByRole("button", { name: "Publish" }));
-    await waitFor(() => expect(publish).toHaveBeenCalledWith("t1", { identity: "dynamic", boundDoctorId: null, confirmLetterhead: false, baseRevision: 2 }));
+    await waitFor(() => expect(publish).toHaveBeenCalledWith("t1", { identity: "dynamic", boundDoctorId: null, confirmLetterhead: false, acknowledgedOmitted: [], baseRevision: 2 }));
     expect(await screen.findByText(/Published\. Choose who uses it/)).toBeInTheDocument();
   });
 
@@ -40,7 +40,7 @@ describe("PublishPanel", () => {
     expect(screen.getByRole("button", { name: "Publish" })).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: /shows Dr Meera Shah's name and registration number/ }));
     fireEvent.click(screen.getByRole("button", { name: "Publish" }));
-    await waitFor(() => expect(publish).toHaveBeenCalledWith("t1", { identity: "bound", boundDoctorId: doctors[0].id, confirmLetterhead: true, baseRevision: 2 }));
+    await waitFor(() => expect(publish).toHaveBeenCalledWith("t1", { identity: "bound", boundDoctorId: doctors[0].id, confirmLetterhead: true, acknowledgedOmitted: [], baseRevision: 2 }));
   });
 
   it("shows the server's refusal and its listed problems", async () => {
@@ -75,5 +75,16 @@ describe("PublishPanel", () => {
     fireEvent.click(screen.getByRole("radio", { name: /does not show a doctor/ }));
     expect(screen.getByText(/Save the draft before publishing/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Publish" })).toBeDisabled();
+  });
+
+  it("lists the sections the pad leaves off and needs a ticked confirmation before publishing", async () => {
+    publish.mockResolvedValueOnce({ ok: true });
+    panel({ definition: { ...definition, flow: { ...definition.flow, sections: definition.flow.sections.filter((k) => k !== "advice") } } });
+    fireEvent.click(screen.getByRole("radio", { name: /does not show a doctor/ }));
+    expect(screen.getByText(/does not print these sections/i)).toHaveTextContent("Advice");
+    expect(screen.getByRole("button", { name: "Publish" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: /without these sections/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    await waitFor(() => expect(publish).toHaveBeenCalledWith("t1", { identity: "dynamic", boundDoctorId: null, confirmLetterhead: false, acknowledgedOmitted: ["advice"], baseRevision: 2 }));
   });
 });

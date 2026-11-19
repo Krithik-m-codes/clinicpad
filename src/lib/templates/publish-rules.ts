@@ -14,6 +14,7 @@ export type PublishIssueCode =
   | "doctor_identity"
   | "bound_doctor"
   | "bound_confirmation"
+  | "signature_twice"
   | "document_too_large";
 export type PublishIssue = { code: PublishIssueCode; message: string };
 
@@ -73,6 +74,10 @@ export function overlayPublishIssues(
   if (!fields.has("patient.name")) issues.push({ code: "missing_patient_name", message: "Add a box for the patient's name." });
   if (!fields.has("visit.date")) issues.push({ code: "missing_date", message: "Add a box for the date." });
   if (!def.flow.sections.includes("medicines")) issues.push({ code: "missing_medicines", message: "The body region must include the medicines." });
+  // A PUBLISH rule (the frozen v1 parser accepts both): one signature image per pad, in the box or after the content.
+  if (def.signature.mode === "end_of_content" && fields.has("doctor.signature")) {
+    issues.push({ code: "signature_twice", message: "The signature would print twice. Show it in its box, or after the prescription, not both." });
+  }
   if (identity.kind === "dynamic") {
     const printsDoctor = def.signature.mode === "end_of_content" || (fields.has("doctor.name") && fields.has("doctor.reg_no"));
     if (!printsDoctor) {

@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import type { ProfileGap } from "@/server/services/pad-settings";
 import type { VersionRef } from "@/server/services/rx-documents";
 import type { OutputSummary } from "@/server/services/rx-output";
+import { sectionNames } from "@/lib/rx-render/omitted";
 import { DEFAULT_TIME_ZONE, isValidTimeZone } from "@/lib/rx-render/format";
 import { OutputActions } from "./output-actions";
 
@@ -23,6 +24,8 @@ export type RxOutputPanelProps = {
   timeZone: string;
   /** The prescription prints on a custom overlay pad (Plan 2A). */
   printsOnOverlay?: boolean;
+  /** Sections of this record that have content but that its pinned pad does not print (names of section keys). */
+  unprintedSections?: string[];
 };
 
 const GAP_TEXT: Record<Exclude<ProfileGap, "noDoctorProfile">, string> = {
@@ -102,6 +105,11 @@ export function RxOutputPanel(p: RxOutputPanelProps) {
       {p.printedWithout.length > 0 ? (
         <div role="note" className={warn}>
           {`This copy prints without ${p.printedWithout.map((gap) => PRINT_GAP_TEXT[gap]).join(" and ")}: ${p.printedWithout.length > 1 ? "they were missing from" : "it was missing from"} the doctor profile when the prescription was finalized.`}
+        </div>
+      ) : null}
+      {p.unprintedSections && p.unprintedSections.length > 0 ? (
+        <div role="note" className={warn}>
+          {`This pad does not print: ${sectionNames(p.unprintedSections)}. This record has content there, and it will not appear on the printed copy or the PDF.`}
         </div>
       ) : null}
       {p.isDraft ? (
