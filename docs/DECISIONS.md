@@ -1,6 +1,6 @@
 # ClinicPad — Architecture Decision Records
 
-**Last updated:** 2026-11-16
+**Last updated:** 2026-11-19
 **Format:** lightweight ADR (context → decision → consequences → revisit trigger)
 **Rule:** if a decision is hard to reverse or affects tenant safety, patient data, or money, it goes here before implementation.
 
@@ -732,6 +732,116 @@ A duplicate is a normalized phone matching an active patient or an earlier row, 
 **Consequences:** `pad-settings` 24 of 24 under `next start` (12 of 12 on 15.5.29). `npm audit` still reports 25 vulnerabilities in other packages (follow-up, not addressed here).
 
 **Revisit trigger:** any Next upgrade (the script warns on unknown code), or React's release of the fix in a stable Next.
+
+## ADR-0043 — Phase 2 order: overlay pads first (Template Studio), DOCX after pilot evidence; the template model
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** Phase 2 must let a doctor print on their own pad within ten minutes. Many target doctors have a printed pad, a photo or a printer's PDF rather than a Word file, and DOCX brings the largest new attack surface (zip, XML, LibreOffice) and cannot print in the browser or offline. A custom pad is clinic data that a signed prescription depends on, and a letterhead can carry one doctor's name and registration number.
+
+**Decision:** Sub-plan 2A ships overlay pads (a background image plus field boxes and one flow region) on the existing self-contained HTML pipeline. DOCX (2B) starts only after pilot evidence on the formats doctors bring and Gate 1; docxtemplater core (MIT) only, never paid modules. Spikes S1, S2, S4 and S5 gated 2A; S3 is input for 2B (use `{{#x}}..{{/x}}` loops, pre-check the zip).
+
+Template model (migrations 0024 to 0028): `templates` (kind `overlay`; status `active | archived`; `current_version_id`) and `template_versions` (born as drafts by trigger; a draft is a working copy under `draft_revision`; a published version is frozen on every connection; rollback publishes a copy as the next number). **Binding is per VERSION, not per template** (migration 0025): `identity` (`dynamic | bound`), `bound_doctor_id` and `bound_confirmed` live on the version, are set at publish and are frozen with it; `resolveTemplateIn` reads them from the current version. Rollback copies the source version's binding and runs the same conflict checks as publish (a bound pad that is the clinic default is refused; one assigned to another doctor is refused). Assignment columns `clinics.custom_template_id` and `doctors.template_id` (composite keys, NO ACTION). At finalize the signer's own pad wins, then the clinic default, then the built-in pad; a bound pad is used only for its doctor. Publishing asks the letterhead question with no preselected answer and checks the spec's preconditions. A pad may omit clinical sections but never silently: publish computes the omitted sections (`src/lib/rx-render/omitted.ts`), the owner must acknowledge exactly that list (`acknowledgedOmitted`, enforced on the server, names recorded in the audit event), and a prescription whose record has content in a section its pinned pad does not print shows a warning on the prescription page and the print panel. Roles: `template.read` and `template.write` (owner, doctor for pads bound to them, designer), `template.publish` (owner), `template.assign` (owner; a doctor for their own profile). Lock order: the template-quota advisory lock, then the template row, then clinic or doctor rows; finalize takes no template lock.
+
+**Consequences:** Word users print through "Save as PDF" in Word. The exit criterion "DOCX pad with overflow and a repeated header" waits for 2B. Binding is strict by default while human decision Q6 is open; turning it off means publishing every pad as dynamic. The letterhead question (strict default; an explicit server-side confirmation for `dynamic`, where the publisher answers "this letterhead shows no doctor") is recorded as pending human sign-off. `templates.kind` is not frozen once a version is published (forward note for 2B).
+
+**Revisit trigger:** pilot evidence that most partners bring editable Word pads, branch-level pads, a designer invite flow (2C), or a decision against binding.
+
+---
+
+## ADR-0044 — Snapshot v2 and the frozen v1 overlay definition: reprint what was signed
+
+- **Status:** accepted (extends ADR-0032)
+- **Date:** 2026-11-18
+
+**Context:** ADR-0032 froze print data but left presentation free. A custom pad is the clinic's own artifact, so a reprint must use exactly the pad that was signed.
+
+**Decision:** `render_snapshot` stays `v: 1` for built-in pads (identical shape, no migration of old rows) and is `v: 2` only for overlay pads: `layout.template` is `{ kind: "overlay", templateVersionId, contentSha256 }` (built-ins are `{ kind: "builtin", key }`), with paper and labels from the version. **The v1 overlay definition schema and its geometry rules are frozen**: reprint parses a stored definition with the frozen v1 parser and does NOT re-run the publish-time geometry rules (a later rule change must never make a signed pad unprintable). `contentSha256` is the SHA-256 of the canonical JSON of the definition AS STORED (services store the parser's output: lengths rounded to 0.1 mm, unknown keys dropped), plus paper, labels and the stored file's hash; the hash of the minimal definition is pinned as a literal in a unit test, so any parser change that alters a stored definition fails a test. Finalize writes `prescriptions.template_version_id` in the same UPDATE (CHECKs tie a set column to the snapshot; a trigger refuses an unpublished version) and fails closed, without using an Rx number, when the pad is damaged or fails the geometry check. Every print, download, share open and preview reloads the version and file inside `withTenant`, re-hashes bytes and definition, and refuses to print on any mismatch (`TEMPLATE_DAMAGED_MESSAGE`). Amendments resolve their own pad (the amend column rule is `reset`). Output rows record `template_version_id`, `engine` and the renderer version per kind (`1`, `overlay-1`).
+
+**The renderer itself is NOT frozen**: `overlay-1` shares section, medicine, style, mark and label code with the built-in renderer, so a change there changes old reprints. What is frozen is the data (snapshot, definition, image bytes), not Chromium, fonts or CSS. Only the renderer version string is recorded per output.
+
+**Consequences:** A stored as-issued PDF (open decision Q16) would be the stronger proof and needs object storage. Tracked, not done: a database check that the snapshot's hash, paper and labels equal the version's (needs a migration), and an engine version column on output rows.
+
+**Revisit trigger:** DOCX pads (2B adds the `docx` reference), as-issued PDF storage, or a renderer change that must be pinned per version.
+
+---
+
+## ADR-0045 — Hostile-upload pipeline: bytes decide, scan before store, quotas, files in Postgres behind a storage seam
+
+- **Status:** accepted (supersedes the "no malware scan" note of ADR-0035)
+- **Date:** 2026-11-18
+
+**Context:** Uploads are hostile (invariant 8). Server actions are capped at 1 MB; LibreOffice and server-side PDF parsing are not needed for overlays. There is no object storage.
+
+**Decision:** `POST /templates/uploads` (a route handler excluded from the middleware matcher, which would buffer bodies up to 10 MB; it checks its own session, `template.write`, `Sec-Fetch-Site`, 30 uploads per user per hour, and a streamed 2 MB cap). The bytes decide the type (PNG or JPEG only, nothing after the end marker, upright, at most 64 JPEG scans, long side 1,100 to 3,600 px, A-series proportions within the tolerance in `BACKGROUND_LIMITS`). The **background cap is 1 MB** (lowered from 2 MB after S1: a 2 MB background plus logo and signature would not fit the 4 MiB self-contained document limit; the migration CHECK mirrors it; the client recompresses). Logo and signature keep their 512 KB caps, and a pad may use one box for each. ClamAV `clamd` scans over INSTREAM before any transaction (one shared 15 s deadline for VERSION and INSTREAM; down, slow or confused means refused, fail closed; infected is audited with the signature name). Both the original bytes and the metadata-stripped bytes are scanned; the stripped bytes are what is hashed and stored; the original bytes and the file name are never stored or logged. Logo and signature uploads are scanned the same way, and non-image refusals are audited (`upload.rejected`). `CLAMAV_HOST`/`CLAMAV_PORT` are mandatory in production; the development bypass needs `NODE_ENV=development`, `CLAMAV_DISABLED_FOR_DEVELOPMENT=1` AND `CLAMAV_DISABLED_ACK=unscanned-uploads-on-this-machine`, otherwise the flag makes every upload fail.
+
+Scanner container (S4, `docs/spikes/2026-11-18-s4-clamav.md`): `clamav/clamav:1.4.6@sha256:4cc4350d3fded380caf1799e76c0d1c93f3fa40af99c0cb2862ec0c9b117718a`, memory limit 2500 MB (a signature reload peaks at 1.99 to 2.17 GB), all capabilities dropped except CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER, `no-new-privileges`, read-only root, tmpfs `/tmp`, `/run`, `/var/log/clamav`, `CLAMAV_NO_FRESHCLAMD=true` (it never calls out; signatures are baked into the image). Signatures are refreshed by a separate `clamav-update` container (compose profile `update`), the only one that needs egress. StreamMaxLength is 100 MB. A drift check in `clamav-smoke.test.ts` pins the options.
+
+`template_files` (bytea, forced RLS, composite keys, CHECKs mirroring the upload limits and the hash, immutable by trigger; `storage = 'pg'` is the seam and `loadTemplateFileIn()` the only reader). Per tenant, under one advisory lock: 20 active pads, 100 versions (every rollback adds one; published versions can never be deleted), 50 MB of files. Files no version uses are deleted at the next upload once they are 30 days old; the database refuses deleting a file in use (foreign key) or younger than a day (trigger). A 23503 on `template_versions_file_fk` after a file was deduped away is reported as "upload the image again". The EICAR test string is never committed (decoded from base64 in `tests/helpers/eicar.ts`).
+
+**Scope by decision:** uploads of logos, signatures and pad backgrounds are scanned (original and stripped bytes); CSV patient import is NOT scanned (text parsed and validated, never stored as a file).
+
+**Consequences:** About 2.5 GB of memory for clamd. Open ops items: hosting on AWS ap-south-1 in a private subnet with no egress, with `clamav-update` as the only egress (a developer machine cannot block egress because Docker does not publish ports of internal networks); schedule `clamav-update` a few times a day and alarm on signature age; run the container once on a Linux host. Licences: ClamAV is GPL-2.0 and is used over a socket as a separate service (fine for SaaS); it needs legal review before it is bundled into the desktop installer. Template bytes add a few MB per clinic to the database and backups. Tracked, not done: a race between garbage collection and a dedupe reuse of a file, and `lockTemplate` loading every version.
+
+**Revisit trigger:** DOCX intake (2B), patient documents (2C), template bytes above 5 GB, or a ClamAV advisory.
+
+---
+
+## ADR-0046 — PDF intake runs only in a sandboxed browser frame
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** Doctors bring PDFs (a printer's artwork, a scan, Word's "Save as PDF"). Parsing PDFs on the server is a large attack surface; the browser already ships a PDF engine.
+
+**Decision:** A PDF never reaches the server. pdf.js (`pdfjs-dist@6.5.438`, exact pin, Apache-2.0; integrity in `docs/spikes/2026-11-18-s2-pdfjs-frame.md`; 6.2.108 is an equal fallback) runs inside `<iframe sandbox="allow-scripts">` (no `allow-same-origin`, so an opaque origin) served by `/pdf-frame/*`. The frame is a public, cookieless route with an allow-list of files (the wasm, standard-font and ICC files are served from `/pdf-frame/`; `useWasm:false` was rejected because JBIG2 and JPEG 2000 scans then render blank), a CSP that allows scripts only from that path plus `wasm-unsafe-eval`, `connect-src` limited to `/pdf-frame/`, `worker-src 'none'` (a fake in-frame worker works in Chromium, Firefox and WebKit), no eval (`isEvalSupported:false`), `enableScripting:false` and a bare `getDocument`. The parent accepts only well-formed messages from that frame's window with origin `"null"`, accepts `ready` once, posts a transferred COPY of the bytes, fails fast if `ready` does not arrive in about 5 s, and times out. The frame replies with a JPEG page (not PNG) sized to fit the 1 MB background cap; the server then scans and strips it like any image upload (ADR-0045). Size, page count and DPI limits live in `PDF_INTAKE_LIMITS` (a test ties the frame constants to the image limits). The frame's CSP and origin checks are built from `NEXT_PUBLIC_APP_URL`; the route answers 503 in production without it. **Single-origin limitation:** a clinic that reaches the app on both `www.` and the apex domain sees the frame blocked on the other host; serve one canonical origin and redirect. `PDF_INTAKE=off|0|false` is the kill switch (the route answers 404, the wizard hides PDF); photo and image upload stay available.
+
+Advisory GHSA-hq66-cqwq-w95j (CVE-2026-16633, high; XSS through `enableScripting` in the hosting origin, pdfjs-dist 5.6.83 up to but not including 6.2.108) is not exploitable here (scripting off, eval off, strict CSP, opaque origin), but `npm audit` would flag 5.x forever, hence 6.5.438. In 6.x `PDFDocumentProxy` has no `destroy()`; the loading task is destroyed instead. `pdfjs-dist` needs Node 22.13 or newer and lists `@napi-rs/canvas` as an optional dependency ClinicPad does not use. App code never imports `pdfjs-dist` (tests may, in Node). `src/app/pdf-frame` is in the desktop build's `SERVER_ONLY` stash list. The WebKit cookie observation in S2 was judged WebKit not enforcing SameSite (a control run without the sandbox is identical), not a sandbox leak.
+
+**Consequences:** Intake needs a browser with canvas; photos are downscaled to 3,600 px before drawing (older iOS has a canvas size limit). Encrypted PDFs, real scanner JBIG2 (arithmetic and symbol modes) and real Word output are human-pending.
+
+**Revisit trigger:** a pdf.js advisory (run `npm run test:pdf-frame` after any upgrade), DOCX intake (2B), or server-side conversion.
+
+---
+
+## ADR-0047 — Overlay pads in the self-contained HTML pipeline; Gotenberg 8.40.0; print mechanics (S1); print modes and the printer offset
+
+- **Status:** accepted (extends ADR-0034); the printer-offset question is an OPEN HUMAN DECISION
+- **Date:** 2026-11-18
+
+**Context:** Overlay pads should keep every Plan 1C guarantee: self-contained documents, browser print without Gotenberg where the browser can do it, the same text as built-in pads.
+
+**Decision:** `renderOverlay` (pure) draws the background and every-page boxes `position:fixed` and first-page boxes absolute, and runs the body inside a table whose `thead` and `tfoot` spacers repeat on every page, using the built-in section and medicine renderers; CSS lengths come only from numbers of a parsed definition. Three targets: `screen`, `print` (printer offset; no background on pre-printed stationery) and `pdf` (background always, no offset).
+
+S1 mechanics (`docs/spikes/2026-11-18-s1-overlay-print.md`): (a) Chromium repeats a table header only while it is under about a quarter of the page it has, so each spacer is at most 24 % of the EFFECTIVE page (paper minus the page-number band minus the worst-case printer offset); publish refuses larger gaps and the renderer clamps (it never throws for a stored version); (b) page numbers are off by default; a 5 to 12 mm blank band puts "Page x of y" and the Rx number in a footer strip that Gotenberg's footer fills (`@page` margin boxes do not render in Gotenberg); (c) Chromium browsers print overlay pads from HTML; Firefox and Safari print the Gotenberg PDF made for paper until a human confirms them (`OVERLAY_BROWSER_PRINT = { chromium: true, firefox: false, webkit: false, other: false }`, a visible and tested default), so **"Print still works without Gotenberg" is false for overlay pads on Firefox and Safari**; (d) with Gotenberg 8.40.0 the background image is written about once per PDF (8.11 wrote it per page), so the size guard estimates background plus logo plus signature plus a small allowance and refuses a download above the 15 MiB cap with a friendly "use Print" message (the advice differs for someone already printing through the PDF: tracked minor); (e) tell people to print PDFs at 100 % ("Actual size"); the overlay screenshot tolerance is `maxDiffPixelRatio` 0.001, provisional until human decision Q9.
+
+Gotenberg is pinned to `gotenberg/gotenberg:8.40.0@sha256:53073e798c8ef39ea2187e44cb67bab77894ea2509100b94c4fe3b461f7b2996` (Chromium 156), one pin across `docker-compose.yml`, `ci.yml` and the smoke test (`engine-pins.test.ts`), with the visual suite and the real PDFs re-reviewed. For 2B only: `--libreoffice-allow-list`, `--libreoffice-deny-list`, `--libreoffice-deny-private-ips` and `--libreoffice-deny-public-ips`.
+
+**Printer offset (OPEN HUMAN DECISION; decide before the first real clinic publishes a non-zero offset).** The offset (a shift in mm for pre-printed stationery) sits in the definition, so it is part of the frozen content hash. Costs: recalibrating needs an owner publish and uses version quota; there is one offset per version, not per printer; an old prescription reprinted after a printer change still uses the old offset. The better long-term model is a per-clinic (or per-printer) print-time adjustment recorded on each output row, outside the hash. Acceptable for the pilot ONLY while offsets stay zero. Related: the alignment test page prints from HTML while Firefox and Safari print from the PDF, so calibration differs by browser (human check).
+
+**Consequences:** Body tables use ClinicPad's styling, not the doctor's own table design; phone photos print as photographed. Open design observations for a human decision: the follow-up and signature block can spill alone onto a last page; on A5 the bilingual age and gender text can wrap in a narrow box (an A5 bilingual split default is recommended); consider printing the Rx number and "Page x of y" whenever the output spans pages; the screen preview shows the footer band mid-page once content passes page 1 (print and PDF are correct).
+
+**Revisit trigger:** the S1 human check on Firefox, Safari and iOS, Chromium `@page` margin boxes for browser page numbers, the offset decision, or DOCX (2B).
+
+---
+
+## ADR-0048 — The designer role, its provisioning, and test-only tooling licences
+
+- **Status:** accepted
+- **Date:** 2026-11-18
+
+**Context:** An outside designer may build a clinic's pad but must never read patients or prescriptions. A designer account that never expires is a standing risk.
+
+**Decision:** Role `designer` (migration 0028) holds only `template.read` and `template.write`: no patient, prescription, billing or sharing permission, and sample previews show a placeholder doctor ("Dr. Sample Doctor / SAMPLE-0000") and no Rx number, never a real person. Its membership MUST expire: `memberships.expires_at`, a CHECK that a designer has one (compared as `role::text`, because a new enum value cannot be used in the migration that adds it), a CHECK that expiry follows creation, and `getActiveMembership` and the sign-in callback refuse an expired membership on every request. The e2e helper sets seven days. **There is no designer invite UI until 2C and no code creates designer memberships: today an operator provisions them by raw SQL. That is not acceptable beyond the pilot; an audited provisioning script with a mandatory expiry (and an audit event) is required before any clinic hires a designer.** The cross-tenant sweep (56 tests plus a completeness guard) found no leak.
+
+Tooling licences: pdf.js (Apache-2.0) and docxtemplater core (MIT, 2B) are fine. PyMuPDF (AGPL-3.0) is a TEST-ONLY dependency (`overlay-spacer-pdf.test.ts` reads real Gotenberg PDFs; `pymupdf==1.28.0` pinned in CI; never installed on a server or bundled; the test FAILS when it is required but missing). ClamAV is GPL-2.0 over a socket (ADR-0045).
+
+**Consequences:** A designer cannot see a real patient preview (that needs `rx.read` and is audited as `template.previewed_with_patient`).
+
+**Revisit trigger:** the designer invite flow (2C), or any need for a designer to see clinical data.
+
+---
 
 ---
 
