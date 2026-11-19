@@ -1,6 +1,6 @@
 # ClinicPad — Progress Tracker
 
-**Last updated:** 2026-11-18
+**Last updated:** 2026-11-19
 **Current phase:** Phase 1D — Sharing, consent, CSV import, history, hardening (code complete; automated gate passed locally 2026-11-18). Phase 1 is code complete; the exit criteria that need people are open (section 4.11). Phase 0 ops items (staging etc.) still open.
 **Overall status:** 🟡 `node scripts/verify-gate-0.mjs` PASSED locally on 2026-11-12, 2026-11-16, 2026-11-17 (Phases 1B and 1C) and 2026-11-18 (Phase 1D: 2,163 tests, 51 e2e); not yet deployed to staging
 
@@ -31,7 +31,7 @@ This is the live source of truth for *what is actually true*. Update it at the e
 |---|---|---|---|---|
 | 0 — Foundation | 🟡 in progress | 2026-11-06 | — | `node scripts/verify-gate-0.mjs` PASSED 2026-11-12 |
 | 1 — Prescription MVP | 🟡 code complete (1A–1D); exit criteria needing design partners open (section 4.11) | 2026-11-12 | — | see sections 4.8 to 4.11; `node scripts/verify-gate-0.mjs` PASSED 2026-11-18 (2,163 tests + 51 e2e passed, 8 skipped) |
-| 2 — Template Studio | ⚪ not started | — | — | — |
+| 2 — Template Studio | 🟡 2A (overlay pads) code complete; 2B (DOCX) and 2C not started | 2026-11-18 | — | section 4.12; ADR-0043 to ADR-0048 |
 | 3 — Clinic operations | ⚪ not started | — | — | — |
 | 4 — Offline + desktop | ⚪ not started | — | — | — |
 | 5 — Compliance + international | ⚪ not started | — | — | — |
@@ -335,6 +335,92 @@ Final fix wave (after the whole-branch review): the individual gate steps were r
 
 ---
 
+### 4.12 Phase 2A checklist (overlay pads)
+
+Evidence rule: a box is ticked only for evidence seen on 2026-11-19 at the commit named in "Gate run". Items marked PENDING were not seen (or need a person). Gate run: PENDING (gate running at commit 381f643)
+
+- [x] Spikes S1 to S5 with findings: `docs/spikes/2026-11-18-s1-overlay-print.md` (GO-WITH-FALLBACK), `s2-pdfjs-frame.md` (GO-WITH-FALLBACK, pdfjs-dist 6.5.438 after the addendum), `s3-docxtemplater.md` (GO, input for 2B), `s4-clamav.md` (GO), `s5-gotenberg-upgrade.md` (GO); commits `ab8d278`, `4e3dda3`, `72496c9`, `658a9c6`, `47f9628`, `fd82ca4`
+- [x] Gotenberg 8.40.0 pin across compose, CI and the smoke test (`3b33501`; `engine-pins.test.ts`)
+- [x] Template schema and guarantees: migrations 0024 to 0028 (`b3710a2`, `f413126`, `2aa5f99`); immutability, per-version binding, quotas, RLS, composite keys, CHECKs in Drizzle (`tests/integration/templates-schema*.test.ts`, `schema-checks.test.ts`, `tenant-fk.test.ts`)
+- [x] Scanner and container: ClamAV 1.4.6 pinned, hardened, drift-checked (`31d0913`; `clamav-smoke.test.ts` ran against the real container in the vitest run below)
+- [x] Upload pipeline: route handler, caps, scan of original and stripped bytes, quotas, GC, audit (`e9209b8`, `5ab8f09`)
+- [x] Field catalogue and sample data (`cc3bdd6`, `d25f823`); overlay definition schema v1 and geometry rules with a pinned golden hash (`07901c2`)
+- [x] Overlay renderer and goldens; real Gotenberg spacer PDF test with PyMuPDF 1.28.0 (`c022cc4`, `c5076df`)
+- [x] Snapshot v2 and resolution; hash check at reprint; output plumbing (`f413126`, `976af90`)
+- [x] Roles and designer role, migration 0028 (`2aa5f99`, `8a0a8b9`)
+- [x] Template Studio: list, wizard (photo, image, PDF through the sandboxed frame), editor, previews, publish with omitted-section acknowledgement, assign, history and rollback (`7c3e9ce`, `cd3286d`, `eda35c8`, `8e99199`, `6168a6c`, `72e98eb`)
+- [x] Print modes, offset, alignment page, per-browser print default (`3495355`)
+- [x] Cross-tenant sweep: 56 tests plus a completeness guard, no leak found (`39df089`)
+- [x] Overlay visual cases (6 new baselines, 3 renderings each) (`cfb3d8f`)
+- [x] Template Studio e2e flow (`c8925f4`, `f8c71f7`, `51323a0`)
+- [ ] `npm run lint`, `npm run typecheck`: PENDING
+- [ ] `npm run test` (CLAMAV_REQUIRED=1 CI=true GOTENBERG_REQUIRED=1): PENDING
+- [ ] `npm run test:visual`: PENDING
+- [ ] `npm run test:pdf-frame`: PENDING
+- [ ] e2e (temporary Playwright config, `next dev --turbopack`): PENDING
+- [ ] `build:web`, `build:desktop`: PENDING
+- [ ] `npx drizzle-kit generate`: PENDING
+- [ ] Visual PDF review by a person (name, date): PENDING. The implementer read rasterized PDFs for the overlay cases (task report 20b/c) but a human review of the real PDFs in `test-results/rx-visual-pdf/` has not happened.
+- [ ] `node scripts/verify-gate-0.mjs` as ONE command: not run as one command; its steps were run individually (the gate script needs port 3000 and a different Playwright config than the one used here).
+
+**Phase 2A exit criteria (spec section 4.3): evidence**
+
+| Exit criterion | Evidence | Status |
+|---|---|---|
+| A photo, scan or PDF pad prints with real data | `templates.spec.ts` (upload, place, preview, publish, finalize, print, PDF, share), `template-*.test.ts` | met (automated) |
+| Hindi patient name and labels | overlay goldens, `overlay-a5-12-medicines-hindi` visual, Devanagari PDF fixture in e2e | met (automated); native-speaker review PENDING |
+| Missing signature | unit tests, `overlay-a4-draft-no-signature` visual | met (automated) |
+| A4 and A5 | visual cases (A5 bilingual 12 medicines) | met (automated); A5 bilingual age/gender wrapping needs a human look |
+| 12 medicines overflow with repeated header and repeated patient boxes | visual cases and `overlay-spacer-pdf.test.ts` (text per page, real Gotenberg) | met (automated); last-page spill of follow-up and signature is a human decision |
+| No cross-tenant read | `template-cross-tenant.test.ts` | met (automated) |
+| Median setup time on design partners under 10 minutes | scripted baseline is unusable (the e2e's setup-seconds is dominated by cold dev compile); a warm-build timing figure is PENDING | PENDING (needs staging and the pilot) |
+
+Funnel query for when staging exists:
+
+```sql
+-- Setup funnel per clinic (spec section 10.1): sign-up -> first upload -> first publish -> first prescription on a custom pad.
+select t.id as tenant_id,
+       t.created_at as signed_up,
+       min(a.created_at) filter (where a.action = 'template_file.uploaded') as first_upload,
+       min(a.created_at) filter (where a.action = 'template.published') as first_publish,
+       min(a.created_at) filter (where a.action = 'prescription.finalized' and a.after ? 'templateVersionId') as first_custom_rx
+  from tenants t left join audit_events a on a.tenant_id = t.id
+ group by t.id, t.created_at;
+```
+
+(The action names are the plan's; check them against the audit writers before relying on the query.)
+
+**Open human decisions (Phase 2A)**
+
+- Printer offset in the content hash (ADR-0047): decide before any clinic publishes a non-zero offset; recommended per-clinic or per-printer print-time adjustment recorded on each output row. Acceptable for the pilot only while offsets are zero.
+- Letterhead lock: strict default (bound pads) and an explicit server-side confirmation for `dynamic` ("this letterhead shows no doctor") (Q6/Q10).
+- Last-page spill: the follow-up and signature block can land alone on a last page.
+- A5 bilingual header crowding and a default split of the age and gender box.
+- Print the Rx number and "Page x of y" when output spans pages (consider).
+- Screenshot tolerance for overlay baselines (`maxDiffPixelRatio` 0.001, provisional, Q9) and an as-issued PDF store (Q16).
+- Designer accounts: an audited provisioning script with expiry instead of raw SQL, before any clinic hires a designer.
+- Hosting: AWS ap-south-1, private subnet with no egress; `clamav-update` as the only egress, scheduled a few times a day, with an alarm on signature age.
+- ClamAV is GPL-2.0 (fine over a socket for SaaS); legal review before bundling it into the desktop build. PyMuPDF (AGPL) stays test-only.
+- Whether the 10-clinic time-to-first-prescription criterion is measured at staging with design partners.
+
+**Pending human checks (none done)**
+
+- Print an overlay pad from Firefox, Safari and iOS (`OVERLAY_BROWSER_PRINT` stays chromium-only until then) and open the PDFs in Adobe and phone viewers.
+- Real printers on pre-printed stationery (offset calibration; alignment page prints from HTML while Firefox and Safari print from the PDF).
+- Side-by-side Gotenberg 8.11 vs 8.40.0 PDFs.
+- Real Word "Save as PDF", real scanner JBIG2 (arithmetic and symbol modes) and encrypted PDFs through the frame.
+- Screen reader pass and touch drag on the editor (Backspace delete without undo, live-region noise and Alt+Arrow vs browser Back are known and not fixed).
+- Native-speaker review of the Hindi in overlay labels and sample data.
+- Warm-build timing figure for the 10-minute criterion.
+
+**Phase 2A carried minors and deferred items**
+
+- Deferred by ruling: a database check that the snapshot hash, paper and labels equal the version's (needs a migration); an engine version column on output rows; the race between file GC and a dedupe reuse; `lockTemplate` loads every version; no log of a damaged pad on share open; `templates.kind` is not frozen once published; the PDF_TOO_LARGE message gives the wrong advice to someone already printing through the PDF; untested guards (archived pad publish, un-archive over quota, version quota) and a weak finalize-versus-publish test; neutral draft-preview wording; designer redirect and rollback wording polish.
+- Known quirks: the screen preview shows the footer band mid-page after page 1; webpack `next dev` exhausts Postgres connections (use `--turbopack`); a server-side `transformAlgorithm is not a function` stream error appeared once in dev on an aborted request (dev noise); flaky `template-upload-route` "audits 413" passed alone once; `prescriptions-clinical` has a pre-existing flaky read under load.
+- `tests/integration/editor-endpoints.test.ts` was left alone by instruction.
+
+---
+
 ## 5. In progress
 
 Remaining Phase 0 work is the open boxes in section 4: staging deploy and restore drill on staging, pre-commit hook, SETUP.md clean-machine verification, 360 px visual check, MFA design note, first CI run on GitHub.
@@ -345,7 +431,9 @@ Phase 1B is code complete and its automated gate passed locally on 2026-11-17 (s
 
 Phase 1C is code complete and its automated gate passed locally on 2026-11-17 (section 4.10); its follow-ups are listed there.
 
-**Next:** a design-partner pilot needs staging (Phase 0 carry-overs) and the human decisions listed in section 4.11; then Phase 2 (Template Studio). Phase 2's ADRs start at ADR-0043; its migrations start at 0024.
+Phase 2A (overlay pads) is code complete; see section 4.12 for the gate evidence and the pending human checks.
+
+**Next:** a design-partner pilot needs staging (Phase 0 carry-overs) and the human decisions in sections 4.11 and 4.12. Phase 2B (DOCX) needs pilot evidence, Gate 1, the S3 finding and staging with the conversion container egress-blocked; its ADRs start at ADR-0049 and its migrations at 0029.
 
 ---
 
@@ -471,6 +559,13 @@ Append to §11 at the end of each working session:
 - Blocked by: nothing for the automated gate. Staging, CI on GitHub, pre-commit hook, 360 px check and MFA note remain open; the human decisions in section 4.11 gate any pilot.
 - Next: staging and a design-partner pilot, then Phase 2 (ADRs from ADR-0043, migrations from 0024).
 - Gotchas: rows are born as drafts (insert then UPDATE to finalize); a `finalized -> amended` flip needs a finalized child first; every CHECK must also be declared in the Drizzle schema; `as("reception")` returns a new random user per call (capture one context when asserting on it); `/s/` is outside the middleware and must stay session-less; the e2e sharing spec needs Gotenberg up for its PDF branch; production-mode sharing needs an https app URL and `GOTENBERG_URL`; `npm install --ignore-scripts` skips the React patch; a Docker Desktop restart stops the containers.
+
+### 2026-11-19 — Phase 2A: overlay pads (Template Studio)
+- Did: shipped Phase 2A on `phase-1-prescription-mvp` (`ab8d278` to `72e98eb`, docs `17e7a8e`, `381f643` and this one): five spikes, Gotenberg 8.40.0, template schema (migrations 0024 to 0028), hostile-upload pipeline with ClamAV, sandboxed PDF intake frame, overlay renderer and snapshot v2, Template Studio UI, print modes, designer role, omitted-section acknowledgement, cross-tenant sweep, overlay visuals and e2e. ADR-0043 to ADR-0048.
+- Evidence: see section 4.12 (PENDING (gate running at commit 381f643)).
+- Blocked by: staging and the human decisions and checks in section 4.12.
+- Next: staging and a design-partner pilot; Phase 2B only after pilot evidence.
+- Gotchas: ClamAV container and PyMuPDF are gate dependencies; run e2e with `next dev --turbopack` on a free port with matching `NEXT_PUBLIC_APP_URL` and `AUTH_URL`; Firefox and Safari print overlay pads through Gotenberg; designer accounts are raw SQL today.
 
 ---
 
