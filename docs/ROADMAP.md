@@ -137,6 +137,8 @@ This is a **sequence of sellable states**, not a feature backlog. Each phase end
 
 **Sellable state:** "ClinicPad — Bring Your Own Pad" at ₹499–₹599/month. This is the first paid launch.
 
+**Status (2026-11-19):** 2A (overlay pads: photo, scan, image or PDF pad, field boxes and a flow region, versions, preview, publish, assign, frozen prints, ClamAV scanning, sandboxed PDF reading) is DONE IN CODE; its automated gate result and the pending human checks are in `docs/PROGRESS.md` section 4.12. 2B (DOCX templates, docxtemplater, DOCX to PDF, PDF to DOCX) and 2C (designer invites, patient documents, remaining gallery) are NOT STARTED. 2B starts only after pilot evidence that doctors bring Word pads, Gate 1, and staging with the conversion container egress-blocked.
+
 ### Workstreams
 
 | # | Workstream | Deliverable | Est. |
