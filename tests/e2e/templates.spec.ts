@@ -141,6 +141,8 @@ test("a PDF pad is read in the sandboxed frame and becomes a template", async ({
   test.setTimeout(180_000);
   clinics.push(await registerClinic(page, "tpl-e2e-pdf"));
   await page.goto("/templates/new");
+  // Warm the (dev-compiled) frame route: the wizard fails fast when the frame is slow to answer.
+  await page.request.get("/pdf-frame/frame.html");
   await page.getByRole("radio", { name: /^PDF/ }).check();
   await page.getByLabel("Choose the PDF").setInputFiles({ name: "pad.pdf", mimeType: "application/pdf", buffer: minimalPdf(595.28, 841.89, "E2E PAD") });
   await expect(page.getByRole("button", { name: "Continue" })).toBeEnabled({ timeout: 90_000 });
@@ -154,6 +156,8 @@ test("a real Devanagari Word-style PDF fixture becomes a template", async ({ pag
   test.setTimeout(180_000);
   clinics.push(await registerClinic(page, "tpl-e2e-dev"));
   await page.goto("/templates/new");
+  // Warm the (dev-compiled) frame route: the wizard fails fast when the frame is slow to answer.
+  await page.request.get("/pdf-frame/frame.html");
   await page.getByRole("radio", { name: /^PDF/ }).check();
   await page.getByLabel("Choose the PDF").setInputFiles({
     name: "pad.pdf",
