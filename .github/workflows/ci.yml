@@ -40,6 +40,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # PyMuPDF (AGPL-3.0, test-only: it reads the PDFs in tests/integration/overlay-spacer-pdf.test.ts and is never
+      # shipped). Pinned; that test fails, not skips, when it is missing and CI=true.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pymupdf==1.28.0
       - run: node scripts/verify-build-config.mjs
       - run: npm run db:migrate
       - run: npm run lint

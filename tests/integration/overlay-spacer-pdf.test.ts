@@ -37,6 +37,13 @@ describe.runIf(required && !health.up)("Gotenberg is required here", () => {
     throw new Error(`Gotenberg is required but not reachable at ${baseUrl}: ${health.detail}`);
   });
 });
+// PyMuPDF (AGPL, test-only, never shipped) reads the PDFs. CI installs a pinned version; skipping there would let the
+// repeating-spacer rule go untested without anyone noticing (override 24).
+describe.runIf(required && !hasFitz)("PyMuPDF is required here", () => {
+  it("is installed", () => {
+    throw new Error(`PyMuPDF is required (CI=true or GOTENBERG_REQUIRED=1) but "${python} -c 'import fitz'" failed: pip install pymupdf==1.28.0`);
+  });
+});
 
 type Page = { page: number; heightMm: number; firstMm: number | null; lastBottomMm: number | null };
 type Paper = "A4" | "A5";
