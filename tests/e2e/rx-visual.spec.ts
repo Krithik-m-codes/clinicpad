@@ -155,7 +155,7 @@ const OVERLAY_CASES: OverlayCase[] = [
 ];
 
 async function textPerPage(pdf: ArrayBuffer): Promise<string[]> {
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(pdf.slice(0)), isEvalSupported: false }).promise;
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(pdf.slice(0)) }).promise;
   const out: string[] = [];
   for (let n = 1; n <= doc.numPages; n += 1) out.push((await (await doc.getPage(n)).getTextContent()).items.map((i) => ("str" in i ? i.str : "")).join(" "));
   return out;
