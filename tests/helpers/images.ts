@@ -103,3 +103,34 @@ export function jpegWithSegments(jpeg: Buffer, segments: Buffer[]): Buffer {
 
 /** An APP1 EXIF segment that carries a GPS-looking payload. */
 export const JPEG_EXIF_GPS = jpegSegment(0xe1, Buffer.from("Exif\0\0MM\0*GPSLatitude 12.9716 GPSLongitude 77.5946", "latin1"));
+
+/** A letterhead-like PNG (blue header band, green footer band, a light 10 mm grid) for overlay visual tests. */
+export function makeLetterheadPng(width: number, height: number, paperHeightMm: number): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const pxPerMm = height / paperHeightMm;
+  const rows: Buffer[] = [];
+  for (let y = 0; y < height; y += 1) {
+    const row = Buffer.alloc(1 + width * 3, 255);
+    row[0] = 0;
+    const mm = y / pxPerMm;
+    const band = mm < 40 ? [30, 64, 175] : mm > paperHeightMm - 15 ? [15, 118, 110] : null;
+    for (let x = 0; x < width; x += 1) {
+      const grid = Math.floor(x / pxPerMm) % 10 === 0 || Math.floor(mm) % 10 === 0;
+      const rgb = band ?? (grid ? [225, 225, 225] : [255, 255, 255]);
+      row[1 + x * 3] = rgb[0];
+      row[2 + x * 3] = rgb[1];
+      row[3 + x * 3] = rgb[2];
+    }
+    rows.push(row);
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", deflateSync(Buffer.concat(rows))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
