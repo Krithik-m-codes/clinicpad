@@ -31,7 +31,7 @@ This is the live source of truth for *what is actually true*. Update it at the e
 |---|---|---|---|---|
 | 0 — Foundation | 🟡 in progress | 2026-11-06 | — | `node scripts/verify-gate-0.mjs` PASSED 2026-11-12 |
 | 1 — Prescription MVP | 🟡 code complete (1A–1D); exit criteria needing design partners open (section 4.11) | 2026-11-12 | — | see sections 4.8 to 4.11; `node scripts/verify-gate-0.mjs` PASSED 2026-11-18 (2,163 tests + 51 e2e passed, 8 skipped) |
-| 2 — Template Studio | 🟡 2A (overlay pads) code complete; 2B (DOCX) and 2C not started | 2026-11-18 | — | section 4.12; ADR-0043 to ADR-0048 |
+| 2 — Template Studio | 🟡 2A (overlay pads) code complete; 2C slice 1 (designer invite, gallery) code complete on branch; 2B (DOCX) and the rest of 2C not started | 2026-11-18 | — | section 4.12; ADR-0043 to ADR-0048 |
 | 3 — Clinic operations | ⚪ not started | — | — | — |
 | 4 — Offline + desktop | ⚪ not started | — | — | — |
 | 5 — Compliance + international | ⚪ not started | — | — | — |
@@ -419,6 +419,17 @@ select t.id as tenant_id,
 - Known quirks: the screen preview shows the footer band mid-page after page 1; webpack `next dev` exhausts Postgres connections (use `--turbopack`); a server-side `transformAlgorithm is not a function` stream error appeared once in dev on an aborted request (dev noise); flaky `template-upload-route` "audits 413" passed alone once; `prescriptions-clinical` has a pre-existing flaky read under load.
 - `tests/integration/editor-endpoints.test.ts` was left alone by instruction.
 
+### 4.13 Phase 2C slice 1 (concierge designer invite, specialty gallery)
+
+Branch `phase-2c-concierge-gallery` (not merged, not pushed). Scope: spec 15.3 tasks 1 and 2 only. Tasks 3 to 6 (object storage, pg-boss, document tools, PDF to DOCX) are NOT started: they need the legal and hosting decisions.
+
+- [x] Owner-only designer invite, extend and revoke (ADR-0052): `src/server/auth/designers.ts`, `/settings/designers`, role `designer.manage`, mandatory expiry 1 to 30 days (default 7), audit `designer.invited/extended/revoked`, hand-over note, five-active cap, ten-per-day limit, re-invite restarts the membership and cuts off older sessions (`signedInAt`).
+- [x] Opus review of the roles and security: no Critical; four Important (cap bypass through extend, old sessions alive after a re-invite, unlimited account creation, missing ADR) and the minors were fixed in `1a1a840` with tests.
+- [x] Gallery of six built-in pads: ortho, ENT, gynae, dental, physio, ayush (ADR-0053); migration 0029 (CHECKs widened); goldens, completeness for all nine pads, integration test, visual cases.
+- [x] Gate run (2026-11-23, branch head): lint 0 errors (2 old warnings), typecheck clean, full vitest with `CLAMAV_REQUIRED=1 CI=true GOTENBERG_REQUIRED=1 --maxWorkers=4`: 162 files, 2,939 passed, 4 skipped; e2e `designers`, `pad-settings`, `templates`, `smoke` on a free port with turbopack: 13 passed; `RX_VISUAL=1` gallery cases (21 tests incl. real Gotenberg PDFs) passed and the new baselines for ortho and ayush A5 were read by eye; `drizzle-kit generate`: no drift; `build:web` and `build:desktop` pass (the new page is under `(app)`, already stashed by the desktop build).
+- [ ] PENDING (human): look at the other four gallery PNGs and the Gotenberg PDFs in `test-results/rx-visual-pdf/`; a clinician reviews each specialty layout; decide whether designers may exist beyond the pilot without forced password change or MFA; cleanup policy for user rows of revoked designers; run the full visual suite once (`npm run test:visual`) because only the gallery cases were run.
+- Not built: the concierge checklist and SLA timestamps of spec 10.4; the full existing visual suite was not re-run. Phase 2B migrations now start at 0030 (0029 is the gallery).
+
 ---
 
 ## 5. In progress
@@ -433,7 +444,7 @@ Phase 1C is code complete and its automated gate passed locally on 2026-11-17 (s
 
 Phase 2A (overlay pads) is code complete; see section 4.12 for the gate evidence and the pending human checks.
 
-**Next:** a design-partner pilot needs staging (Phase 0 carry-overs) and the human decisions in sections 4.11 and 4.12. Phase 2B (DOCX) needs pilot evidence, Gate 1, the S3 finding and staging with the conversion container egress-blocked; its ADRs start at ADR-0049 and its migrations at 0029.
+**Next:** a design-partner pilot needs staging (Phase 0 carry-overs) and the human decisions in sections 4.11 and 4.12. Phase 2B (DOCX) needs pilot evidence, Gate 1, the S3 finding and staging with the conversion container egress-blocked; its ADRs start at ADR-0049 and its migrations at 0030 (0029 is the 2C gallery).
 
 ---
 
