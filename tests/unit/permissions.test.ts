@@ -89,6 +89,7 @@ describe("role x action matrix", () => {
     "template.write": ["owner", "doctor", "designer"],
     "template.publish": ["owner"],
     "template.assign": ["owner", "doctor"],
+    "designer.manage": ["owner"],
   };
   const actions = Object.keys(granted) as Action[];
 
@@ -137,6 +138,7 @@ describe("template permissions", () => {
       "rx.read": true, "rx.draft": true, "rx.finalize": true, "rx.amend": true, "consent.capture": true, "rx.share": true,
       "catalogue.read": true, "catalogue.write": true, "settings.clinic": true, "settings.profile": true,
       "template.read": true, "template.write": true, "template.publish": true, "template.assign": true,
+      "designer.manage": true,
     };
     const others = (Object.keys(every) as Action[]).filter((a) => a !== "template.read" && a !== "template.write");
     for (const action of others) expect(can("designer", action), action).toBe(false);
