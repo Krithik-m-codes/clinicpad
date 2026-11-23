@@ -11,6 +11,7 @@ import { inviteDesignerAction, type DesignerFormState } from "@/server/actions/d
 export function InviteDesignerForm() {
   const [state, action, pending] = useActionState(inviteDesignerAction, {} as DesignerFormState);
   const [copied, setCopied] = useState(false);
+  const [hidden, setHidden] = useState<string | null>(null);
 
   async function copy(note: string) {
     try {
@@ -51,12 +52,15 @@ export function InviteDesignerForm() {
         ) : null}
       </form>
 
-      {state.note ? (
+      {state.note && state.note !== hidden ? (
         <div className="space-y-2 rounded-lg border p-4" data-testid="handover-note">
           <p className="text-sm font-medium">Hand-over note. The password is shown only now: copy it before you leave this page.</p>
           <pre className="whitespace-pre-wrap break-words rounded bg-muted p-3 text-xs">{state.note}</pre>
           <Button type="button" variant="outline" onClick={() => copy(state.note ?? "")}>
             {copied ? "Copied" : "Copy note"}
+          </Button>{" "}
+          <Button type="button" variant="ghost" onClick={() => setHidden(state.note ?? null)}>
+            Done, hide the note
           </Button>
         </div>
       ) : null}

@@ -4,6 +4,7 @@ import { can } from "@/lib/domain/permissions";
 import {
   DESIGNER_MAX_ACTIVE,
   DESIGNER_MAX_DAYS,
+  DESIGNER_MAX_PER_DAY,
   designerStatus,
   generateTemporaryPassword,
   parseDesignerDays,
@@ -70,7 +71,8 @@ export async function inviteDesigner(ctx: ServiceContext, raw: { email?: unknown
 
   const password = generateTemporaryPassword();
   const passwordHash = await hashPassword(password);
-  const expiresAt = new Date(Date.now() + days.days * DAY_MS);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + days.days * DAY_MS);
   const conflict = fail("conflict", "This email cannot be used for a setup account. Use a new email address that has no ClinicPad account.", "email");
 
   try {
@@ -82,6 +84,14 @@ export async function inviteDesigner(ctx: ServiceContext, raw: { email?: unknown
       let membershipId: string;
       let reinvited = false;
       let alreadyCounted = false;
+      let before: Record<string, unknown> | undefined;
+
+      // Bounds what a hostile or careless owner can do with this form: new accounts and re-invites per clinic per day.
+      const [{ recent }] = await tx
+        .select({ recent: count() })
+        .from(memberships)
+        .where(and(eq(memberships.tenantId, ctx.tenantId), eq(memberships.role, "designer"), gt(memberships.createdAt, new Date(now.getTime() - DAY_MS))));
+      if (recent >= DESIGNER_MAX_PER_DAY) return fail("conflict", `At most ${DESIGNER_MAX_PER_DAY} setup accounts can be created or re-invited per day. Try again tomorrow.`);
 
       if (existing) {
         // Sign-in uses the oldest active membership, so an account with any other membership could never reach this
@@ -92,20 +102,23 @@ export async function inviteDesigner(ctx: ServiceContext, raw: { email?: unknown
         userId = existing.id;
         membershipId = held[0].id;
         reinvited = true;
-        alreadyCounted = held[0].status === "active" && held[0].expiresAt !== null && held[0].expiresAt.getTime() > Date.now();
+        alreadyCounted = held[0].status === "active" && held[0].expiresAt !== null && held[0].expiresAt.getTime() > now.getTime();
+        before = { status: held[0].status, expiresAt: held[0].expiresAt?.toISOString() ?? null, nameChanged: existing.name !== name };
       }
 
       if (!alreadyCounted) {
         const [{ n }] = await tx
           .select({ n: count() })
           .from(memberships)
-          .where(and(eq(memberships.tenantId, ctx.tenantId), eq(memberships.role, "designer"), eq(memberships.status, "active"), gt(memberships.expiresAt, sql`now()`)));
+          .where(and(eq(memberships.tenantId, ctx.tenantId), eq(memberships.role, "designer"), eq(memberships.status, "active"), gt(memberships.expiresAt, now)));
         if (n >= DESIGNER_MAX_ACTIVE) return fail("conflict", `A clinic can have at most ${DESIGNER_MAX_ACTIVE} active setup accounts. Revoke one first.`);
       }
 
       if (existing) {
         await tx.update(users).set({ passwordHash, name }).where(eq(users.id, existing.id));
-        await tx.update(memberships).set({ status: "active", expiresAt }).where(and(eq(memberships.id, membershipId!), eq(memberships.tenantId, ctx.tenantId)));
+        // createdAt restarts: sessions issued before this re-invite stop working (see getActiveMembership, ADR-0052), so
+        // an old person's still-valid sign-in cannot return, and a leaked password is cut off together with its sessions.
+        await tx.update(memberships).set({ status: "active", expiresAt, createdAt: now }).where(and(eq(memberships.id, membershipId!), eq(memberships.tenantId, ctx.tenantId)));
       } else {
         const [user] = await tx.insert(users).values({ email, name, passwordHash }).returning({ id: users.id });
         userId = user.id;
@@ -122,7 +135,8 @@ export async function inviteDesigner(ctx: ServiceContext, raw: { email?: unknown
         action: "designer.invited",
         entityType: "membership",
         entityId: membershipId!,
-        after: { designerUserId: userId!, expiresAt: expiresAt.toISOString(), days: days.days, reinvited },
+        before,
+        after: { designerUserId: userId!, expiresAt: expiresAt.toISOString(), days: days.days, reinvited, passwordRotated: reinvited },
       });
       return ok({ membershipId: membershipId!, email, password, expiresAt, reinvited });
     });
@@ -149,8 +163,17 @@ export async function extendDesigner(ctx: ServiceContext, membershipId: string, 
       .for("update");
     if (!row) return fail("not_found", NOT_FOUND);
     if (row.status !== "active") return fail("conflict", "This setup account was revoked. Invite it again instead.");
-    const expiresAt = new Date(Date.now() + days.days * DAY_MS);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + days.days * DAY_MS);
     if (row.expiresAt && row.expiresAt.getTime() >= expiresAt.getTime()) return fail("invalid", "This account already lasts longer than that.", "days");
+    // Reviving an expired account counts against the same cap as a new invite.
+    if (!row.expiresAt || row.expiresAt.getTime() <= now.getTime()) {
+      const [{ n }] = await tx
+        .select({ n: count() })
+        .from(memberships)
+        .where(and(eq(memberships.tenantId, ctx.tenantId), eq(memberships.role, "designer"), eq(memberships.status, "active"), gt(memberships.expiresAt, now)));
+      if (n >= DESIGNER_MAX_ACTIVE) return fail("conflict", `A clinic can have at most ${DESIGNER_MAX_ACTIVE} active setup accounts. Revoke one first.`);
+    }
     await tx.update(memberships).set({ expiresAt }).where(eq(memberships.id, row.id));
     await tx.insert(auditEvents).values({
       tenantId: ctx.tenantId,

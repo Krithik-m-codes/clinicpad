@@ -290,3 +290,72 @@ describe("a designer stays templates-only", () => {
     expect((await listTemplates(ctx)).ok).toBe(true);
   });
 });
+
+describe("review hardening", () => {
+  it("extending an expired designer counts against the five-account cap", async () => {
+    const expired = await invite();
+    if (!expired.result.ok) throw new Error("invite failed");
+    await adminDb
+      .update(memberships)
+      .set({ createdAt: new Date(Date.now() - 3 * DAY), expiresAt: new Date(Date.now() - DAY) })
+      .where(eq(memberships.id, expired.result.value.membershipId));
+    for (let i = 0; i < 5; i++) expect((await invite()).result.ok).toBe(true);
+    expect(await extendDesigner(A.as("owner"), expired.result.value.membershipId, 3)).toMatchObject({ ok: false, code: "conflict" });
+  });
+
+  it("a re-invite cuts off sessions from before it, while the new sign-in works", async () => {
+    const first = await invite();
+    if (!first.result.ok) throw new Error("invite failed");
+    const [user] = await adminDb.select().from(users).where(eq(users.email, first.address));
+    const sessionStart = Math.floor(Date.now() / 1000);
+    expect(await getActiveMembership(user.id, sessionStart)).toMatchObject({ role: "designer" });
+    await revokeDesigner(A.as("owner"), first.result.value.membershipId);
+    await new Promise((resolve) => setTimeout(resolve, 2100));
+    const again = await inviteDesigner(A.as("owner"), { email: first.address, name: "ClinicPad setup", days: 7 });
+    expect(again.ok).toBe(true);
+    // The session that started before the re-invite stays dead; a missing claim fails closed; a fresh session works.
+    expect(await getActiveMembership(user.id, sessionStart)).toBeNull();
+    expect(await getActiveMembership(user.id, 0)).toBeNull();
+    expect(await getActiveMembership(user.id, Math.floor(Date.now() / 1000))).toMatchObject({ role: "designer" });
+  });
+
+  it("never applies the session-start rule to permanent members (owners)", async () => {
+    expect(await getActiveMembership(A.as("owner").userId, 0)).toMatchObject({ role: "owner" });
+  });
+
+  it("refuses to re-invite a platform admin, and an account with no memberships", async () => {
+    const admin = email("padmin");
+    const orphan = email("orphan");
+    await adminDb.insert(users).values([
+      { email: admin, name: "Admin", passwordHash: "x", isPlatformAdmin: true },
+      { email: orphan, name: "Orphan", passwordHash: "x" },
+    ]);
+    for (const address of [admin, orphan]) {
+      expect(await inviteDesigner(A.as("owner"), { email: address, name: "Setup", days: 7 })).toMatchObject({ ok: false, code: "conflict" });
+      const [row] = await adminDb.select().from(users).where(eq(users.email, address));
+      expect(row.passwordHash).toBe("x");
+    }
+  });
+
+  it("records the earlier state and the password rotation on a re-invite", async () => {
+    const first = await invite();
+    if (!first.result.ok) throw new Error("invite failed");
+    await revokeDesigner(A.as("owner"), first.result.value.membershipId);
+    await inviteDesigner(A.as("owner"), { email: first.address, name: "Someone else", days: 4 });
+    const events = (await auditFor(A.tenantId, "designer.invited")).filter((e) => (e.after as { reinvited?: boolean }).reinvited);
+    expect(events).toHaveLength(1);
+    expect(events[0].before).toMatchObject({ status: "disabled", nameChanged: true });
+    expect(events[0].after).toMatchObject({ reinvited: true, passwordRotated: true });
+  });
+
+  it("allows at most ten invitations or re-invites per clinic per day", async () => {
+    // Revoking frees the five-account cap, so only the daily limit is under test here.
+    for (let i = 0; i < 10; i++) {
+      const made = await invite();
+      if (!made.result.ok) throw new Error(`invite ${i} failed: ${made.result.message}`);
+      await revokeDesigner(A.as("owner"), made.result.value.membershipId);
+    }
+    const eleventh = await invite();
+    expect(eleventh.result).toMatchObject({ ok: false, code: "conflict" });
+  });
+});

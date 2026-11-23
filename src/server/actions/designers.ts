@@ -23,7 +23,8 @@ export async function inviteDesignerAction(_prev: DesignerFormState, formData: F
   try {
     const result = await inviteDesigner(session, { email: text(formData, "email"), name: text(formData, "name"), days: text(formData, "days") });
     if (!result.ok) return { error: result.message, field: result.field };
-    const clinic = await withTenant(session.tenantId, (tx) => primaryClinic(tx, session.tenantId));
+    // The account is already created: a failed clinic lookup must not lose the one-time password, so fall back to defaults.
+    const clinic = await withTenant(session.tenantId, (tx) => primaryClinic(tx, session.tenantId)).catch(() => null);
     const base = resolveAppUrl(process.env);
     const note = buildHandoverNote({
       signInUrl: base ? `${base}/login` : null,

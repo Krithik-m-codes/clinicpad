@@ -6,6 +6,8 @@ export const DESIGNER_DEFAULT_DAYS = 7;
 export const DESIGNER_MAX_DAYS = 30;
 /** Unexpired designer accounts one clinic may have at a time. */
 export const DESIGNER_MAX_ACTIVE = 5;
+/** New setup accounts plus re-invites one clinic may make in 24 hours (each creates or revives a sign-in). */
+export const DESIGNER_MAX_PER_DAY = 10;
 
 export type DaysResult = { ok: true; days: number } | { ok: false };
 
