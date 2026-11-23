@@ -114,7 +114,7 @@ export const clinics = pgTable(
     }),
     index("clinics_tenant_custom_template_idx").on(t.tenantId, t.customTemplateId),
     foreignKey({ name: "clinics_custom_template_fk", columns: [t.tenantId, t.customTemplateId], foreignColumns: [templates.tenantId, templates.id] }),
-    check("clinics_rx_template_check", sql`rx_template in ('general', 'paediatric', 'derma')`),
+    check("clinics_rx_template_check", sql`rx_template in ('general', 'paediatric', 'derma', 'ortho', 'ent', 'gynae', 'dental', 'physio', 'ayush')`),
     check("clinics_rx_paper_size_check", sql`rx_paper_size in ('A4', 'A5')`),
     check("clinics_rx_labels_check", sql`rx_labels in ('en', 'hi', 'bilingual')`),
   ],

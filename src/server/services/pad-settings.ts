@@ -7,7 +7,7 @@ import { scanOrRefuse } from "@/server/scanning/uploads";
 import { clinics, doctors } from "@/server/db/schema";
 import { withTenant, type TenantTx } from "@/server/db/tenant";
 import {
-  BUILTIN_TEMPLATES,
+  PAD_TEMPLATES,
   LABEL_LANGUAGES,
   PAPER_SIZES,
   pickOption,
@@ -94,7 +94,7 @@ export async function getClinicPad(ctx: ServiceContext): Promise<Result<ClinicPa
       phone: clinic.phone ?? "",
       email: clinic.email ?? "",
       padFooter: clinic.padFooter ?? "",
-      rxTemplate: pickOption(BUILTIN_TEMPLATES, clinic.rxTemplate, "general"),
+      rxTemplate: pickOption(PAD_TEMPLATES, clinic.rxTemplate, "general"),
       rxPaperSize: pickOption(PAPER_SIZES, clinic.rxPaperSize, "A4"),
       rxLabels: pickOption(LABEL_LANGUAGES, clinic.rxLabels, "en"),
       logo: await preview(tx, ctx.tenantId, "logo", clinic.logoAssetId),

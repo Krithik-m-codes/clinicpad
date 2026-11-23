@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { createGotenbergEngine, gotenbergForm, postHtmlToGotenberg } from "@/server/pdf/gotenberg";
 import { DOCUMENT_CSP, renderPrescription } from "@/lib/rx-render/render";
 import { PAPER } from "@/lib/rx-render/paper";
-import { BUILTIN_TEMPLATES, PAPER_SIZES } from "@/lib/rx-render/types";
+import { PAD_TEMPLATES, PAPER_SIZES } from "@/lib/rx-render/types";
 import { loadFontCss } from "@/server/rx-render/fonts";
 import { DEVANAGARI, documentFixture, manyItems, snapshot, visit, withLayout } from "../fixtures/rx-documents";
 
@@ -85,7 +85,7 @@ describe.skipIf(!health.up)(`real Gotenberg at ${baseUrl} (skipped when it is no
     expect(a5.pageCount).toBeGreaterThan(a4.pageCount);
   });
 
-  for (const key of BUILTIN_TEMPLATES) {
+  for (const key of PAD_TEMPLATES) {
     for (const paperSize of PAPER_SIZES) {
       it(`renders the ${key} template on ${paperSize}`, { timeout: 120_000 }, async () => {
         const doc = documentFixture({ layout: { template: { kind: "builtin", key }, paperSize, labels: "bilingual" } });

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { renderPrescription, footerTemplate } from "@/lib/rx-render/render";
 import { checkSelfContained } from "@/lib/rx-render/self-contained";
-import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES, type RenderAssets, type RxDocument, type RxItem } from "@/lib/rx-render/types";
+import { TEMPLATE_DEFINITIONS } from "@/lib/rx-render/templates";
+import { PAD_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES, type RenderAssets, type RxDocument, type RxItem } from "@/lib/rx-render/types";
 import { translations } from "@/lib/translations";
 import { DEVANAGARI, HOSTILE, TINY_PNG, documentFixture, item, manyItems, snapshot, visit, withLayout } from "../fixtures/rx-documents";
 
@@ -49,7 +50,7 @@ function hostileDocument(overrides: Partial<RxDocument> = {}): RxDocument {
 
 
 describe("hostile text", () => {
-  for (const key of BUILTIN_TEMPLATES) {
+  for (const key of PAD_TEMPLATES) {
     for (const labels of LABEL_LANGUAGES) {
       it(`prints every field literally in ${key} / ${labels}`, () => {
         const doc = withLayout(hostileDocument(), { template: { kind: "builtin", key }, paperSize: "A4", labels });
@@ -116,7 +117,7 @@ describe("self-contained output", () => {
     ["legacy live snapshot", { snapshotSource: "live" }],
   ];
 
-  for (const key of BUILTIN_TEMPLATES) {
+  for (const key of PAD_TEMPLATES) {
     for (const paperSize of PAPER_SIZES) {
       for (const labels of LABEL_LANGUAGES) {
         it(`passes checkSelfContained for ${key} / ${paperSize} / ${labels} in every status`, () => {
@@ -133,7 +134,7 @@ describe("self-contained output", () => {
   }
 
   it("passes for a 30-medicine document in every template", () => {
-    for (const key of BUILTIN_TEMPLATES) {
+    for (const key of PAD_TEMPLATES) {
       const doc = withLayout(documentFixture({ items: manyItems(30) }), { template: { kind: "builtin", key } });
       expect(checkSelfContained(render(doc, { ...NO_ASSETS, signature: TINY_PNG }).html)).toEqual({ ok: true });
     }
@@ -164,7 +165,7 @@ describe("damaged numbers", () => {
       visit: visit({ vitals: { bpSystolic: Number.NaN, bpDiastolic: 80, pulse: Number.POSITIVE_INFINITY, weightKg: -5, heightCm: Number.NaN } }),
       items: [item(1, { doseMorning: Number.NaN, doseNight: Number.POSITIVE_INFINITY, durationValue: Number.NaN })],
     });
-    for (const key of BUILTIN_TEMPLATES) {
+    for (const key of PAD_TEMPLATES) {
       const out = render(withLayout(doc, { template: { kind: "builtin", key } }));
       expect(text(out.html)).not.toMatch(/NaN|Infinity/);
       expect(checkSelfContained(out.html)).toEqual({ ok: true });
@@ -422,14 +423,14 @@ const COMPLETENESS_MARKERS = [
 ];
 
 describe("completeness: nothing recorded is dropped", () => {
-  for (const key of BUILTIN_TEMPLATES) {
+  for (const key of PAD_TEMPLATES) {
     it(`prints every recorded field in ${key}`, () => {
       const out = render(withLayout(fullDocument(), { template: { kind: "builtin", key } }), { ...NO_ASSETS, logo: TINY_PNG, signature: TINY_PNG });
       const dom = parse(out.html);
       const body = dom.body.textContent ?? "";
       expect(COMPLETENESS_MARKERS.filter((marker) => !body.includes(marker))).toEqual([]);
       expect(dom.querySelectorAll("img")).toHaveLength(2);
-      if (key === "general") {
+      if (TEMPLATE_DEFINITIONS[key].medicineLayout === "slots") {
         expect(Array.from(dom.querySelectorAll(".meds tbody tr")[0].querySelectorAll("td.slot")).map((td) => td.textContent)).toEqual(["1", "½", "3", "2"]);
       } else {
         expect(body).toContain("1-½-3-2");
@@ -455,11 +456,11 @@ describe("completeness: nothing recorded is dropped", () => {
   });
 
   it("prints free-text timing together with dose slots, slots first, on every template", () => {
-    for (const key of BUILTIN_TEMPLATES) {
+    for (const key of PAD_TEMPLATES) {
       const doc = withLayout(documentFixture({ items: [item(1, { doseMorning: 1, doseAfternoon: 0, doseEvening: null, doseNight: 1, timing: "every 6 hours" })] }), { template: { kind: "builtin", key } });
       const body = text(render(doc).html);
       expect(body, key).toContain("every 6 hours");
-      if (key === "general") {
+      if (TEMPLATE_DEFINITIONS[key].medicineLayout === "slots") {
         const dom = parse(render(doc).html);
         expect(Array.from(dom.querySelectorAll("td.slot")).map((td) => td.textContent), key).toEqual(["1", "0", "0", "1"]);
       } else {
@@ -474,7 +475,7 @@ describe("completeness: nothing recorded is dropped", () => {
   });
 
   it("prints strength, form and route with the medicine name on every template", () => {
-    for (const key of BUILTIN_TEMPLATES) {
+    for (const key of PAD_TEMPLATES) {
       const doc = withLayout(documentFixture({ items: [item(1, { drugName: "Drops", strength: "0.5%", form: "Eye drops", route: "Ophthalmic" })] }), { template: { kind: "builtin", key } });
       const name = parse(render(doc).html).querySelector(".meds tbody tr .med-name")?.textContent;
       expect(name, key).toBe("1. Drops 0.5% Eye drops · Ophthalmic");
@@ -494,7 +495,7 @@ describe("completeness: nothing recorded is dropped", () => {
 });
 
 describe("drafts never carry an Rx number", () => {
-  for (const key of BUILTIN_TEMPLATES) {
+  for (const key of PAD_TEMPLATES) {
     it(`omits the number of an amendment draft in ${key}`, () => {
       const doc = withLayout(documentFixture({ status: "draft", rxNo: 12, version: 2, replacesVersion: 1, issuedAt: null, snapshotSource: "live" }), { template: { kind: "builtin", key } });
       const out = render(doc);
@@ -542,7 +543,7 @@ describe("bidirectional safety in joined cells", () => {
 
 describe("continuation pages", () => {
   it("repeats the patient and Rx strip in the page header", () => {
-    for (const key of BUILTIN_TEMPLATES) {
+    for (const key of PAD_TEMPLATES) {
       const dom = parse(render(withLayout(documentFixture(), { template: { kind: "builtin", key } })).html);
       const head = dom.querySelector("table.sheet > thead")?.textContent ?? "";
       expect(head, key).toContain("Asha Rao");
@@ -656,6 +657,16 @@ describe("golden files", () => {
   it("Derma, A4, Hindi", async () => {
     const doc = documentFixture({ layout: { template: { kind: "builtin", key: "derma" }, labels: "hi" } });
     await expect(render(doc, assets).html).toMatchFileSnapshot("./__golden__/rx-derma-a4-hi.html");
+  });
+
+  it.each(["ortho", "ent", "gynae", "dental", "physio", "ayush"] as const)("gallery pad %s, A4, English", async (key) => {
+    const doc = documentFixture({ layout: { template: { kind: "builtin", key } } });
+    await expect(render(doc, assets).html).toMatchFileSnapshot(`./__golden__/rx-${key}-a4-en.html`);
+  });
+
+  it("Ayurveda and homeopathy, A5, bilingual", async () => {
+    const doc = documentFixture({ layout: { template: { kind: "builtin", key: "ayush" }, paperSize: "A5", labels: "bilingual" } });
+    await expect(render(doc, assets).html).toMatchFileSnapshot("./__golden__/rx-ayush-a5-bilingual.html");
   });
 
   it("General draft", async () => {

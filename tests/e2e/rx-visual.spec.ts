@@ -46,6 +46,17 @@ const CASES: Case[] = [
     }),
     pages: [1, 3],
   },
+  // Plan 2C gallery: each specialty pad once on A4 (English), and the Ayurveda pad on A5 bilingual with a long list.
+  ...(["ortho", "ent", "gynae", "dental", "physio", "ayush"] as const).map((key): Case => ({
+    name: `${key}-a4-en`,
+    doc: documentFixture({ layout: { template: { kind: "builtin", key } } }),
+    pages: [1, 2],
+  })),
+  {
+    name: "ayush-a5-bilingual-30-medicines",
+    doc: documentFixture({ layout: { template: { kind: "builtin", key: "ayush" }, paperSize: "A5", labels: "bilingual" }, items: manyItems(30) }),
+    pages: [5, 9],
+  },
   {
     name: "general-a5-long-hostile",
     doc: documentFixture({
