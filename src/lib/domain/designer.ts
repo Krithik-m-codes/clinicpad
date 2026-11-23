@@ -41,7 +41,8 @@ export function designerStatus(row: { status: string; expiresAt: Date | null }, 
 }
 
 export type HandoverInput = {
-  signInUrl: string;
+  /** null when the server has no public URL configured (NEXT_PUBLIC_APP_URL). */
+  signInUrl: string | null;
   email: string;
   password: string;
   expiresAt: Date;
@@ -59,7 +60,7 @@ export function buildHandoverNote(input: HandoverInput): string {
   return [
     `ClinicPad setup access for ${input.clinicName}`,
     "",
-    `Sign in: ${input.signInUrl}`,
+    `Sign in: ${input.signInUrl ?? "the ClinicPad sign-in page"}`,
     `Email: ${input.email}`,
     `Temporary password: ${input.password}`,
     `Access ends: ${expiryText(input.expiresAt, input.timeZone)}`,

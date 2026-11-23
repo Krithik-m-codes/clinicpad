@@ -76,6 +76,16 @@ export default async function SettingsPage() {
         </section>
       ) : null}
 
+      <section className="space-y-3">
+        <h2 className="text-lg font-medium">Pad setup help</h2>
+        <p className="text-sm">
+          <Link className="underline" href="/settings/designers">
+            Invite a pad designer
+          </Link>{" "}
+          (a temporary account that can build your pad templates and nothing else).
+        </p>
+      </section>
+
       <p className="text-sm">
         <Link className="underline" href="/settings/profile">
           Edit your doctor profile
