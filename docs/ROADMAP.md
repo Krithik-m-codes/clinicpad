@@ -113,10 +113,12 @@ This is a **sequence of sellable states**, not a feature backlog. Each phase end
 - [ ] A repeat patient prescription is finalized, printed, and shared in under 60 seconds (measured with 5 real users).
 - [ ] A new patient can be registered in under 30 seconds by a receptionist.
 - [ ] PDF output is visually consistent across Chrome, Safari, and the print dialog.
-- [ ] Finalized prescriptions are immutable; amendments create v2 with a reason and an audit event.
+- [x] Finalized prescriptions are immutable; amendments create v2 with a reason and an audit event. (Automated evidence only; see docs/PROGRESS.md 4.11.)
 - [ ] 5 design-partner clinics use it for at least 10 working days with no data-loss incident.
 - [ ] Prescription render failure rate < 1%; p95 finalize < 800 ms online.
-- [ ] CSV import of the existing `sample_data/*.csv` shape works with a validation report.
+- [x] CSV import of the existing `sample_data/*.csv` shape works with a validation report. (Automated evidence; patients template and catalogue lists.)
+
+**Status 2026-11-18:** code for every workstream 1.1 to 1.10 is complete and the automated gate passed. The five boxes left open need people or staging: the 60-second repeat and 30-second registration timings, the Safari print check (and Android Chrome / WhatsApp in-app browser check of shared links), the 5-clinic 10-day pilot, and render-failure and p95 metrics. The evidence table is in docs/PROGRESS.md section 4.11.
 
 ### Explicit non-goals
 
@@ -134,6 +136,8 @@ This is a **sequence of sellable states**, not a feature backlog. Each phase end
 **Goal:** a doctor uploads their existing Word or PDF pad and gets an identical-looking prescription with real data in under 10 minutes. This is the demo that sells the product.
 
 **Sellable state:** "ClinicPad — Bring Your Own Pad" at ₹499–₹599/month. This is the first paid launch.
+
+**Status (2026-11-19):** 2A (overlay pads: photo, scan, image or PDF pad, field boxes and a flow region, versions, preview, publish, assign, frozen prints, ClamAV scanning, sandboxed PDF reading) is DONE IN CODE; its automated gate result and the pending human checks are in `docs/PROGRESS.md` section 4.12. 2B (DOCX templates, docxtemplater, DOCX to PDF, PDF to DOCX) and 2C (designer invites, patient documents, remaining gallery) are NOT STARTED. 2B starts only after pilot evidence that doctors bring Word pads, Gate 1, and staging with the conversion container egress-blocked.
 
 ### Workstreams
 

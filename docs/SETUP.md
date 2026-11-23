@@ -58,7 +58,7 @@ Copy-Item .env.example .env.local
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `NEXT_PUBLIC_APP_URL` | yes | Canonical URL, used in links and auth callbacks |
+| `NEXT_PUBLIC_APP_URL` | yes | Canonical URL, used in links and auth callbacks; the base of share links (`/s/<token>`). An https origin with no path in production, or sharing is unavailable |
 | `NODE_ENV` | auto | `development` / `production` |
 
 ### 3.2 Variables added in Phase 0
@@ -72,6 +72,7 @@ Copy-Item .env.example .env.local
 | `SUPABASE_SERVICE_ROLE_KEY` | server only | Admin tasks; never expose to the client |
 | `AUTH_SECRET` | yes | Session signing (32+ random bytes) |
 | `ENCRYPTION_KEY` | yes | Field-level encryption for sensitive data |
+| `GOTENBERG_URL` | for PDFs and shared PDFs; mandatory in production | PDF service (Gotenberg); defaults to `http://localhost:3001` outside production, and the app reports the PDF service as down in production when it is unset or not an http(s) URL |
 
 Generate secrets:
 
@@ -80,14 +81,23 @@ Generate secrets:
 [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
 ```
 
+### 3.2b Variables added in Plan 1D (sharing)
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `RESEND_API_KEY`, `EMAIL_FROM` | optional | Email sharing of prescription links. Without both, the Share panel hides email; tests never set them. `EMAIL_FROM` must be on a domain verified with Resend. Turn click and open tracking OFF for that domain in the Resend dashboard (a tracking redirect would pass the share token to the provider) |
+| `SHARE_CLIENT_IP_HEADER` | production, non-Vercel hosts | Name of the header your proxy sets with the real client address (and strips from client requests). The public share route rate-limits on it and never reads `X-Forwarded-For`; production logs a warning once when no such header arrives, and then all callers share one bucket |
+
+Production notes for sharing: use an https `NEXT_PUBLIC_APP_URL` (otherwise "Sharing is not set up on this server"); `GOTENBERG_URL` is required (shared PDFs render on the server); the share-route rate limits are per process, so add an edge rate limit in front of `/s/`; the share token is in the URL path, so web server, proxy, CDN and analytics logs must not retain full `/s/*` URLs; install with lifecycle scripts enabled (`postinstall` applies `scripts/patch-react-ping.mjs`, ADR-0042). A local `next start` also needs `AUTH_TRUST_HOST=true`.
+
 ### 3.3 Variables added in later phases
 
 | Variable | Phase | Purpose |
 |---|---|---|
-| `GOTENBERG_URL` | 2 | Document conversion service |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | 2 | Template and PDF storage |
-| `CLAMAV_HOST`, `CLAMAV_PORT` | 2 | Upload scanning |
-| `RESEND_API_KEY`, `EMAIL_FROM` | 2 | Transactional email |
+| `CLAMAV_HOST`, `CLAMAV_PORT` | 2A | Upload scanning (clamd). Default `127.0.0.1:3310` outside production; both mandatory in production. Uploads are refused while the scanner is unreachable |
+| `CLAMAV_DISABLED_FOR_DEVELOPMENT`, `CLAMAV_DISABLED_ACK` | dev only | Skip scanning: works only with `NODE_ENV=development`, the flag `1`, AND `CLAMAV_DISABLED_ACK=unscanned-uploads-on-this-machine`; in any other case the flag makes every upload fail. Do not use it for e2e or demos |
+| `PDF_INTAKE` | 2A | Kill switch for reading uploaded PDFs: `off`, `0` or `false` hides the PDF option in the pad wizard and makes `/pdf-frame/` answer 404 (read when a request arrives, no rebuild). Unset means on |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | 3 | India payments |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | 5 | International payments |
 | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_ID`, `WHATSAPP_VERIFY_TOKEN` | 3 | Meta Cloud API |
@@ -99,7 +109,7 @@ Generate secrets:
 
 ## 4. Local services
 
-Phase 0 introduces a `docker-compose.yml` for local dependencies. Until then, only the Next.js dev server is required.
+`docker-compose.yml` runs `postgres` (5432), `gotenberg` (127.0.0.1:3001, prescription PDFs) and `clamav` (127.0.0.1:3310, upload scanning). Start them with `docker compose up -d`; without Gotenberg the app still works, Print still works, and Download PDF shows an error. On this project's Windows machine Docker Desktop lives under `%LOCALAPPDATA%\Programs\DockerDesktop`.
 
 Target compose stack:
 
@@ -107,7 +117,7 @@ Target compose stack:
 services:
   postgres:   # port 5432, db clinicpad, user clinicpad
   gotenberg:  # port 3001, document conversion
-  clamav:     # port 3310, upload scanning (optional locally)
+  clamav:     # port 3310, upload scanning (uploads are refused while it is down)
   redis:      # port 6379, queues (Phase 3+)
 ```
 
@@ -138,6 +148,8 @@ First-time local setup (needs `.env.local`, see section 3):
 docker compose up -d postgres
 npm run db:migrate    # apply migrations (creates the clinicpad_app role and RLS)
 npm run db:seed       # demo clinic: 3 staff, 50 patients, 20 prescriptions
+npm run db:seed:catalogue   # global medicine and clinical-term lists (idempotent; db:seed also runs it; safe in production)
+npm run db:sweep-test-tenants            # list leftover test tenants (local databases only); add -- --apply to delete them
 ```
 
 Demo login after seeding: `owner@demo.clinicpad.app` / `ClinicPad!2026` (also `doctor@...` and `reception@...`). The seed is idempotent and refuses to run when `NODE_ENV=production`.
@@ -161,6 +173,36 @@ For Supabase staging, use the pooled URL in `DATABASE_URL` and the direct URL in
 
 ---
 
+### 4.2 Document engine (Gotenberg)
+
+`docker compose up -d gotenberg` starts the digest-pinned Gotenberg image with JavaScript disabled, a Chromium deny-list, no webhooks or download-from, and the API bound to loopback only (it has no authentication). Check it with `curl http://localhost:3001/health` or the app's `GET /api/health/pdf`. Prescription documents embed their fonts and images, carry a `default-src 'none'` CSP, and are checked before they are sent, so Gotenberg never needs network access: in staging and production run it with no egress (no outbound network from its container) and copy the flag set from `docker-compose.yml`. Set `GOTENBERG_URL` explicitly in production. After upgrading the image, run `npm run test:visual` (it also writes the real PDFs to `test-results/rx-visual-pdf/`) and review the screenshots and PDF pages. Set `GOTENBERG_REQUIRED=1` to make `npm run test` fail instead of skipping when Gotenberg or docker is missing (CI does this).
+
+**PyMuPDF (test-only).** `tests/integration/overlay-spacer-pdf.test.ts` reads real Gotenberg PDFs with PyMuPDF (`pip install pymupdf==1.28.0`; Python 3.9 or newer; `PYTHON` names the interpreter if `python` is not on the path). PyMuPDF is AGPL-3.0: it is a developer and CI tool only, is never installed on a server or bundled into the app or the desktop build, and nothing imports it from `src/`. With `CI=true` or `GOTENBERG_REQUIRED=1` the test FAILS when PyMuPDF is missing (CI installs the pinned version); locally it skips with a warning.
+
+### 4.3 Malware scanner (ClamAV)
+
+`docker compose up -d clamav` starts the digest-pinned ClamAV image (clamd on 127.0.0.1:3310, no authentication) with the hardening of `docs/spikes/2026-11-18-s4-clamav.md`: all capabilities dropped except CHOWN, SETUID, SETGID, DAC_OVERRIDE and FOWNER, `no-new-privileges`, read-only root, tmpfs `/tmp`, `/run` and `/var/log/clamav`, and a 2500 MB memory limit (a signature reload doubles clamd memory for about 15 s). It runs with `CLAMAV_NO_FRESHCLAMD=true`: it never calls out, and the signatures baked into the image load in about 20 s (no multi-minute first download; the empty named volume is filled from the image on first start). The container is healthy when `docker compose ps clamav` says so. Uploads of logos, signatures and pad background images are scanned before anything is stored; if the scanner is down they are refused with a message to try again, never accepted unscanned.
+
+Updating signatures is a separate job with egress: `docker compose --profile update run --rm clamav-update`, then `docker compose restart clamav` (about 16 s; or send clamd `zRELOAD`, scans keep working). Schedule it a few times a day in staging and production. Docker does not publish ports of containers on an internal network, so on a developer machine the scanner sits on the default bridge; true egress blocking (production) needs the app in a container on the same internal network or a host firewall (open hosting question).
+
+Uploads are scanned twice, the original and the metadata-stripped bytes that are stored, so the stored bytes are always bytes the scanner saw. CSV imports are not scanned by decision (text parsed and validated, never stored as a file). Tests never need clamd: they use `tests/helpers/fake-scanner.ts`. `tests/integration/clamav-smoke.test.ts` runs against the real container when it is up (EICAR detection, `VERSION` format, and a drift check of the container options) and skips otherwise; `CLAMAV_REQUIRED=1` or `CI=true` turns the skip into a failure. CI starts the same image and options with `CLAMAV_NO_FRESHCLAMD=true`. `tests/e2e/pad-settings.spec.ts` uploads a real logo and signature, so run it with the scanner up (`docker compose up -d postgres gotenberg clamav`).
+
+Pad quotas (per clinic, in code: `TEMPLATE_QUOTAS`): 20 active pads, 50 MB of pad images, and 100 pad versions in total. The version limit counts every version of every pad, published or draft, and every rollback adds one (a rollback publishes a copy), and published versions can never be deleted (finalized prescriptions pin them); a clinic that reaches 100 needs the limit raised by an operator.
+
+### 4.4 PDF reader frame (pdf.js)
+
+Template Studio reads an uploaded PDF in the browser, inside a sandboxed frame served from `/pdf-frame/` (pdfjs-dist, pinned exactly; no server component ever opens a PDF). Needs no extra service. Two things to know: `pdfjs-dist` declares `engines.node >=22.13.0 || >=24` (so use Node 22.13 or newer; `npm install` warns on older), and it lists `@napi-rs/canvas` as an OPTIONAL dependency for Node-side rendering. ClinicPad does not use that path, so a platform with no prebuilt binary can skip it (`npm install --omit=optional` is safe for this feature). `NEXT_PUBLIC_APP_URL` must be the public origin (https in production): the frame's CSP is built from it and the route answers 503 without it. `PDF_INTAKE=off` is the kill switch: with it set (to `off`, `0` or `false`) the wizard hides the PDF option and `/pdf-frame/` answers 404; any other value or none leaves PDF intake on. The frame is served from the app's own origin, and its CSP and message origin check use `NEXT_PUBLIC_APP_URL` exactly, so a clinic reaching the app on both `www.` and the apex domain would see the frame blocked on the other host: serve one canonical origin and redirect the other. After a pdfjs-dist upgrade run `npm run test:pdf-frame` (opt-in; starts its own dev server on port 3457, drives Chromium, Firefox and WebKit through scan, CCITT, JBIG2, JPEG 2000 and Devanagari fixtures in `tests/fixtures/pdf-intake/`).
+
+### 4.5 Template Studio operations (Phase 2A)
+
+- **Gotenberg pin.** The image is pinned to `gotenberg/gotenberg:8.40.0` by digest in `docker-compose.yml`, `.github/workflows/ci.yml` and `tests/integration/gotenberg-smoke.test.ts`; `tests/unit/engine-pins.test.ts` fails when they differ. After any engine change run `docker compose up -d gotenberg`, `npm run test` with `GOTENBERG_REQUIRED=1`, and `npm run test:visual`, then read the PNGs and the PDFs in `test-results/rx-visual-pdf/` (a person must look at them; pagination and the footer strip are not visible in screenshots).
+- **Overlay pads and browsers.** Chromium browsers print overlay pads from HTML. Firefox and Safari print them through the Gotenberg PDF (`OVERLAY_BROWSER_PRINT`), so without Gotenberg, Print fails there for overlay pads while Download PDF and Print work for built-in pads. Tell people to print PDFs at 100 % ("Actual size").
+- **Scanner required for pad e2e.** `tests/e2e/pad-settings.spec.ts` and `tests/e2e/templates.spec.ts` upload real images: start `docker compose up -d postgres gotenberg clamav` first. `CLAMAV_DISABLED_FOR_DEVELOPMENT=1` also needs `CLAMAV_DISABLED_ACK=unscanned-uploads-on-this-machine` and `NODE_ENV=development`; never use it in staging, production, e2e or demos.
+- **Running the e2e specs against a free port.** Port 3000 may be taken by another project. Copy `playwright.config.ts` to a temporary config with another `baseURL` and `webServer.command` (`npx next dev --turbopack -p <port>`), set `NEXT_PUBLIC_APP_URL` and `AUTH_URL` to `http://localhost:<port>` for the server, and delete the copy afterwards. Use `--turbopack`: webpack dev opens too many Postgres connections.
+- **Designer accounts.** There is no invite screen yet. An operator creates a `designer` membership by SQL, and it MUST have `expires_at` (a database CHECK refuses one without; seven days is the e2e default). A designer reaches `/templates` only and never sees patients or prescriptions. An audited provisioning script with a mandatory expiry is required before a real clinic hires a designer (ADR-0048).
+- **PDF reader frame.** See section 4.4: `NEXT_PUBLIC_APP_URL` must be the one canonical origin, and `PDF_INTAKE=off` switches PDF intake off.
+- **Ops items still open for staging.** Run clamd in a private subnet with no egress and schedule the `clamav-update` job (egress only for that job) a few times a day, with an alarm on signature age; host in AWS ap-south-1; confirm a Linux host runs the scanner container; legal review of GPL ClamAV before it is bundled into any desktop installer.
+
 ## 5. Run the app
 
 ```powershell
@@ -174,11 +216,12 @@ Other commands:
 ```powershell
 npm run build:web      # server build (this is what staging/production run)
 npm run build:desktop  # static export for Tauri (legacy offline shell only, ADR-0021)
-npm run start          # run the production web build
+npm run start          # run the production web build (locally needs AUTH_TRUST_HOST=true, an https NEXT_PUBLIC_APP_URL for sharing, and GOTENBERG_URL)
 npm run lint           # ESLint
 npm run typecheck      # tsc --noEmit
 npm run test           # Vitest (unit + integration; integration needs Postgres running)
-npm run test:e2e       # Playwright (starts the dev server; needs Postgres and one-time `npx playwright install chromium`)
+npm run test:e2e       # Playwright (starts the dev server; needs Postgres, Gotenberg for the PDF checks, and one-time `npx playwright install chromium`)
+npm run test:visual    # print-layout screenshots (opt-in, per-platform baselines)
 node scripts/verify-gate-0.mjs   # everything above, in order
 ```
 
@@ -296,7 +339,10 @@ All commands must exit `0`. Then start the app and check:
 | Postgres auth error | Wrong URL / pooler vs direct | Check `DATABASE_URL` vs `DIRECT_URL` |
 | RLS returns zero rows | Session tenant not set | Verify `app.tenant_id` is set in the transaction |
 | Migration hangs | Locked table / wrong DB | Check `pg_stat_activity`; use direct connection |
-| PDF conversion timeout | Gotenberg down or file too large | `docker compose ps`; check 25 MB limit |
+| Uploading a logo or signature says the virus scanner is not available | ClamAV not running or still loading signatures | `docker compose up -d clamav`; wait for `healthy` (about 20 s) |
+| Download PDF says the PDF service is not reachable | Gotenberg not running | `docker compose up -d gotenberg`; then `curl http://localhost:3001/health` |
+| Share panel says "Sharing is turned off for this clinic" | Off by default | The owner turns it on in Settings, Sharing (after reviewing the consent text) |
+| A shared link says "This link is not valid" | Expired (7 days), used 10 times, withdrawn, consent withdrawn, patient archived, or sharing switched off | Share again from the prescription page |
 | WhatsApp template rejected | Missing approval / wrong category | Check Meta Business Manager; use an approved template |
 | `npm ci` fails after lockfile change | Lockfile out of sync | Run `npm install`, commit `package-lock.json` |
 

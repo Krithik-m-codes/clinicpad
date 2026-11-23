@@ -1,12 +1,14 @@
 import Link from "next/link";
-import { LayoutDashboard, Settings, Users } from "lucide-react";
+import { FileImage, LayoutDashboard, Settings, UserRound, Users } from "lucide-react";
 
 const ALL_STAFF = ["owner", "doctor", "reception", "nurse", "accountant", "pharmacist"] as const;
 
 const items = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ALL_STAFF },
   { href: "/patients", label: "Patients", icon: Users, roles: ["owner", "doctor", "reception", "nurse"] },
+  { href: "/templates", label: "Pad templates", icon: FileImage, roles: ["owner", "doctor", "designer"] },
   { href: "/settings", label: "Settings", icon: Settings, roles: ["owner"] },
+  { href: "/settings/profile", label: "My profile", icon: UserRound, roles: ["doctor"] },
 ] as const;
 
 type SidebarProps = {

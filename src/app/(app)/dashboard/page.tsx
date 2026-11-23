@@ -1,4 +1,8 @@
+import Link from "next/link";
+import { redirect } from "next/navigation";
 import { count, eq } from "drizzle-orm";
+import { can } from "@/lib/domain/permissions";
+import { DEFAULT_TIME_ZONE, isValidTimeZone } from "@/lib/rx-render/format";
 import { requireSession } from "@/server/auth/session";
 import { withTenant } from "@/server/db/tenant";
 import { clinics, patients, prescriptions, visits } from "@/server/db/schema";
@@ -6,7 +10,10 @@ import { clinics, patients, prescriptions, visits } from "@/server/db/schema";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const { tenantId } = await requireSession();
+  const session = await requireSession();
+  // A designer sets up pad templates only: no patient, prescription or clinic numbers (Plan 2A).
+  if (session.role === "designer") redirect("/templates");
+  const { tenantId } = session;
 
   const data = await withTenant(tenantId, async (tx) => {
     const [clinic] = await tx.select().from(clinics).limit(1);
@@ -24,7 +31,8 @@ export default async function DashboardPage() {
     };
   });
 
-  const timezone = data.clinic?.timezone ?? "Asia/Kolkata";
+  const zone = data.clinic?.timezone;
+  const timezone = isValidTimeZone(zone) ? zone : DEFAULT_TIME_ZONE;
   const now = new Intl.DateTimeFormat("en-IN", {
     dateStyle: "full",
     timeStyle: "short",
@@ -44,11 +52,23 @@ export default async function DashboardPage() {
         <Stat label="Finalized prescriptions" value={data.prescriptions} />
       </section>
 
-      <section className="rounded-lg border p-6">
-        <h2 className="font-medium">Your clinic is set up</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Times are shown in {timezone}. Patients and prescriptions arrive in Phase 1.
-        </p>
+      <section className="space-y-2 rounded-lg border p-6">
+        <h2 className="font-medium">{data.patients === 0 ? "Get started" : "Your clinic is set up"}</h2>
+        <p className="text-sm text-muted-foreground">Times are shown in {timezone}.</p>
+        {data.patients === 0 ? (
+          <div className="flex flex-wrap gap-3 text-sm">
+            {can(session.role, "patient.write") ? (
+              <Link className="underline" href="/patients/new">
+                Register your first patient
+              </Link>
+            ) : null}
+            {can(session.role, "patient.import") ? (
+              <Link className="underline" href="/patients/import">
+                Import from CSV
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
       </section>
     </div>
   );

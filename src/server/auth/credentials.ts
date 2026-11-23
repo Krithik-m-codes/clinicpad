@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { adminDb } from "@/server/db/admin";
 import { memberships, users } from "@/server/db/schema";
@@ -31,7 +31,14 @@ export async function getActiveMembership(userId: string): Promise<ActiveMembers
   const [membership] = await adminDb
     .select({ tenantId: memberships.tenantId, role: memberships.role })
     .from(memberships)
-    .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")))
+    .where(
+      and(
+        eq(memberships.userId, userId),
+        eq(memberships.status, "active"),
+        // Expiring memberships (designers) stop working at expires_at; the JWT callback re-reads this on every request.
+        or(isNull(memberships.expiresAt), gt(memberships.expiresAt, sql`now()`)),
+      ),
+    )
     .orderBy(asc(memberships.createdAt))
     .limit(1);
   return membership ?? null;

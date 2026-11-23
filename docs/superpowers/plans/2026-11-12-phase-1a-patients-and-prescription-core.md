@@ -208,8 +208,10 @@ describe("can", () => {
     }
   });
 
-  it("keeps nurses read-only on prescriptions", () => {
+  it("keeps nurses read-only on patients and prescriptions", () => {
     expect(can("nurse", "rx.read")).toBe(true);
+    expect(can("nurse", "patient.read")).toBe(true);
+    expect(can("nurse", "patient.write")).toBe(false);
     expect(can("nurse", "rx.draft")).toBe(false);
   });
 
@@ -321,7 +323,7 @@ export function ageLabel(dob: string, now: Date): string {
 ```ts
 const MATRIX = {
   "patient.read": ["owner", "doctor", "reception", "nurse"],
-  "patient.write": ["owner", "doctor", "reception", "nurse"],
+  "patient.write": ["owner", "doctor", "reception"],
   "patient.archive": ["owner"],
   "rx.read": ["owner", "doctor", "reception", "nurse", "pharmacist"],
   "rx.draft": ["owner", "doctor"],
@@ -1655,7 +1657,7 @@ git commit -m "feat: add patient service with search, duplicate warning, and aud
 
 **Interfaces:**
 - Consumes: Task 4 services, `requireSession()`, `can`, `ageLabel`.
-- Produces: routes `/patients`, `/patients/new`, `/patients/[id]`; `type PatientFormState`, `createPatientAction`, `updatePatientAction(id, prev, formData)`; e2e helpers `registerClinic(page)` and `cleanupClinic(email)`.
+- Produces: routes `/patients`, `/patients/new`, `/patients/[id]`; `type PatientFormState`, `createPatientAction`, `updatePatientAction(id, prev, formData)`; e2e helpers `registerClinic(page, label): Promise<Clinic>` (where `Clinic = { email; password; clinicName }`) and `cleanupClinic(email)`.
 
 - [ ] **Step 1: Write the failing e2e helper and spec**
 

@@ -50,3 +50,6 @@ test-results/
 next-env.d.ts
 # Temporary stash used by scripts/build-desktop.mjs
 .desktop-stash/
+
+# Throwaway spike code (Plan 2A); only findings in docs/spikes/ are committed
+/spikes/

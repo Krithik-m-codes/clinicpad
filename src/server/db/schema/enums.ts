@@ -8,5 +8,6 @@ export const memberRole = pgEnum("member_role", [
   "nurse",
   "accountant",
   "pharmacist",
+  "designer",
 ]);
 export const memberStatus = pgEnum("member_status", ["invited", "active", "disabled"]);
