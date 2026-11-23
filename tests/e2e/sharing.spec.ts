@@ -151,6 +151,8 @@ test("an expired link and a link whose consent was withdrawn both say: This link
       await tx`alter table share_links enable trigger share_links_rules`;
     }),
   );
+  // The link expires one second after creation; on a fast machine that moment may not have passed yet.
+  await page.waitForTimeout(1500);
   await visitor.goto(expiring);
   await expect(visitor.getByRole("heading", { name: "This link is not valid" })).toBeVisible();
 
