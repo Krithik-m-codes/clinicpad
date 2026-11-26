@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES } from "@/lib/rx-render/types";
+import { LABEL_LANGUAGES, PAD_TEMPLATES, PAPER_SIZES } from "@/lib/rx-render/types";
 import { blankToUndefined, cleanInput, cleanOptionalText, hasNoNul, NUL_MESSAGE } from "./text";
 
 /**
@@ -65,7 +65,7 @@ export const clinicPadSchema = z.object({
   ),
   padFooter: z.preprocess(cleanBlank, footer.optional()),
   // A missing or blank select reads as the default (the form always sends all three).
-  rxTemplate: z.preprocess(cleanBlank, z.enum(BUILTIN_TEMPLATES, { error: "Choose a template from the list" }).default("general")),
+  rxTemplate: z.preprocess(cleanBlank, z.enum(PAD_TEMPLATES, { error: "Choose a template from the list" }).default("general")),
   rxPaperSize: z.preprocess(cleanBlank, z.enum(PAPER_SIZES, { error: "Choose A4 or A5" }).default("A4")),
   rxLabels: z.preprocess(cleanBlank, z.enum(LABEL_LANGUAGES, { error: "Choose a label language from the list" }).default("en")),
 });

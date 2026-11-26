@@ -329,7 +329,7 @@ export const prescriptionOutputs = pgTable(
     check("rx_outputs_page_count_check", sql`page_count is null or page_count between 1 and 50`),
     check("rx_outputs_byte_size_check", sql`byte_size is null or byte_size >= 0`),
     check("rx_outputs_sha256_check", sql`html_sha256 ~ '^[0-9a-f]{64}$'`),
-    check("rx_outputs_template_key_check", sql`template_key in ('general', 'paediatric', 'derma', 'overlay')`),
+    check("rx_outputs_template_key_check", sql`template_key in ('general', 'paediatric', 'derma', 'ortho', 'ent', 'gynae', 'dental', 'physio', 'ayush', 'overlay')`),
     check("rx_outputs_template_version_check", sql`(template_key = 'overlay') = (template_version_id is not null)`),
     check("rx_outputs_engine_check", sql`engine is null or engine in ('chromium', 'browser')`),
     index("rx_outputs_template_version_idx").on(t.tenantId, t.templateVersionId),

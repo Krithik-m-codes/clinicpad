@@ -18,6 +18,8 @@ const MATRIX = {
   "template.write": ["owner", "doctor", "designer"],
   "template.publish": ["owner"],
   "template.assign": ["owner", "doctor"],
+  // Plan 2C: invite, extend and revoke the temporary designer account (ADR-0052). Owner only.
+  "designer.manage": ["owner"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type Action = keyof typeof MATRIX;

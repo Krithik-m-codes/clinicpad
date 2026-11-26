@@ -204,6 +204,13 @@
       "when": 1795019741260,
       "tag": "0028_phase2a_designer_role",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1795407072148,
+      "tag": "0029_phase2c_gallery_pads",
+      "breakpoints": true
     }
   ]
 }

@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { fail, ok, type Result } from "@/lib/result";
 import { overlayDefinitionSchema, overlayGeometryIssues, type OverlayDefinition } from "@/lib/rx-render/overlay-definition";
 import {
-  BUILTIN_TEMPLATES,
+  PAD_TEMPLATES,
   LABEL_LANGUAGES,
   PAPER_SIZES,
   pickOption,
@@ -46,7 +46,7 @@ function parseStoredDefinition(value: unknown): OverlayDefinition | null {
 /** The built-in pad chosen in the clinic's settings (Plan 1C behaviour, unchanged). */
 export function builtinLayout(clinic: ClinicRow | null): PadLayout {
   return {
-    template: { kind: "builtin", key: pickOption(BUILTIN_TEMPLATES, clinic?.rxTemplate, "general") },
+    template: { kind: "builtin", key: pickOption(PAD_TEMPLATES, clinic?.rxTemplate, "general") },
     paperSize: pickOption(PAPER_SIZES, clinic?.rxPaperSize, "A4"),
     labels: pickOption(LABEL_LANGUAGES, clinic?.rxLabels, "en"),
   };

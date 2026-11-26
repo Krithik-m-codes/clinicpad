@@ -2,8 +2,19 @@ import type { Investigation, Vitals } from "@/lib/domain/rx-options";
 import type { OverlayDefinition } from "./overlay-definition";
 import type { RenderSnapshot } from "./snapshot";
 
+/**
+ * The first three built-in pads. FROZEN: the overlay definition v1 schema uses this list for `flow.bodyStyle` (ADR-0044),
+ * so it must never grow. Use PAD_TEMPLATES for "which built-in pads can a clinic choose".
+ */
 export const BUILTIN_TEMPLATES = ["general", "paediatric", "derma"] as const;
-export type BuiltinTemplateKey = (typeof BUILTIN_TEMPLATES)[number];
+
+/** The specialty gallery (Plan 2C, ADR-0053): more built-in pads, all drawn by the same renderer. Code, not data. */
+export const GALLERY_TEMPLATES = ["ortho", "ent", "gynae", "dental", "physio", "ayush"] as const;
+
+/** Every built-in pad a clinic can choose and a finalized prescription can record (snapshot v1 stays v1: new keys are additive). */
+export const PAD_TEMPLATES = [...BUILTIN_TEMPLATES, ...GALLERY_TEMPLATES] as const;
+export type PadTemplateKey = (typeof PAD_TEMPLATES)[number];
+export type BuiltinTemplateKey = PadTemplateKey;
 
 export const PAPER_SIZES = ["A4", "A5"] as const;
 export type PaperSize = (typeof PAPER_SIZES)[number];

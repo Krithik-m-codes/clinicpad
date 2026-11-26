@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { isCalendarDate, isValidTimeZone } from "./format";
-import { BUILTIN_TEMPLATES, LABEL_LANGUAGES, PAPER_SIZES, type PadLayout } from "./types";
+import { LABEL_LANGUAGES, PAD_TEMPLATES, PAPER_SIZES, type PadLayout } from "./types";
 
 /**
  * Snapshot limits must be >= every write-side limit (patient, clinic and doctor validation), so
@@ -42,7 +42,7 @@ const parts = {
   }),
 };
 
-const builtinRef = z.object({ kind: z.literal("builtin"), key: z.enum(BUILTIN_TEMPLATES) });
+const builtinRef = z.object({ kind: z.literal("builtin"), key: z.enum(PAD_TEMPLATES) });
 /** A custom pad, frozen by version id AND content hash (Plan 2A, ADR-0045): reprints verify both. */
 const overlayRef = z.object({ kind: z.literal("overlay"), templateVersionId: z.uuid(), contentSha256: z.string().regex(/^[0-9a-f]{64}$/) });
 

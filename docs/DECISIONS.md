@@ -833,13 +833,49 @@ Gotenberg is pinned to `gotenberg/gotenberg:8.40.0@sha256:53073e798c8ef39ea2187e
 
 **Context:** An outside designer may build a clinic's pad but must never read patients or prescriptions. A designer account that never expires is a standing risk.
 
-**Decision:** Role `designer` (migration 0028) holds only `template.read` and `template.write`: no patient, prescription, billing or sharing permission, and sample previews show a placeholder doctor ("Dr. Sample Doctor / SAMPLE-0000") and no Rx number, never a real person. Its membership MUST expire: `memberships.expires_at`, a CHECK that a designer has one (compared as `role::text`, because a new enum value cannot be used in the migration that adds it), a CHECK that expiry follows creation, and `getActiveMembership` and the sign-in callback refuse an expired membership on every request. The e2e helper sets seven days. **There is no designer invite UI until 2C and no code creates designer memberships: today an operator provisions them by raw SQL. That is not acceptable beyond the pilot; an audited provisioning script with a mandatory expiry (and an audit event) is required before any clinic hires a designer.** The cross-tenant sweep (56 tests plus a completeness guard) found no leak.
+**Decision:** Role `designer` (migration 0028) holds only `template.read` and `template.write`: no patient, prescription, billing or sharing permission, and sample previews show a placeholder doctor ("Dr. Sample Doctor / SAMPLE-0000") and no Rx number, never a real person. Its membership MUST expire: `memberships.expires_at`, a CHECK that a designer has one (compared as `role::text`, because a new enum value cannot be used in the migration that adds it), a CHECK that expiry follows creation, and `getActiveMembership` and the sign-in callback refuse an expired membership on every request. The e2e helper sets seven days. **(Superseded by ADR-0052 for provisioning: the owner invite flow exists since Plan 2C slice 1.) Originally: there is no designer invite UI until 2C and no code creates designer memberships: today an operator provisions them by raw SQL. That is not acceptable beyond the pilot; an audited provisioning script with a mandatory expiry (and an audit event) is required before any clinic hires a designer.** The cross-tenant sweep (56 tests plus a completeness guard) found no leak.
 
 Tooling licences: pdf.js (Apache-2.0) and docxtemplater core (MIT, 2B) are fine. PyMuPDF (AGPL-3.0) is a TEST-ONLY dependency (`overlay-spacer-pdf.test.ts` reads real Gotenberg PDFs; `pymupdf==1.28.0` pinned in CI; never installed on a server or bundled; the test FAILS when it is required but missing). ClamAV is GPL-2.0 over a socket (ADR-0045).
 
 **Consequences:** A designer cannot see a real patient preview (that needs `rx.read` and is audited as `template.previewed_with_patient`).
 
 **Revisit trigger:** the designer invite flow (2C), or any need for a designer to see clinical data.
+
+---
+
+## ADR-0052 — Owner-invited designer accounts (concierge tooling)
+
+- **Status:** accepted
+- **Date:** 2026-11-23
+
+**Context:** ADR-0048 required an audited, expiring way to give a setup person access instead of raw SQL. Sign-in resolves the OLDEST active membership of a user, so an existing account that belongs to another clinic can never reach a second one, and replacing such an account's password would be an account takeover. A set-password email flow needs a public token route, a token table and a mail path (larger, and not needed for a concierge pilot).
+
+**Decision:** The clinic owner (`designer.manage`, owner only) creates a dedicated designer account at `/settings/designers` (`src/server/auth/designers.ts`, admin connection with every query scoped by the session tenant and `role = 'designer'`).
+- A new email gets a user with a random one-time password (20 characters from a CSPRNG, bcrypt hash stored, plaintext shown ONCE in a hand-over note, never audited, logged or stored). Nothing is emailed.
+- An email that already has an account is refused, except a former designer whose only memberships are designer memberships of THIS clinic (re-invite: new password, reactivated, `created_at` restarted). Platform admins and accounts with no or other memberships are refused. The refusal message says only that the email cannot be used.
+- Expiry is mandatory: whole days 1 to 30, default 7. Extend sets expiry to now + days (only later); revoke sets the membership `disabled` and takes effect on the next request. At most 5 unexpired designers per clinic (also when extending an expired one) and 10 invites or re-invites per clinic per 24 hours.
+- Audit events `designer.invited`, `designer.extended`, `designer.revoked` in the same transaction (ids, dates, `reinvited`, `passwordRotated`; never an email, password or hash). One advisory lock per clinic serialises designer operations.
+- Sessions: Auth.js renews `iat`, so the token carries its own `signedInAt`. `getActiveMembership` ignores an expiring membership whose `created_at` is later than the session start (plus 2 s), so a re-invite cuts off every earlier session; a token without the claim fails closed for designers. Permanent members are unaffected.
+- A designer stays templates-only (role matrix unchanged: `template.read`, `template.write`).
+
+**Consequences:** No forced password change exists, so the owner must pass the note over a private channel; the membership expiry bounds the exposure. Because accounts are per clinic, concierge staff need a distinct email per clinic. User rows of revoked or expired designers are kept (audit references) and block that email from sign-up; a cleanup job is not built. An owner learns whether an email is registered (sign-up already reveals this). Replaces the raw-SQL provisioning in ADR-0048. The checklist and SLA timestamps of spec section 10.4 are NOT built.
+
+**Revisit trigger:** a set-password link flow, MFA, designers who serve several clinics (needs a clinic switcher), or abuse of the invite form (per-IP limits).
+
+---
+
+## ADR-0053 — Specialty gallery of built-in pads
+
+- **Status:** accepted
+- **Date:** 2026-11-23
+
+**Context:** Spec 15.3 task 1: five to seven more built-in specialty pads. The clinical form is fixed, so a pad can differ only by emphasis.
+
+**Decision:** Six pads, code only: `ortho`, `ent`, `gynae`, `dental`, `physio`, `ayush` (Ayurveda and homeopathy), defined in `src/lib/rx-render/templates.ts` and drawn by the existing renderer. Each differs by section order, vital order and compactness, medicine layout (slots, pattern or topical) and accent colour, and prints EVERY section and every vital (no silent omission; a completeness test runs for all pads). `PAD_TEMPLATES` (nine keys) is what clinics may choose and snapshots may record; `BUILTIN_TEMPLATES` (the original three) is unchanged because the frozen overlay v1 schema uses it for `flow.bodyStyle` (ADR-0044), so an overlay pad cannot use a gallery body style. Snapshot stays `v: 1` (the key enum widens additively: old snapshots parse as before). Migration 0029 widens `clinics_rx_template_check` and `rx_outputs_template_key_check` (NOT VALID, then VALIDATE).
+
+**Consequences:** The definitions are layout opinions that no clinician has reviewed: they need a design-partner look per specialty before they are marketed as specialty pads. Older app versions cannot read a snapshot that names a gallery key (rollback after a clinic picked one needs the key list kept).
+
+**Revisit trigger:** specialty-specific clinical fields (they need Plan 1B form work first), or user-defined gallery packs.
 
 ---
 
